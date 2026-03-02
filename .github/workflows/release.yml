@@ -43,14 +43,15 @@ jobs:
 
       - name: Set version from release count
         run: |
-          # Count existing release tags to get sequential build number
-          EXISTING=$(git tag --list 'v*-build.*' | wc -l)
-          BUILD_NUM=$((EXISTING + 1))
+          # Find the highest existing build number and add 1
+          MAX_BUILD=$(git tag --list 'v*-build.*' | grep -oP 'build\.\K[0-9]+' | sort -n | tail -1)
+          MAX_BUILD=${MAX_BUILD:-0}
+          BUILD_NUM=$((MAX_BUILD + 1))
           BASE_VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | grep -oP '"\K[^"]+')
           echo "VERSION=${BASE_VERSION}" >> $GITHUB_ENV
           echo "BUILD_NUM=${BUILD_NUM}" >> $GITHUB_ENV
           echo "FULL_VERSION=${BASE_VERSION}-build.${BUILD_NUM}" >> $GITHUB_ENV
-          echo "📦 Release #${BUILD_NUM} (${BASE_VERSION})"
+          echo "📦 Release #${BUILD_NUM} (${BASE_VERSION}) [prev max: #${MAX_BUILD}]"
           # Update versionCode to build number for unique installs
           sed -i "s/versionCode = 1/versionCode = ${BUILD_NUM}/" app/build.gradle.kts
 
