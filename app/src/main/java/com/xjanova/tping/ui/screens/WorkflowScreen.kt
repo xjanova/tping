@@ -1,6 +1,5 @@
 package com.xjanova.tping.ui.screens
 
-import android.content.Context
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.layout.*
@@ -119,9 +118,9 @@ fun WorkflowScreen(
                             Text("เริ่มบันทึกขั้นตอน")
                         }
 
-                        // Save recording button
+                        // Save recording button (reactive via StateFlow)
                         val recorder = TpingAccessibilityService.instance?.getRecorder()
-                        val actionCount = recorder?.getActionCount() ?: 0
+                        val actionCount by (recorder?.actionCount ?: kotlinx.coroutines.flow.MutableStateFlow(0)).collectAsState()
                         if (actionCount > 0) {
                             Spacer(modifier = Modifier.height(8.dp))
                             OutlinedButton(

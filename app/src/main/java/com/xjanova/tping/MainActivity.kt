@@ -4,6 +4,8 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.animation.*
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -13,6 +15,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.ui.screens.DataProfileScreen
 import com.xjanova.tping.ui.screens.HomeScreen
 import com.xjanova.tping.ui.screens.PlayScreen
@@ -42,13 +45,25 @@ fun TpingApp() {
     val navController = rememberNavController()
     val viewModel: MainViewModel = viewModel()
 
-    NavHost(navController = navController, startDestination = "home") {
+    // Share playback engine with overlay
+    LaunchedEffect(Unit) {
+        FloatingOverlayService.playbackEngine = viewModel.playbackEngine
+    }
+
+    NavHost(
+        navController = navController,
+        startDestination = "home",
+        enterTransition = { slideInHorizontally(tween(300)) { it } + fadeIn(tween(300)) },
+        exitTransition = { slideOutHorizontally(tween(300)) { -it / 3 } + fadeOut(tween(200)) },
+        popEnterTransition = { slideInHorizontally(tween(300)) { -it / 3 } + fadeIn(tween(300)) },
+        popExitTransition = { slideOutHorizontally(tween(300)) { it } + fadeOut(tween(200)) }
+    ) {
         composable("home") {
             HomeScreen(
                 viewModel = viewModel,
-                onNavigateToData = { navController.navigate("data") },
-                onNavigateToWorkflows = { navController.navigate("workflows") },
-                onNavigateToPlay = { navController.navigate("play") }
+                onNavigateToData = { navController.navigate("data") { launchSingleTop = true } },
+                onNavigateToWorkflows = { navController.navigate("workflows") { launchSingleTop = true } },
+                onNavigateToPlay = { navController.navigate("play") { launchSingleTop = true } }
             )
         }
         composable("data") {

@@ -29,65 +29,71 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Set version from build number
+        run: |
+          BUILD_NUM=${{ github.run_number }}
+          BASE_VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | grep -oP '"\K[^"]+')
+          echo "VERSION=${BASE_VERSION}" >> $GITHUB_ENV
+          echo "FULL_VERSION=${BASE_VERSION}-build.${BUILD_NUM}" >> $GITHUB_ENV
+          # Update versionCode to build number for unique installs
+          sed -i "s/versionCode = 1/versionCode = ${BUILD_NUM}/" app/build.gradle.kts
+
       - name: Build Debug APK
         run: ./gradlew assembleDebug
 
       - name: Build Release APK
         run: ./gradlew assembleRelease
 
-      - name: Get version
-        id: version
-        run: |
-          VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | grep -oP '"\K[^"]+')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "Version: $VERSION"
-
       - name: Rename APKs
         run: |
-          cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/Tping-${{ steps.version.outputs.version }}-debug.apk
-          cp app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/Tping-${{ steps.version.outputs.version }}-release.apk
+          mkdir -p release-output
+          cp app/build/outputs/apk/debug/app-debug.apk release-output/Tping-v${{ env.VERSION }}-debug.apk
+          cp app/build/outputs/apk/release/app-release-unsigned.apk release-output/Tping-v${{ env.VERSION }}-release.apk
 
-      - name: Upload Debug APK Artifact
+      - name: Upload Debug APK
         uses: actions/upload-artifact@v4
         with:
-          name: Tping-debug
-          path: app/build/outputs/apk/debug/Tping-*.apk
+          name: Tping-debug-apk
+          path: release-output/Tping-*-debug.apk
 
-      - name: Upload Release APK Artifact
+      - name: Upload Release APK
         uses: actions/upload-artifact@v4
         with:
-          name: Tping-release
-          path: app/build/outputs/apk/release/Tping-*.apk
+          name: Tping-release-apk
+          path: release-output/Tping-*-release.apk
 
-      - name: Create Release
+      - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
-          name: Tping v${{ steps.version.outputs.version }} (Build ${{ github.run_number }})
+          tag_name: v${{ env.FULL_VERSION }}
+          name: "Tping v${{ env.VERSION }} (Build #${{ github.run_number }})"
           body: |
             ## Tping Auto Typing App
+            **by Xman Studio**
+
+            Version: `${{ env.VERSION }}` | Build: `#${{ github.run_number }}` | versionCode: `${{ github.run_number }}`
 
             ### Downloads
-            - **Debug APK** - สำหรับทดสอบ (ติดตั้งได้เลย)
+            - **Debug APK** - ติดตั้งได้เลย สำหรับทดสอบ
             - **Release APK** - สำหรับใช้งานจริง
 
             ### Features
             - บันทึกขั้นตอนการกรอกข้อมูล (Learning Mode)
-            - เล่นซ้ำอัตโนมัติ (Auto Playback)
-            - จัดเก็บข้อมูลหลายชุด
-            - หน้าต่างลอยแสดงสถานะ
-            - ระบุตำแหน่ง 3 ชั้น (Resource ID → Text → Coordinates)
+            - เล่นซ้ำอัตโนมัติ (Auto Playback) พร้อมวนลูป
+            - จัดเก็บข้อมูลหลายชุด + ผูกกับช่องกรอก (Tag Data)
+            - หน้าต่างลอยแสดงสถานะ (Floating Overlay)
+            - ระบุตำแหน่ง 3 ชั้น (Resource ID -> Text -> Coordinates)
+            - รองรับ: Click, Long Click, Text Input, Scroll, Back
 
-            ### How to install
-            1. ดาวน์โหลด APK
-            2. เปิดไฟล์ติดตั้ง
-            3. เปิดสิทธิ์ Accessibility Service
-            4. เปิดสิทธิ์ Overlay
+            ### Install
+            1. ดาวน์โหลด Debug APK (ใช้ได้เลย)
+            2. เปิดไฟล์ติดตั้ง (อนุญาตจากแหล่งที่ไม่รู้จัก)
+            3. เปิด Accessibility Service ในตั้งค่า
+            4. เปิด Overlay Permission
           draft: false
           prerelease: false
           files: |
-            app/build/outputs/apk/debug/Tping-*.apk
-            app/build/outputs/apk/release/Tping-*.apk
+            release-output/Tping-*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

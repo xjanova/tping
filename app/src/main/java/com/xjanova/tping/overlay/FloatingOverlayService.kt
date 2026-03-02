@@ -11,6 +11,8 @@ import android.os.IBinder
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.WindowManager
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.ComposeView
 import androidx.core.app.NotificationCompat
 import androidx.lifecycle.Lifecycle
@@ -24,6 +26,11 @@ import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import com.xjanova.tping.MainActivity
 import com.xjanova.tping.R
 import com.xjanova.tping.TpingApplication
+import com.xjanova.tping.recorder.PlaybackEngine
+import com.xjanova.tping.service.TpingAccessibilityService
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlin.math.abs
 
 class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
@@ -36,12 +43,17 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
 
     private var windowManager: WindowManager? = null
     private var overlayView: ComposeView? = null
-    private var isExpanded = true
 
     companion object {
         var instance: FloatingOverlayService? = null
             private set
-        var overlayState = OverlayState()
+
+        // Reactive state - Compose will auto-recompose when these change
+        private val _overlayState = MutableStateFlow(OverlayState())
+        val overlayState: StateFlow<OverlayState> = _overlayState
+
+        // Shared playback engine (set by ViewModel)
+        var playbackEngine: PlaybackEngine? = null
     }
 
     override fun onCreate() {
@@ -55,8 +67,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val mode = intent?.getStringExtra("mode") ?: "idle"
-        overlayState = overlayState.copy(mode = mode)
-
+        _overlayState.value = _overlayState.value.copy(mode = mode)
         startForeground(1, createNotification())
         showOverlay()
         return START_STICKY
@@ -65,7 +76,6 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     @SuppressLint("ClickableViewAccessibility")
     private fun showOverlay() {
         if (overlayView != null) return
-
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
         val params = WindowManager.LayoutParams(
@@ -74,14 +84,14 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else
+                @Suppress("DEPRECATION")
                 WindowManager.LayoutParams.TYPE_PHONE,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
-            x = 50
-            y = 200
+            x = 50; y = 200
         }
 
         overlayView = ComposeView(this).apply {
@@ -89,129 +99,119 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             setViewTreeSavedStateRegistryOwner(this@FloatingOverlayService)
 
             setContent {
+                val state by _overlayState.collectAsState()
                 FloatingOverlayContent(
-                    state = overlayState,
+                    state = state,
                     onStartRecord = { startRecording() },
                     onStopRecord = { stopRecording() },
-                    onTagData = { showTagDialog() },
-                    onPlay = { startPlayback() },
+                    onTagData = { fieldKey -> tagDataField(fieldKey) },
+                    onShowTagDialog = { _overlayState.value = _overlayState.value.copy(showTagDialog = true) },
+                    onDismissTagDialog = { _overlayState.value = _overlayState.value.copy(showTagDialog = false) },
+                    onPlay = { /* Play is started from main UI */ },
                     onPause = { pausePlayback() },
+                    onResume = { resumePlayback() },
                     onStop = { stopPlayback() },
                     onToggleExpand = { toggleExpand() },
                     onClose = { stopSelf() }
                 )
             }
 
-            // Make draggable
-            var initialX = 0
-            var initialY = 0
-            var initialTouchX = 0f
-            var initialTouchY = 0f
+            // Draggable with movement threshold (>10px = drag, else click)
+            var initialX = 0; var initialY = 0
+            var initialTouchX = 0f; var initialTouchY = 0f
+            var isDragging = false
 
             setOnTouchListener { _, event ->
                 when (event.action) {
                     MotionEvent.ACTION_DOWN -> {
-                        initialX = params.x
-                        initialY = params.y
-                        initialTouchX = event.rawX
-                        initialTouchY = event.rawY
+                        initialX = params.x; initialY = params.y
+                        initialTouchX = event.rawX; initialTouchY = event.rawY
+                        isDragging = false
                         false
                     }
                     MotionEvent.ACTION_MOVE -> {
-                        params.x = initialX + (event.rawX - initialTouchX).toInt()
-                        params.y = initialY + (event.rawY - initialTouchY).toInt()
-                        windowManager?.updateViewLayout(this, params)
-                        true
+                        val dx = abs(event.rawX - initialTouchX)
+                        val dy = abs(event.rawY - initialTouchY)
+                        if (dx > 10 || dy > 10) {
+                            isDragging = true
+                            params.x = initialX + (event.rawX - initialTouchX).toInt()
+                            params.y = initialY + (event.rawY - initialTouchY).toInt()
+                            windowManager?.updateViewLayout(this, params)
+                            true
+                        } else false
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (isDragging) true else false
                     }
                     else -> false
                 }
             }
         }
-
         windowManager?.addView(overlayView, params)
     }
 
+    // ====== Recording Controls (connected to actual service) ======
+
     private fun startRecording() {
-        val service = com.xjanova.tping.service.TpingAccessibilityService.instance ?: return
+        val service = TpingAccessibilityService.instance ?: return
         service.getRecorder().startRecording()
-        com.xjanova.tping.service.TpingAccessibilityService.isRecording = true
-        overlayState = overlayState.copy(
-            mode = "recording",
-            stepCount = 0,
-            statusText = "กำลังบันทึก..."
+        TpingAccessibilityService.setRecording(true)
+        _overlayState.value = _overlayState.value.copy(
+            mode = "recording", stepCount = 0, statusText = "กำลังบันทึก..."
         )
-        refreshOverlay()
     }
 
     private fun stopRecording() {
-        val service = com.xjanova.tping.service.TpingAccessibilityService.instance ?: return
-        com.xjanova.tping.service.TpingAccessibilityService.isRecording = false
+        TpingAccessibilityService.setRecording(false)
+        val service = TpingAccessibilityService.instance ?: return
         val actions = service.getRecorder().stopRecording()
-        overlayState = overlayState.copy(
+        _overlayState.value = _overlayState.value.copy(
             mode = "idle",
-            statusText = "บันทึกแล้ว ${actions.size} ขั้นตอน"
+            statusText = "บันทึกแล้ว ${actions.size} ขั้นตอน",
+            recordingDone = true
         )
-        // Save to database via broadcast
-        val intent = Intent("com.xjanova.tping.RECORDING_DONE")
-        intent.putExtra("stepCount", actions.size)
-        sendBroadcast(intent)
-        refreshOverlay()
     }
 
-    private fun showTagDialog() {
-        overlayState = overlayState.copy(showTagDialog = true)
-        refreshOverlay()
+    private fun tagDataField(fieldKey: String) {
+        val service = TpingAccessibilityService.instance ?: return
+        service.getRecorder().tagLastActionAsDataField(fieldKey)
+        _overlayState.value = _overlayState.value.copy(
+            showTagDialog = false,
+            statusText = "ผูกข้อมูล: $fieldKey"
+        )
     }
 
-    private fun startPlayback() {
-        overlayState = overlayState.copy(mode = "playing", statusText = "กำลังเล่น...")
-        refreshOverlay()
-    }
+    // ====== Playback Controls (connected to actual PlaybackEngine) ======
 
     private fun pausePlayback() {
-        overlayState = overlayState.copy(mode = "paused", statusText = "หยุดชั่วคราว")
-        refreshOverlay()
+        playbackEngine?.pause()
+        _overlayState.value = _overlayState.value.copy(mode = "paused", statusText = "หยุดชั่วคราว")
+    }
+
+    private fun resumePlayback() {
+        playbackEngine?.resume()
+        _overlayState.value = _overlayState.value.copy(mode = "playing", statusText = "กำลังเล่นต่อ...")
     }
 
     private fun stopPlayback() {
-        overlayState = overlayState.copy(mode = "idle", statusText = "หยุดแล้ว")
-        refreshOverlay()
+        playbackEngine?.stop()
+        _overlayState.value = _overlayState.value.copy(mode = "idle", statusText = "หยุดแล้ว")
     }
 
     private fun toggleExpand() {
-        isExpanded = !isExpanded
-        overlayState = overlayState.copy(isExpanded = isExpanded)
-        refreshOverlay()
+        val current = _overlayState.value
+        _overlayState.value = current.copy(isExpanded = !current.isExpanded)
     }
 
-    private fun refreshOverlay() {
-        overlayView?.let {
-            it.setContent {
-                FloatingOverlayContent(
-                    state = overlayState,
-                    onStartRecord = { startRecording() },
-                    onStopRecord = { stopRecording() },
-                    onTagData = { showTagDialog() },
-                    onPlay = { startPlayback() },
-                    onPause = { pausePlayback() },
-                    onStop = { stopPlayback() },
-                    onToggleExpand = { toggleExpand() },
-                    onClose = { stopSelf() }
-                )
-            }
-        }
-    }
-
+    // Called by PlaybackEngine to update overlay during playback
     fun updatePlaybackState(step: Int, total: Int, desc: String, loop: Int, totalLoops: Int) {
-        overlayState = overlayState.copy(
-            currentStep = step,
-            totalSteps = total,
+        _overlayState.value = _overlayState.value.copy(
+            mode = "playing",
+            currentStep = step, totalSteps = total,
             statusText = desc,
-            currentLoop = loop,
-            totalLoops = totalLoops,
+            currentLoop = loop, totalLoops = totalLoops,
             progress = if (total > 0) step.toFloat() / total else 0f
         )
-        refreshOverlay()
     }
 
     private fun createNotification(): Notification {
@@ -220,10 +220,9 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             this, 0, intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
-
         return NotificationCompat.Builder(this, TpingApplication.CHANNEL_ID)
             .setContentTitle("Tping กำลังทำงาน")
-            .setContentText("แตะเพื่อเปิดแอพ")
+            .setContentText("Xman Studio - แตะเพื่อเปิดแอพ")
             .setSmallIcon(R.drawable.ic_launcher_foreground)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
@@ -242,7 +241,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
 }
 
 data class OverlayState(
-    val mode: String = "idle", // idle, recording, playing, paused
+    val mode: String = "idle",
     val isExpanded: Boolean = true,
     val statusText: String = "พร้อมใช้งาน",
     val currentStep: Int = 0,
@@ -251,5 +250,6 @@ data class OverlayState(
     val currentLoop: Int = 0,
     val totalLoops: Int = 0,
     val progress: Float = 0f,
-    val showTagDialog: Boolean = false
+    val showTagDialog: Boolean = false,
+    val recordingDone: Boolean = false
 )

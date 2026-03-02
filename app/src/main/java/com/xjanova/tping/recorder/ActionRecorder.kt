@@ -11,6 +11,9 @@ class ActionRecorder {
     private var lastActionTime = System.currentTimeMillis()
     private var stepCounter = 0
 
+    private val _actionCount = kotlinx.coroutines.flow.MutableStateFlow(0)
+    val actionCount: kotlinx.coroutines.flow.StateFlow<Int> = _actionCount
+
     fun startRecording() {
         actions.clear()
         stepCounter = 0
@@ -32,8 +35,13 @@ class ActionRecorder {
         return delay.coerceIn(100, 5000) // clamp between 100ms and 5s
     }
 
+    fun peekTimeSinceLastAction(): Long {
+        return System.currentTimeMillis() - lastActionTime
+    }
+
     fun addAction(action: RecordedAction) {
         actions.add(action)
+        _actionCount.value = actions.size
     }
 
     fun updateOrAddTextAction(
@@ -48,8 +56,10 @@ class ActionRecorder {
 
         // Check if last action was INPUT_TEXT on same field
         val last = actions.lastOrNull()
+        // Debounce: check same field by resourceId OR by bounds
         if (last != null && last.actionType == ActionType.INPUT_TEXT
-            && last.resourceId == resourceId && resourceId.isNotEmpty()
+            && ((last.resourceId == resourceId && resourceId.isNotEmpty())
+                || (resourceId.isEmpty() && last.boundsLeft == bounds.left && last.boundsTop == bounds.top))
         ) {
             // Update the text in the existing action
             actions[actions.lastIndex] = last.copy(inputText = text)
@@ -87,5 +97,6 @@ class ActionRecorder {
     fun clear() {
         actions.clear()
         stepCounter = 0
+        _actionCount.value = 0
     }
 }

@@ -47,7 +47,7 @@ class PlaybackEngine {
 
         playbackJob?.cancel()
         isPaused = false
-        TpingAccessibilityService.isPlaying = true
+        TpingAccessibilityService.setPlaying(true)
 
         playbackJob = scope.launch(Dispatchers.Main) {
             _state.value = PlaybackState(
@@ -95,7 +95,7 @@ class PlaybackEngine {
                     }
                 }
             } finally {
-                TpingAccessibilityService.isPlaying = false
+                TpingAccessibilityService.setPlaying(false)
                 _state.value = PlaybackState()
             }
         }
@@ -113,7 +113,7 @@ class PlaybackEngine {
                 service.clickAtNode(action) { done.complete(Unit) }
             }
             ActionType.LONG_CLICK -> {
-                service.clickAtNode(action) { done.complete(Unit) }
+                service.longClickAtNode(action) { done.complete(Unit) }
             }
             ActionType.INPUT_TEXT -> {
                 service.inputTextAtNode(action, textToInput) { done.complete(Unit) }
@@ -162,7 +162,7 @@ class PlaybackEngine {
         playbackJob?.cancel()
         playbackJob = null
         isPaused = false
-        TpingAccessibilityService.isPlaying = false
+        TpingAccessibilityService.setPlaying(false)
         _state.value = PlaybackState()
     }
 }
