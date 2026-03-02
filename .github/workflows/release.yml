@@ -1,0 +1,93 @@
+name: Build & Release APK
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build Debug APK
+        run: ./gradlew assembleDebug
+
+      - name: Build Release APK
+        run: ./gradlew assembleRelease
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | grep -oP '"\K[^"]+')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Version: $VERSION"
+
+      - name: Rename APKs
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/Tping-${{ steps.version.outputs.version }}-debug.apk
+          cp app/build/outputs/apk/release/app-release-unsigned.apk app/build/outputs/apk/release/Tping-${{ steps.version.outputs.version }}-release.apk
+
+      - name: Upload Debug APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tping-debug
+          path: app/build/outputs/apk/debug/Tping-*.apk
+
+      - name: Upload Release APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Tping-release
+          path: app/build/outputs/apk/release/Tping-*.apk
+
+      - name: Create Release
+        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}-build.${{ github.run_number }}
+          name: Tping v${{ steps.version.outputs.version }} (Build ${{ github.run_number }})
+          body: |
+            ## Tping Auto Typing App
+
+            ### Downloads
+            - **Debug APK** - สำหรับทดสอบ (ติดตั้งได้เลย)
+            - **Release APK** - สำหรับใช้งานจริง
+
+            ### Features
+            - บันทึกขั้นตอนการกรอกข้อมูล (Learning Mode)
+            - เล่นซ้ำอัตโนมัติ (Auto Playback)
+            - จัดเก็บข้อมูลหลายชุด
+            - หน้าต่างลอยแสดงสถานะ
+            - ระบุตำแหน่ง 3 ชั้น (Resource ID → Text → Coordinates)
+
+            ### How to install
+            1. ดาวน์โหลด APK
+            2. เปิดไฟล์ติดตั้ง
+            3. เปิดสิทธิ์ Accessibility Service
+            4. เปิดสิทธิ์ Overlay
+          draft: false
+          prerelease: false
+          files: |
+            app/build/outputs/apk/debug/Tping-*.apk
+            app/build/outputs/apk/release/Tping-*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Tping</string>
+    <string name="accessibility_description">Tping Auto Typing - ใช้สำหรับบันทึกและเล่นซ้ำการกรอกข้อมูลอัตโนมัติ</string>
+    <string name="notification_channel_name">Tping Service</string>
+    <string name="notification_channel_desc">แสดงสถานะการทำงานของ Tping</string>
+</resources>
