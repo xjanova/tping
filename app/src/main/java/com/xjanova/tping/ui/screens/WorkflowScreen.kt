@@ -245,7 +245,7 @@ fun WorkflowCard(
 
             if (expanded) {
                 Spacer(modifier = Modifier.height(8.dp))
-                HorizontalDivider()
+                Divider()
                 Spacer(modifier = Modifier.height(8.dp))
                 actions.forEach { action ->
                     Text(

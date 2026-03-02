@@ -205,7 +205,7 @@ fun PlayScreen(
                             Text(playbackState.currentActionDesc, fontSize = 13.sp)
                             Spacer(modifier = Modifier.height(8.dp))
                             LinearProgressIndicator(
-                                progress = { playbackState.progress },
+                                progress = playbackState.progress,
                                 modifier = Modifier.fillMaxWidth()
                             )
                             Spacer(modifier = Modifier.height(4.dp))

@@ -180,7 +180,7 @@ fun ExpandedOverlay(
             ) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp)) {
                     LinearProgressIndicator(
-                        progress = { state.progress },
+                        progress = state.progress,
                         modifier = Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(2.dp)),
                         color = PlayColor,
                         trackColor = Color(0xFF333333)
