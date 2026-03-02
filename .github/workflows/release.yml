@@ -29,6 +29,16 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Generate signing keystore
+        run: |
+          mkdir -p ~/.android
+          keytool -genkeypair -v \
+            -keystore ~/.android/debug.keystore \
+            -alias androiddebugkey \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass android -keypass android \
+            -dname "CN=Xman Studio, OU=Dev, O=Xman Studio, L=Bangkok, S=BKK, C=TH"
+
       - name: Set version from build number
         run: |
           BUILD_NUM=${{ github.run_number }}
