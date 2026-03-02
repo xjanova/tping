@@ -8,20 +8,24 @@ import com.xjanova.tping.data.entity.RecordedAction
 class ActionRecorder {
 
     private val actions = mutableListOf<RecordedAction>()
-    private var lastActionTime = System.currentTimeMillis()
-    private var stepCounter = 0
+    private val lock = Any()
+    @Volatile private var lastActionTime = System.currentTimeMillis()
+    @Volatile private var stepCounter = 0
 
     private val _actionCount = kotlinx.coroutines.flow.MutableStateFlow(0)
     val actionCount: kotlinx.coroutines.flow.StateFlow<Int> = _actionCount
 
     fun startRecording() {
-        actions.clear()
-        stepCounter = 0
-        lastActionTime = System.currentTimeMillis()
+        synchronized(lock) {
+            actions.clear()
+            stepCounter = 0
+            lastActionTime = System.currentTimeMillis()
+            _actionCount.value = 0
+        }
     }
 
     fun stopRecording(): List<RecordedAction> {
-        return actions.toList()
+        synchronized(lock) { return actions.toList() }
     }
 
     fun getNextStep(): Int {
@@ -32,7 +36,7 @@ class ActionRecorder {
         val now = System.currentTimeMillis()
         val delay = now - lastActionTime
         lastActionTime = now
-        return delay.coerceIn(100, 5000) // clamp between 100ms and 5s
+        return delay.coerceIn(100, 5000)
     }
 
     fun peekTimeSinceLastAction(): Long {
@@ -40,8 +44,10 @@ class ActionRecorder {
     }
 
     fun addAction(action: RecordedAction) {
-        actions.add(action)
-        _actionCount.value = actions.size
+        synchronized(lock) {
+            actions.add(action)
+            _actionCount.value = actions.size
+        }
     }
 
     fun updateOrAddTextAction(
@@ -54,49 +60,57 @@ class ActionRecorder {
         val bounds = Rect()
         source.getBoundsInScreen(bounds)
 
-        // Check if last action was INPUT_TEXT on same field
-        val last = actions.lastOrNull()
-        // Debounce: check same field by resourceId OR by bounds
-        if (last != null && last.actionType == ActionType.INPUT_TEXT
-            && ((last.resourceId == resourceId && resourceId.isNotEmpty())
-                || (resourceId.isEmpty() && last.boundsLeft == bounds.left && last.boundsTop == bounds.top))
-        ) {
-            // Update the text in the existing action
-            actions[actions.lastIndex] = last.copy(inputText = text)
-        } else {
-            val action = RecordedAction(
-                stepOrder = getNextStep(),
-                actionType = ActionType.INPUT_TEXT,
-                resourceId = resourceId,
-                text = "",
-                className = className,
-                contentDescription = source.contentDescription?.toString() ?: "",
-                boundsLeft = bounds.left,
-                boundsTop = bounds.top,
-                boundsRight = bounds.right,
-                boundsBottom = bounds.bottom,
-                inputText = text,
-                packageName = packageName,
-                delayAfterMs = getTimeSinceLastAction()
-            )
-            actions.add(action)
+        synchronized(lock) {
+            val last = actions.lastOrNull()
+            if (last != null && last.actionType == ActionType.INPUT_TEXT
+                && ((last.resourceId == resourceId && resourceId.isNotEmpty())
+                    || (resourceId.isEmpty() && last.boundsLeft == bounds.left && last.boundsTop == bounds.top))
+            ) {
+                actions[actions.lastIndex] = last.copy(inputText = text)
+            } else {
+                val action = RecordedAction(
+                    stepOrder = getNextStep(),
+                    actionType = ActionType.INPUT_TEXT,
+                    resourceId = resourceId,
+                    text = "",
+                    className = className,
+                    contentDescription = source.contentDescription?.toString() ?: "",
+                    boundsLeft = bounds.left,
+                    boundsTop = bounds.top,
+                    boundsRight = bounds.right,
+                    boundsBottom = bounds.bottom,
+                    inputText = text,
+                    packageName = packageName,
+                    delayAfterMs = getTimeSinceLastAction()
+                )
+                actions.add(action)
+                _actionCount.value = actions.size
+            }
         }
     }
 
-    fun getActions(): List<RecordedAction> = actions.toList()
+    fun getActions(): List<RecordedAction> {
+        synchronized(lock) { return actions.toList() }
+    }
 
-    fun getActionCount(): Int = actions.size
+    fun getActionCount(): Int {
+        synchronized(lock) { return actions.size }
+    }
 
     fun tagLastActionAsDataField(fieldKey: String) {
-        if (actions.isNotEmpty()) {
-            val last = actions.last()
-            actions[actions.lastIndex] = last.copy(dataFieldKey = fieldKey)
+        synchronized(lock) {
+            if (actions.isNotEmpty()) {
+                val last = actions.last()
+                actions[actions.lastIndex] = last.copy(dataFieldKey = fieldKey)
+            }
         }
     }
 
     fun clear() {
-        actions.clear()
-        stepCounter = 0
-        _actionCount.value = 0
+        synchronized(lock) {
+            actions.clear()
+            stepCounter = 0
+            _actionCount.value = 0
+        }
     }
 }

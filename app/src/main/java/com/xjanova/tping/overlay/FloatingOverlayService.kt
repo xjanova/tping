@@ -28,8 +28,13 @@ import com.xjanova.tping.R
 import com.xjanova.tping.TpingApplication
 import com.xjanova.tping.recorder.PlaybackEngine
 import com.xjanova.tping.service.TpingAccessibilityService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
@@ -43,6 +48,10 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
 
     private var windowManager: WindowManager? = null
     private var overlayView: ComposeView? = null
+    private var overlayParams: WindowManager.LayoutParams? = null
+    private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
+    private var playbackObserverJob: Job? = null
+    private var recordingObserverJob: Job? = null
 
     companion object {
         var instance: FloatingOverlayService? = null
@@ -70,7 +79,37 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         _overlayState.value = _overlayState.value.copy(mode = mode)
         startForeground(1, createNotification())
         showOverlay()
+
+        // Observe PlaybackEngine state when in playing mode
+        if (mode == "playing") {
+            observePlaybackState()
+        }
         return START_STICKY
+    }
+
+    private fun observePlaybackState() {
+        playbackObserverJob?.cancel()
+        val engine = playbackEngine ?: return
+        playbackObserverJob = serviceScope.launch {
+            engine.state.collect { pState ->
+                if (pState.isPlaying) {
+                    _overlayState.value = _overlayState.value.copy(
+                        mode = if (pState.isPaused) "paused" else "playing",
+                        currentStep = pState.currentStep,
+                        totalSteps = pState.totalSteps,
+                        statusText = pState.currentActionDesc.ifEmpty { "กำลังเล่น..." },
+                        currentLoop = pState.currentLoop,
+                        totalLoops = pState.totalLoops,
+                        progress = pState.progress
+                    )
+                } else if (_overlayState.value.mode == "playing" || _overlayState.value.mode == "paused") {
+                    _overlayState.value = _overlayState.value.copy(
+                        mode = "idle", statusText = "เสร็จสิ้น", progress = 0f
+                    )
+                    playbackObserverJob?.cancel()
+                }
+            }
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -93,6 +132,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             gravity = Gravity.TOP or Gravity.START
             x = 50; y = 200
         }
+        overlayParams = params
 
         overlayView = ComposeView(this).apply {
             setViewTreeLifecycleOwner(this@FloatingOverlayService)
@@ -105,8 +145,8 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     onStartRecord = { startRecording() },
                     onStopRecord = { stopRecording() },
                     onTagData = { fieldKey -> tagDataField(fieldKey) },
-                    onShowTagDialog = { _overlayState.value = _overlayState.value.copy(showTagDialog = true) },
-                    onDismissTagDialog = { _overlayState.value = _overlayState.value.copy(showTagDialog = false) },
+                    onShowTagDialog = { setOverlayFocusable(true); _overlayState.value = _overlayState.value.copy(showTagDialog = true) },
+                    onDismissTagDialog = { _overlayState.value = _overlayState.value.copy(showTagDialog = false); setOverlayFocusable(false) },
                     onPlay = { /* Play is started from main UI */ },
                     onPause = { pausePlayback() },
                     onResume = { resumePlayback() },
@@ -150,6 +190,18 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         windowManager?.addView(overlayView, params)
     }
 
+    // ====== Focus toggle for keyboard input in overlay ======
+
+    private fun setOverlayFocusable(focusable: Boolean) {
+        val params = overlayParams ?: return
+        if (focusable) {
+            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE.inv()
+        } else {
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE
+        }
+        try { windowManager?.updateViewLayout(overlayView, params) } catch (_: Exception) {}
+    }
+
     // ====== Recording Controls (connected to actual service) ======
 
     private fun startRecording() {
@@ -159,9 +211,17 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         _overlayState.value = _overlayState.value.copy(
             mode = "recording", stepCount = 0, statusText = "กำลังบันทึก..."
         )
+        // Observe recording step count in real-time
+        recordingObserverJob?.cancel()
+        recordingObserverJob = serviceScope.launch {
+            service.getRecorder().actionCount.collect { count ->
+                _overlayState.value = _overlayState.value.copy(stepCount = count)
+            }
+        }
     }
 
     private fun stopRecording() {
+        recordingObserverJob?.cancel()
         TpingAccessibilityService.setRecording(false)
         val service = TpingAccessibilityService.instance ?: return
         val actions = service.getRecorder().stopRecording()
@@ -179,6 +239,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             showTagDialog = false,
             statusText = "ผูกข้อมูล: $fieldKey"
         )
+        setOverlayFocusable(false)
     }
 
     // ====== Playback Controls (connected to actual PlaybackEngine) ======
@@ -232,9 +293,15 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        playbackObserverJob?.cancel()
+        recordingObserverJob?.cancel()
+        serviceScope.cancel()
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
+        lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
         overlayView?.let { windowManager?.removeView(it) }
         overlayView = null
+        overlayParams = null
         instance = null
         super.onDestroy()
     }

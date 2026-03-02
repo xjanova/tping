@@ -35,6 +35,10 @@ class TpingAccessibilityService : AccessibilityService() {
     private val recorder = ActionRecorder()
 
     // Package filter: ignore keyboard & system UI during recording
+    // Track previous scroll position to detect direction
+    private var lastScrollY = -1
+    private var lastScrollSource: String? = null
+
     private val ignoredPackages = setOf(
         "com.google.android.inputmethod",
         "com.samsung.android.honeyboard",
@@ -116,7 +120,18 @@ class TpingAccessibilityService : AccessibilityService() {
             recorder.peekTimeSinceLastAction() < 200
         ) return
 
-        val actionType = if (event.scrollY >= 0) ActionType.SCROLL_DOWN else ActionType.SCROLL_UP
+        // Determine scroll direction using delta from previous position
+        val sourceId = event.source?.viewIdResourceName ?: event.className?.toString() ?: ""
+        val currentY = event.scrollY
+        val actionType = if (lastScrollSource == sourceId && lastScrollY >= 0) {
+            if (currentY > lastScrollY) ActionType.SCROLL_DOWN else ActionType.SCROLL_UP
+        } else {
+            // First scroll or different source: use fromIndex heuristic
+            if (event.fromIndex > 0) ActionType.SCROLL_DOWN else ActionType.SCROLL_DOWN
+        }
+        lastScrollY = currentY
+        lastScrollSource = sourceId
+
         val action = RecordedAction(
             stepOrder = recorder.getNextStep(),
             actionType = actionType,
@@ -124,7 +139,7 @@ class TpingAccessibilityService : AccessibilityService() {
             delayAfterMs = recorder.getTimeSinceLastAction()
         )
         recorder.addAction(action)
-        Log.d(TAG, "REC SCROLL: $actionType")
+        Log.d(TAG, "REC SCROLL: $actionType (scrollY=$currentY)")
     }
 
     private fun recordTextEvent(event: AccessibilityEvent) {
@@ -254,10 +269,13 @@ class TpingAccessibilityService : AccessibilityService() {
             }
             targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
             safeRecycle(targetNode)
+            callback()
         } else {
+            // Fallback: click coordinates then set text on focused node
             clickAtCoordinates(action) {
                 try {
-                    val focused = rootNode.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                    val freshRoot = rootInActiveWindow
+                    val focused = freshRoot?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
                     if (focused != null) {
                         val args = Bundle().apply {
                             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
@@ -266,9 +284,9 @@ class TpingAccessibilityService : AccessibilityService() {
                         safeRecycle(focused)
                     }
                 } catch (_: Exception) {}
+                callback()
             }
         }
-        callback()
     }
 
     private fun findNodeByBounds(root: AccessibilityNodeInfo, action: RecordedAction): AccessibilityNodeInfo? {
