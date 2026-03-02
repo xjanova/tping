@@ -16,6 +16,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -39,12 +41,16 @@ jobs:
             -storepass android -keypass android \
             -dname "CN=Xman Studio, OU=Dev, O=Xman Studio, L=Bangkok, S=BKK, C=TH"
 
-      - name: Set version from build number
+      - name: Set version from release count
         run: |
-          BUILD_NUM=${{ github.run_number }}
+          # Count existing release tags to get sequential build number
+          EXISTING=$(git tag --list 'v*-build.*' | wc -l)
+          BUILD_NUM=$((EXISTING + 1))
           BASE_VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | grep -oP '"\K[^"]+')
           echo "VERSION=${BASE_VERSION}" >> $GITHUB_ENV
+          echo "BUILD_NUM=${BUILD_NUM}" >> $GITHUB_ENV
           echo "FULL_VERSION=${BASE_VERSION}-build.${BUILD_NUM}" >> $GITHUB_ENV
+          echo "📦 Release #${BUILD_NUM} (${BASE_VERSION})"
           # Update versionCode to build number for unique installs
           sed -i "s/versionCode = 1/versionCode = ${BUILD_NUM}/" app/build.gradle.kts
 
@@ -82,12 +88,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ env.FULL_VERSION }}
-          name: "Tping v${{ env.VERSION }} (Build #${{ github.run_number }})"
+          name: "Tping v${{ env.VERSION }} (Build #${{ env.BUILD_NUM }})"
           body: |
             ## Tping Auto Typing App
             **by Xman Studio**
 
-            Version: `${{ env.VERSION }}` | Build: `#${{ github.run_number }}` | versionCode: `${{ github.run_number }}`
+            Version: `${{ env.VERSION }}` | Build: `#${{ env.BUILD_NUM }}` | versionCode: `${{ env.BUILD_NUM }}`
 
             ### Downloads
             - **Release APK** - ติดตั้งได้เลย (signed) สำหรับใช้งานจริง
@@ -97,9 +103,10 @@ jobs:
             - บันทึกขั้นตอนการกรอกข้อมูล (Learning Mode)
             - เล่นซ้ำอัตโนมัติ (Auto Playback) พร้อมวนลูป
             - จัดเก็บข้อมูลหลายชุด + ผูกกับช่องกรอก (Tag Data)
-            - หน้าต่างลอยแสดงสถานะ (Floating Overlay)
+            - หน้าต่างลอย Control Center (บันทึก + เล่น + เลือก Workflow)
             - ระบุตำแหน่ง 3 ชั้น (Resource ID -> Text -> Coordinates)
             - รองรับ: Click, Long Click, Text Input, Scroll, Back
+            - Target App Binding + Auto Launch
 
             ### Install
             1. ดาวน์โหลด Release APK
