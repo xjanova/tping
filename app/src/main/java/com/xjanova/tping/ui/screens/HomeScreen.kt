@@ -26,11 +26,13 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.service.TpingAccessibilityService
 import com.xjanova.tping.ui.viewmodel.MainViewModel
 import com.xjanova.tping.util.PermissionHelper
@@ -206,6 +208,64 @@ fun HomeScreen(
                                     )
                                 }
                             }
+                        }
+                    }
+                }
+            }
+
+            // ===== Start Overlay Button =====
+            item {
+                val allGranted = isAccessibilityEnabled && hasOverlayPermission
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(20.dp),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                    colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(
+                                Brush.horizontalGradient(
+                                    if (allGranted) listOf(Color(0xFF6750A4), Color(0xFF8B5CF6))
+                                    else listOf(Color(0xFF666666), Color(0xFF888888))
+                                )
+                            )
+                            .clickable {
+                                if (!isAccessibilityEnabled) {
+                                    PermissionHelper.openAccessibilitySettings(context)
+                                } else if (!hasOverlayPermission) {
+                                    PermissionHelper.openOverlaySettings(context)
+                                } else {
+                                    val intent = Intent(context, FloatingOverlayService::class.java)
+                                    intent.putExtra("mode", "idle")
+                                    context.startForegroundService(intent)
+                                }
+                            }
+                            .padding(vertical = 20.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Icon(
+                                Icons.Default.Widgets,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(40.dp)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                if (allGranted) "เปิดปุ่มลอย" else "ต้องเปิดสิทธิ์ก่อน",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp
+                            )
+                            Text(
+                                if (allGranted) "แตะเพื่อเปิด Overlay แล้วสลับไปเกม/แอพได้เลย"
+                                else "กดเพื่อไปเปิด Accessibility + Overlay",
+                                color = Color.White.copy(alpha = 0.8f),
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
                         }
                     }
                 }
@@ -401,7 +461,7 @@ fun HomeScreen(
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center
+                    textAlign = TextAlign.Center
                 )
             }
         }

@@ -51,49 +51,50 @@ fun FloatingOverlayContent(
     onToggleExpand: () -> Unit,
     onClose: () -> Unit
 ) {
-    if (!state.isExpanded) {
-        MiniOverlay(mode = state.mode, step = state.currentStep, onClick = onToggleExpand)
-    } else {
-        ExpandedOverlay(
-            state = state,
-            onStartRecord = onStartRecord,
-            onStopRecord = onStopRecord,
-            onShowTagDialog = onShowTagDialog,
-            onShowPlayDialog = onShowPlayDialog,
-            onPause = onPause,
-            onResume = onResume,
-            onStop = onStop,
-            onMinimize = onToggleExpand,
-            onClose = onClose
-        )
-    }
-
-    // Tag Data Dialog
-    if (state.showTagDialog) {
-        TagDataDialog(
-            suggestion = state.suggestedFieldName,
-            onConfirm = { fieldKey -> onTagData(fieldKey) },
-            onDismiss = onDismissTagDialog
-        )
-    }
-
-    // Save Workflow Dialog (after recording)
-    if (state.showSaveDialog) {
-        SaveWorkflowDialog(
-            suggestedName = state.suggestedWorkflowName,
-            onSave = onSaveRecording,
-            onDismiss = onDismissSaveDialog
-        )
-    }
-
-    // Play Selection Dialog
-    if (state.showPlayDialog) {
-        PlaySelectDialog(
-            workflows = state.workflowItems,
-            profiles = state.profileItems,
-            onStart = onStartPlayback,
-            onDismiss = onDismissPlayDialog
-        )
+    Column {
+        if (!state.isExpanded) {
+            MiniOverlay(mode = state.mode, step = state.currentStep, onClick = onToggleExpand)
+        } else {
+            // Show dialog OR main panel (not both overlapping)
+            when {
+                state.showTagDialog -> {
+                    TagDataDialog(
+                        suggestion = state.suggestedFieldName,
+                        onConfirm = { fieldKey -> onTagData(fieldKey) },
+                        onDismiss = onDismissTagDialog
+                    )
+                }
+                state.showSaveDialog -> {
+                    SaveWorkflowDialog(
+                        suggestedName = state.suggestedWorkflowName,
+                        onSave = onSaveRecording,
+                        onDismiss = onDismissSaveDialog
+                    )
+                }
+                state.showPlayDialog -> {
+                    PlaySelectDialog(
+                        workflows = state.workflowItems,
+                        profiles = state.profileItems,
+                        onStart = onStartPlayback,
+                        onDismiss = onDismissPlayDialog
+                    )
+                }
+                else -> {
+                    ExpandedOverlay(
+                        state = state,
+                        onStartRecord = onStartRecord,
+                        onStopRecord = onStopRecord,
+                        onShowTagDialog = onShowTagDialog,
+                        onShowPlayDialog = onShowPlayDialog,
+                        onPause = onPause,
+                        onResume = onResume,
+                        onStop = onStop,
+                        onMinimize = onToggleExpand,
+                        onClose = onClose
+                    )
+                }
+            }
+        }
     }
 }
 

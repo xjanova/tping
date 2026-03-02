@@ -261,7 +261,13 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     // ====== Recording Controls ======
 
     private fun startRecording() {
-        val service = TpingAccessibilityService.instance ?: return
+        val service = TpingAccessibilityService.instance
+        if (service == null) {
+            _overlayState.value = _overlayState.value.copy(
+                statusText = "⚠ เปิด Accessibility ก่อน! (กลับไปแอพ Tping)"
+            )
+            return
+        }
         service.getRecorder().startRecording()
         TpingAccessibilityService.setRecording(true)
         _overlayState.value = _overlayState.value.copy(
@@ -343,6 +349,14 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     // ====== Playback from Overlay ======
 
     private fun startPlaybackFromOverlay(workflowId: Long, profileId: Long?, loops: Int) {
+        if (TpingAccessibilityService.instance == null) {
+            _overlayState.value = _overlayState.value.copy(
+                showPlayDialog = false,
+                statusText = "⚠ เปิด Accessibility ก่อน! (กลับไปแอพ Tping)"
+            )
+            setOverlayFocusable(false)
+            return
+        }
         _overlayState.value = _overlayState.value.copy(showPlayDialog = false, mode = "playing", statusText = "กำลังเตรียม...")
         setOverlayFocusable(false)
         serviceScope.launch {
