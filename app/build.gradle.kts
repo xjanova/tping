@@ -21,9 +21,29 @@ android {
         }
     }
 
+    signingConfigs {
+        create("release") {
+            // Use environment variables from CI, fallback to debug keystore for local builds
+            val ksFile = System.getenv("KEYSTORE_FILE")
+            if (ksFile != null && File(ksFile).exists()) {
+                storeFile = File(ksFile)
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
+                keyAlias = System.getenv("KEY_ALIAS") ?: ""
+                keyPassword = System.getenv("KEY_PASSWORD") ?: ""
+            } else {
+                // Fallback: use debug keystore so APK is always signed & installable
+                storeFile = File(System.getProperty("user.home"), ".android/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"

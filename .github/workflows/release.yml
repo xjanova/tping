@@ -48,7 +48,12 @@ jobs:
         run: |
           mkdir -p release-output
           cp app/build/outputs/apk/debug/app-debug.apk release-output/Tping-v${{ env.VERSION }}-debug.apk
-          cp app/build/outputs/apk/release/app-release-unsigned.apk release-output/Tping-v${{ env.VERSION }}-release.apk
+          # Release APK is now signed (not unsigned)
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk release-output/Tping-v${{ env.VERSION }}-release.apk
+          else
+            cp app/build/outputs/apk/release/app-release-unsigned.apk release-output/Tping-v${{ env.VERSION }}-release.apk
+          fi
 
       - name: Upload Debug APK
         uses: actions/upload-artifact@v4
@@ -75,8 +80,8 @@ jobs:
             Version: `${{ env.VERSION }}` | Build: `#${{ github.run_number }}` | versionCode: `${{ github.run_number }}`
 
             ### Downloads
-            - **Debug APK** - ติดตั้งได้เลย สำหรับทดสอบ
-            - **Release APK** - สำหรับใช้งานจริง
+            - **Release APK** - ติดตั้งได้เลย (signed) สำหรับใช้งานจริง
+            - **Debug APK** - สำหรับทดสอบ/นักพัฒนา
 
             ### Features
             - บันทึกขั้นตอนการกรอกข้อมูล (Learning Mode)
@@ -87,7 +92,7 @@ jobs:
             - รองรับ: Click, Long Click, Text Input, Scroll, Back
 
             ### Install
-            1. ดาวน์โหลด Debug APK (ใช้ได้เลย)
+            1. ดาวน์โหลด Release APK
             2. เปิดไฟล์ติดตั้ง (อนุญาตจากแหล่งที่ไม่รู้จัก)
             3. เปิด Accessibility Service ในตั้งค่า
             4. เปิด Overlay Permission
