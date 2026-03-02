@@ -64,6 +64,7 @@ fun FloatingOverlayContent(
     // Tag Data Dialog
     if (state.showTagDialog) {
         TagDataDialog(
+            suggestion = state.suggestedFieldName,
             onConfirm = { fieldKey -> onTagData(fieldKey) },
             onDismiss = onDismissTagDialog
         )
@@ -120,8 +121,9 @@ fun ExpandedOverlay(
         else -> PrimaryColor
     }
 
+    val appLabel = if (state.targetAppName.isNotEmpty()) " ${state.targetAppName}" else ""
     val headerText = when (state.mode) {
-        "recording" -> "● REC  Step: ${state.stepCount}"
+        "recording" -> "● REC$appLabel [${state.stepCount}]"
         "playing" -> "▶ PLAY  ${state.currentStep}/${state.totalSteps}"
         "paused" -> "⏸ PAUSED"
         else -> "⌨ Tping"
@@ -247,11 +249,15 @@ fun OverlayButton(icon: ImageVector, label: String, color: Color, onClick: () ->
 }
 
 @Composable
-fun TagDataDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
-    var fieldKey by remember { mutableStateOf("") }
+fun TagDataDialog(
+    suggestion: String = "",
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var fieldKey by remember { mutableStateOf(suggestion) }
 
     Card(
-        modifier = Modifier.width(240.dp).padding(8.dp),
+        modifier = Modifier.width(250.dp).padding(8.dp),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xF5222222)),
         elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
@@ -260,6 +266,27 @@ fun TagDataDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
             Text("ผูกข้อมูลกับช่องนี้", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
             Spacer(modifier = Modifier.height(4.dp))
             Text("ใส่ชื่อ Key ที่ตรงกับข้อมูลที่ตั้งไว้", color = Color(0xFF999999), fontSize = 11.sp)
+
+            // Smart suggestion chip
+            if (suggestion.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(TagColor.copy(alpha = 0.2f))
+                        .clickable { fieldKey = suggestion }
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Icon(
+                        Icons.Default.AutoAwesome, "Suggest",
+                        tint = TagColor, modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("แนะนำ: $suggestion", color = TagColor, fontSize = 11.sp)
+                }
+            }
+
             Spacer(modifier = Modifier.height(12.dp))
 
             OutlinedTextField(

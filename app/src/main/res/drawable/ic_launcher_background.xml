@@ -4,7 +4,24 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#6750A4"
-        android:pathData="M0,0h108v108H0z" />
+
+    <!-- Purple-to-blue gradient background -->
+    <group>
+        <!-- Base purple -->
+        <path
+            android:fillColor="#6750A4"
+            android:pathData="M0,0h108v108H0z" />
+
+        <!-- Blue overlay for gradient effect (bottom-right) -->
+        <path
+            android:fillColor="#3B82F6"
+            android:fillAlpha="0.45"
+            android:pathData="M108,0 L108,108 L0,108 Z" />
+
+        <!-- Subtle lighter accent (top-left) -->
+        <path
+            android:fillColor="#9575CD"
+            android:fillAlpha="0.3"
+            android:pathData="M0,0 L108,0 L0,108 Z" />
+    </group>
 </vector>

@@ -8,6 +8,7 @@ data class Workflow(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
     val targetAppPackage: String = "",
+    val targetAppName: String = "",
     val stepsJson: String = "[]", // JSON array of RecordedAction
     val createdAt: Long = System.currentTimeMillis()
 )

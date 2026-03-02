@@ -4,17 +4,48 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#6750A4"
-        android:pathData="M0,0h108v108H0z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M34,40h40v4H34zM34,50h30v4H34zM34,60h35v4H34z"
-        android:strokeWidth="0" />
+
+    <!-- Stylized "T" letter - main body -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M65,55l10,10l-3,3l-10,-10z" />
+        android:pathData="M32,34 L76,34 L76,42 L58,42 L58,76 L50,76 L50,42 L32,42 Z" />
+
+    <!-- Typing cursor (blinking line) -->
     <path
         android:fillColor="#FFFFFF"
-        android:pathData="M73,68a3,3 0,1 1,-6,0a3,3 0,1 1,6,0z" />
+        android:fillAlpha="0.95"
+        android:pathData="M62,52 L65,52 L65,76 L62,76 Z" />
+
+    <!-- Speed line 1 (top) -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeAlpha="0.7"
+        android:pathData="M72,44 L82,44" />
+
+    <!-- Speed line 2 (middle) -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeAlpha="0.5"
+        android:pathData="M70,52 L84,52" />
+
+    <!-- Speed line 3 (bottom) -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="2"
+        android:strokeAlpha="0.35"
+        android:pathData="M72,60 L80,60" />
+
+    <!-- Small dot accent -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.6"
+        android:pathData="M28,48a2,2 0,1 1,-4,0a2,2 0,1 1,4,0z" />
+
+    <!-- Subtle underline accent -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:fillAlpha="0.4"
+        android:pathData="M38,80 L70,80 L70,82 L38,82 Z" />
 </vector>

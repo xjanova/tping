@@ -28,6 +28,7 @@ import com.xjanova.tping.R
 import com.xjanova.tping.TpingApplication
 import com.xjanova.tping.recorder.PlaybackEngine
 import com.xjanova.tping.service.TpingAccessibilityService
+import com.xjanova.tping.util.AppResolver
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -145,7 +146,12 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     onStartRecord = { startRecording() },
                     onStopRecord = { stopRecording() },
                     onTagData = { fieldKey -> tagDataField(fieldKey) },
-                    onShowTagDialog = { setOverlayFocusable(true); _overlayState.value = _overlayState.value.copy(showTagDialog = true) },
+                    onShowTagDialog = {
+                        setOverlayFocusable(true)
+                        // Compute smart field suggestion from last action
+                        val suggestion = computeFieldSuggestion()
+                        _overlayState.value = _overlayState.value.copy(showTagDialog = true, suggestedFieldName = suggestion)
+                    },
                     onDismissTagDialog = { _overlayState.value = _overlayState.value.copy(showTagDialog = false); setOverlayFocusable(false) },
                     onPlay = { /* Play is started from main UI */ },
                     onPause = { pausePlayback() },
@@ -209,13 +215,26 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         service.getRecorder().startRecording()
         TpingAccessibilityService.setRecording(true)
         _overlayState.value = _overlayState.value.copy(
-            mode = "recording", stepCount = 0, statusText = "กำลังบันทึก..."
+            mode = "recording", stepCount = 0, statusText = "กำลังบันทึก...",
+            targetAppName = ""
         )
-        // Observe recording step count in real-time
+        // Observe recording step count in real-time + resolve target app name
         recordingObserverJob?.cancel()
         recordingObserverJob = serviceScope.launch {
             service.getRecorder().actionCount.collect { count ->
-                _overlayState.value = _overlayState.value.copy(stepCount = count)
+                val currentState = _overlayState.value
+                // Resolve target app name from first recorded action
+                val appName = if (currentState.targetAppName.isEmpty() && count > 0) {
+                    val actions = service.getRecorder().getActions()
+                    val pkg = actions.firstOrNull()?.packageName ?: ""
+                    if (pkg.isNotEmpty()) AppResolver.getAppName(this@FloatingOverlayService, pkg) else ""
+                } else {
+                    currentState.targetAppName
+                }
+                _overlayState.value = currentState.copy(
+                    stepCount = count,
+                    targetAppName = appName
+                )
             }
         }
     }
@@ -240,6 +259,17 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             statusText = "ผูกข้อมูล: $fieldKey"
         )
         setOverlayFocusable(false)
+    }
+
+    private fun computeFieldSuggestion(): String {
+        val service = TpingAccessibilityService.instance ?: return ""
+        val actions = service.getRecorder().getActions()
+        val lastAction = actions.lastOrNull() ?: return ""
+        return AppResolver.suggestFieldName(
+            resourceId = lastAction.resourceId,
+            hintText = lastAction.hintText,
+            contentDescription = lastAction.contentDescription
+        )
     }
 
     // ====== Playback Controls (connected to actual PlaybackEngine) ======
@@ -318,5 +348,7 @@ data class OverlayState(
     val totalLoops: Int = 0,
     val progress: Float = 0f,
     val showTagDialog: Boolean = false,
-    val recordingDone: Boolean = false
+    val recordingDone: Boolean = false,
+    val targetAppName: String = "",
+    val suggestedFieldName: String = ""
 )

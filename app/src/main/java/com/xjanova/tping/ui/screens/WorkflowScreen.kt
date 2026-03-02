@@ -151,6 +151,7 @@ fun WorkflowScreen(
                     WorkflowCard(
                         workflow = workflow,
                         actions = viewModel.getActionsFromWorkflow(workflow),
+                        appName = viewModel.resolveAppName(workflow),
                         onDelete = { viewModel.deleteWorkflow(workflow) }
                     )
                 }
@@ -158,20 +159,61 @@ fun WorkflowScreen(
         }
     }
 
-    // Save Dialog
+    // Save Dialog with auto-suggest name
     if (showSaveDialog) {
-        var workflowName by remember { mutableStateOf("") }
+        val suggestedName = remember { viewModel.suggestWorkflowName() }
+        var workflowName by remember { mutableStateOf(suggestedName) }
+
+        // Get target app info for display
+        val targetAppName = remember {
+            val service = TpingAccessibilityService.instance
+            val actions = service?.getRecorder()?.getActions() ?: emptyList()
+            val pkg = actions.firstOrNull()?.packageName ?: ""
+            if (pkg.isNotEmpty()) com.xjanova.tping.util.AppResolver.getAppName(context, pkg) else ""
+        }
+
         AlertDialog(
             onDismissRequest = { showSaveDialog = false },
             title = { Text("บันทึก Workflow") },
             text = {
-                OutlinedTextField(
-                    value = workflowName,
-                    onValueChange = { workflowName = it },
-                    label = { Text("ชื่อ Workflow") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
-                )
+                Column {
+                    // Show target app info
+                    if (targetAppName.isNotEmpty()) {
+                        Card(
+                            colors = CardDefaults.cardColors(
+                                containerColor = Color(0xFF3B82F6).copy(alpha = 0.1f)
+                            ),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(
+                                    Icons.Default.Apps,
+                                    contentDescription = null,
+                                    tint = Color(0xFF3B82F6),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    "แอพเป้าหมาย: $targetAppName",
+                                    fontSize = 13.sp,
+                                    color = Color(0xFF3B82F6)
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                    }
+
+                    OutlinedTextField(
+                        value = workflowName,
+                        onValueChange = { workflowName = it },
+                        label = { Text("ชื่อ Workflow") },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+                }
             },
             confirmButton = {
                 Button(onClick = {
@@ -196,6 +238,7 @@ fun WorkflowScreen(
 fun WorkflowCard(
     workflow: Workflow,
     actions: List<RecordedAction>,
+    appName: String = "",
     onDelete: () -> Unit
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -213,11 +256,32 @@ fun WorkflowCard(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(workflow.name, fontWeight = FontWeight.Bold)
-                    Text(
-                        "${actions.size} ขั้นตอน | ${workflow.targetAppPackage.substringAfterLast(".")}",
-                        fontSize = 12.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                    )
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "${actions.size} ขั้นตอน",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                        if (appName.isNotEmpty()) {
+                            Text(
+                                " | ",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                            )
+                            Icon(
+                                Icons.Default.Apps,
+                                contentDescription = null,
+                                tint = Color(0xFF3B82F6),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(2.dp))
+                            Text(
+                                appName,
+                                fontSize = 12.sp,
+                                color = Color(0xFF3B82F6)
+                            )
+                        }
+                    }
                 }
                 Row {
                     IconButton(

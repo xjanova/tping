@@ -20,7 +20,9 @@ data class RecordedAction(
     // Timing
     val delayAfterMs: Long = 500,
     // Extra
-    val packageName: String = ""
+    val packageName: String = "",
+    // Smart field detection
+    val hintText: String = ""      // hint text from the input field for auto-suggesting field names
 )
 
 enum class ActionType {

@@ -81,7 +81,8 @@ class ActionRecorder {
                     boundsBottom = bounds.bottom,
                     inputText = text,
                     packageName = packageName,
-                    delayAfterMs = getTimeSinceLastAction()
+                    delayAfterMs = getTimeSinceLastAction(),
+                    hintText = source.hintText?.toString() ?: ""
                 )
                 actions.add(action)
                 _actionCount.value = actions.size

@@ -83,7 +83,8 @@ class TpingAccessibilityService : AccessibilityService() {
             boundsLeft = bounds.left, boundsTop = bounds.top,
             boundsRight = bounds.right, boundsBottom = bounds.bottom,
             packageName = event.packageName?.toString() ?: "",
-            delayAfterMs = recorder.getTimeSinceLastAction()
+            delayAfterMs = recorder.getTimeSinceLastAction(),
+            hintText = source.hintText?.toString() ?: ""
         )
         recorder.addAction(action)
         Log.d(TAG, "REC CLICK: ${action.resourceId.ifEmpty { action.text }} bounds=$bounds")
@@ -105,7 +106,8 @@ class TpingAccessibilityService : AccessibilityService() {
             boundsLeft = bounds.left, boundsTop = bounds.top,
             boundsRight = bounds.right, boundsBottom = bounds.bottom,
             packageName = event.packageName?.toString() ?: "",
-            delayAfterMs = recorder.getTimeSinceLastAction()
+            delayAfterMs = recorder.getTimeSinceLastAction(),
+            hintText = source.hintText?.toString() ?: ""
         )
         recorder.addAction(action)
         Log.d(TAG, "REC LONG_CLICK: ${action.resourceId}")

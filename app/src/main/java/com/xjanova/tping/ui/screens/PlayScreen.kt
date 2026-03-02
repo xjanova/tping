@@ -19,7 +19,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xjanova.tping.overlay.FloatingOverlayService
-import com.xjanova.tping.recorder.PlaybackEngine
 import com.xjanova.tping.service.TpingAccessibilityService
 import com.xjanova.tping.ui.viewmodel.MainViewModel
 
@@ -36,6 +35,13 @@ fun PlayScreen(
     val selectedProfileId by viewModel.selectedProfileId.collectAsState()
     val loopCount by viewModel.loopCount.collectAsState()
     val playbackState by viewModel.playbackEngine.state.collectAsState()
+    val launchStatus by viewModel.launchStatus.collectAsState()
+
+    // Get target app info of selected workflow
+    val selectedWorkflow = workflows.find { it.id == selectedWorkflowId }
+    val targetAppName = remember(selectedWorkflowId) {
+        selectedWorkflow?.let { viewModel.resolveAppName(it) } ?: ""
+    }
 
     Scaffold(
         topBar = {
@@ -74,6 +80,7 @@ fun PlayScreen(
             } else {
                 items(workflows) { workflow ->
                     val isSelected = selectedWorkflowId == workflow.id
+                    val wfAppName = viewModel.resolveAppName(workflow)
                     Card(
                         onClick = { viewModel.selectWorkflow(workflow.id) },
                         modifier = Modifier.fillMaxWidth(),
@@ -97,14 +104,92 @@ fun PlayScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                             }
-                            Column {
+                            Column(modifier = Modifier.weight(1f)) {
                                 Text(workflow.name, fontWeight = FontWeight.Medium)
-                                Text(
-                                    "${viewModel.getActionsFromWorkflow(workflow).size} ขั้นตอน",
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                                )
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        "${viewModel.getActionsFromWorkflow(workflow).size} ขั้นตอน",
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                    )
+                                    if (wfAppName.isNotEmpty()) {
+                                        Text(
+                                            " | ",
+                                            fontSize = 12.sp,
+                                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                                        )
+                                        Icon(
+                                            Icons.Default.Apps,
+                                            contentDescription = null,
+                                            tint = Color(0xFF3B82F6),
+                                            modifier = Modifier.size(13.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(2.dp))
+                                        Text(
+                                            wfAppName,
+                                            fontSize = 12.sp,
+                                            color = Color(0xFF3B82F6)
+                                        )
+                                    }
+                                }
                             }
+                        }
+                    }
+                }
+            }
+
+            // Auto-launch indicator
+            if (targetAppName.isNotEmpty() && selectedWorkflowId != null) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFF3B82F6).copy(alpha = 0.1f)
+                        ),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.RocketLaunch,
+                                contentDescription = null,
+                                tint = Color(0xFF3B82F6),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "จะเปิด $targetAppName อัตโนมัติเมื่อกดเล่น",
+                                fontSize = 13.sp,
+                                color = Color(0xFF3B82F6),
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Launch status
+            if (launchStatus.isNotEmpty()) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFFF59E0B).copy(alpha = 0.15f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Color(0xFFF59E0B)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(launchStatus, fontSize = 13.sp)
                         }
                     }
                 }
@@ -233,7 +318,7 @@ fun PlayScreen(
                                 val intent = Intent(context, FloatingOverlayService::class.java)
                                 intent.putExtra("mode", "playing")
                                 context.startForegroundService(intent)
-                                // Start playback
+                                // Start playback (auto-launches target app)
                                 viewModel.startPlayback()
                             }
                         },

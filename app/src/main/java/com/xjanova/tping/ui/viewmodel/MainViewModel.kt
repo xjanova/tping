@@ -9,6 +9,8 @@ import com.xjanova.tping.TpingApplication
 import com.xjanova.tping.data.entity.*
 import com.xjanova.tping.recorder.PlaybackEngine
 import com.xjanova.tping.service.TpingAccessibilityService
+import com.xjanova.tping.util.AppResolver
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 
@@ -38,6 +40,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // Loop count
     private val _loopCount = MutableStateFlow(1)
     val loopCount: StateFlow<Int> = _loopCount
+
+    // Launch status
+    private val _launchStatus = MutableStateFlow("")
+    val launchStatus: StateFlow<String> = _launchStatus
 
     fun setLoopCount(count: Int) {
         _loopCount.value = count.coerceIn(1, 999)
@@ -106,7 +112,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _selectedWorkflowId.value = id
     }
 
-    // ====== Playback ======
+    // ====== Playback with Auto-Launch ======
 
     fun startPlayback() {
         val workflowId = _selectedWorkflowId.value ?: return
@@ -122,6 +128,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 emptyList()
             }
+
+            // Auto-launch target app if specified
+            val targetPkg = workflow.targetAppPackage
+            if (targetPkg.isNotEmpty()) {
+                val appName = AppResolver.getAppName(getApplication(), targetPkg)
+                _launchStatus.value = "กำลังเปิด $appName..."
+
+                val launched = AppResolver.launchApp(getApplication(), targetPkg)
+                if (launched) {
+                    // Wait for app to come to foreground
+                    delay(1500)
+                    var ready = false
+                    for (i in 0 until 15) { // poll up to ~4.5 seconds
+                        val service = TpingAccessibilityService.instance
+                        val currentPkg = try {
+                            service?.rootInActiveWindow?.packageName?.toString() ?: ""
+                        } catch (_: Exception) { "" }
+                        if (currentPkg == targetPkg) {
+                            ready = true
+                            break
+                        }
+                        delay(300)
+                    }
+                    _launchStatus.value = if (ready) "เปิด $appName แล้ว" else "รอ $appName..."
+                    delay(500)
+                } else {
+                    _launchStatus.value = "ไม่สามารถเปิด $appName"
+                    delay(1000)
+                }
+            }
+            _launchStatus.value = ""
 
             playbackEngine.play(
                 actions = actions,
@@ -143,20 +180,53 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val actions = service.getRecorder().getActions()
         if (actions.isEmpty()) return
 
+        val targetPkg = actions.firstOrNull()?.packageName ?: ""
+        val targetAppName = if (targetPkg.isNotEmpty()) {
+            AppResolver.getAppName(getApplication(), targetPkg)
+        } else ""
+
         viewModelScope.launch {
             val json = gson.toJson(actions)
             workflowDao.insert(
                 Workflow(
                     name = name,
                     stepsJson = json,
-                    targetAppPackage = actions.firstOrNull()?.packageName ?: ""
+                    targetAppPackage = targetPkg,
+                    targetAppName = targetAppName
                 )
             )
         }
     }
 
+    /**
+     * Suggest a workflow name based on the target app being recorded.
+     */
+    fun suggestWorkflowName(): String {
+        val service = TpingAccessibilityService.instance ?: return ""
+        val actions = service.getRecorder().getActions()
+        val targetPkg = actions.firstOrNull()?.packageName ?: return ""
+        if (targetPkg.isEmpty()) return ""
+        val appName = AppResolver.getAppName(getApplication(), targetPkg)
+        if (appName.isEmpty()) return ""
+
+        // Check for duplicates
+        val existing = workflows.value.count { it.targetAppName == appName || it.name.startsWith(appName) }
+        return if (existing > 0) "$appName #${existing + 1}" else appName
+    }
+
     fun tagLastActionAsData(fieldKey: String) {
         val service = TpingAccessibilityService.instance ?: return
         service.getRecorder().tagLastActionAsDataField(fieldKey)
+    }
+
+    /**
+     * Resolve app name for a given workflow (for display).
+     */
+    fun resolveAppName(workflow: Workflow): String {
+        if (workflow.targetAppName.isNotEmpty()) return workflow.targetAppName
+        if (workflow.targetAppPackage.isNotEmpty()) {
+            return AppResolver.getAppName(getApplication(), workflow.targetAppPackage)
+        }
+        return ""
     }
 }
