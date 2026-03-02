@@ -23,9 +23,14 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import com.google.gson.Gson
+import com.google.gson.reflect.TypeToken
 import com.xjanova.tping.MainActivity
 import com.xjanova.tping.R
 import com.xjanova.tping.TpingApplication
+import com.xjanova.tping.data.entity.DataField
+import com.xjanova.tping.data.entity.RecordedAction
+import com.xjanova.tping.data.entity.Workflow
 import com.xjanova.tping.recorder.PlaybackEngine
 import com.xjanova.tping.service.TpingAccessibilityService
 import com.xjanova.tping.util.AppResolver
@@ -33,6 +38,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -53,16 +59,15 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var playbackObserverJob: Job? = null
     private var recordingObserverJob: Job? = null
+    private val gson = Gson()
 
     companion object {
         var instance: FloatingOverlayService? = null
             private set
 
-        // Reactive state - Compose will auto-recompose when these change
         private val _overlayState = MutableStateFlow(OverlayState())
         val overlayState: StateFlow<OverlayState> = _overlayState
 
-        // Shared playback engine (set by ViewModel)
         var playbackEngine: PlaybackEngine? = null
     }
 
@@ -73,6 +78,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_CREATE)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_START)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_RESUME)
+        loadWorkflowsAndProfiles()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -80,12 +86,41 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         _overlayState.value = _overlayState.value.copy(mode = mode)
         startForeground(1, createNotification())
         showOverlay()
-
-        // Observe PlaybackEngine state when in playing mode
         if (mode == "playing") {
             observePlaybackState()
         }
         return START_STICKY
+    }
+
+    // ====== Load workflows/profiles for play dialog ======
+
+    private fun loadWorkflowsAndProfiles() {
+        serviceScope.launch {
+            try {
+                val db = (application as TpingApplication).database
+                launch {
+                    db.workflowDao().getAll().collect { workflows ->
+                        val items = workflows.map { wf ->
+                            val appName = wf.targetAppName.ifEmpty {
+                                if (wf.targetAppPackage.isNotEmpty()) AppResolver.getAppName(this@FloatingOverlayService, wf.targetAppPackage) else ""
+                            }
+                            val stepCount = try {
+                                val type = object : TypeToken<List<RecordedAction>>() {}.type
+                                (gson.fromJson<List<RecordedAction>>(wf.stepsJson, type))?.size ?: 0
+                            } catch (_: Exception) { 0 }
+                            WorkflowItem(wf.id, wf.name, appName, stepCount)
+                        }
+                        _overlayState.value = _overlayState.value.copy(workflowItems = items)
+                    }
+                }
+                launch {
+                    db.dataProfileDao().getAll().collect { profiles ->
+                        val items = profiles.map { ProfileItem(it.id, it.name) }
+                        _overlayState.value = _overlayState.value.copy(profileItems = items)
+                    }
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     private fun observePlaybackState() {
@@ -145,15 +180,33 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     state = state,
                     onStartRecord = { startRecording() },
                     onStopRecord = { stopRecording() },
+                    onSaveRecording = { name -> saveRecordingFromOverlay(name) },
+                    onDismissSaveDialog = {
+                        _overlayState.value = _overlayState.value.copy(showSaveDialog = false)
+                        setOverlayFocusable(false)
+                    },
                     onTagData = { fieldKey -> tagDataField(fieldKey) },
                     onShowTagDialog = {
                         setOverlayFocusable(true)
-                        // Compute smart field suggestion from last action
                         val suggestion = computeFieldSuggestion()
                         _overlayState.value = _overlayState.value.copy(showTagDialog = true, suggestedFieldName = suggestion)
                     },
-                    onDismissTagDialog = { _overlayState.value = _overlayState.value.copy(showTagDialog = false); setOverlayFocusable(false) },
-                    onPlay = { /* Play is started from main UI */ },
+                    onDismissTagDialog = {
+                        _overlayState.value = _overlayState.value.copy(showTagDialog = false)
+                        setOverlayFocusable(false)
+                    },
+                    onShowPlayDialog = {
+                        setOverlayFocusable(true)
+                        loadWorkflowsAndProfiles()
+                        _overlayState.value = _overlayState.value.copy(showPlayDialog = true)
+                    },
+                    onDismissPlayDialog = {
+                        _overlayState.value = _overlayState.value.copy(showPlayDialog = false)
+                        setOverlayFocusable(false)
+                    },
+                    onStartPlayback = { workflowId, profileId, loops ->
+                        startPlaybackFromOverlay(workflowId, profileId, loops)
+                    },
                     onPause = { pausePlayback() },
                     onResume = { resumePlayback() },
                     onStop = { stopPlayback() },
@@ -162,7 +215,6 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                 )
             }
 
-            // Draggable with movement threshold (>10px = drag, else click)
             var initialX = 0; var initialY = 0
             var initialTouchX = 0f; var initialTouchY = 0f
             var isDragging = false
@@ -196,8 +248,6 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         windowManager?.addView(overlayView, params)
     }
 
-    // ====== Focus toggle for keyboard input in overlay ======
-
     private fun setOverlayFocusable(focusable: Boolean) {
         val params = overlayParams ?: return
         if (focusable) {
@@ -208,7 +258,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         try { windowManager?.updateViewLayout(overlayView, params) } catch (_: Exception) {}
     }
 
-    // ====== Recording Controls (connected to actual service) ======
+    // ====== Recording Controls ======
 
     private fun startRecording() {
         val service = TpingAccessibilityService.instance ?: return
@@ -216,25 +266,18 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         TpingAccessibilityService.setRecording(true)
         _overlayState.value = _overlayState.value.copy(
             mode = "recording", stepCount = 0, statusText = "กำลังบันทึก...",
-            targetAppName = ""
+            targetAppName = "", recordingDone = false
         )
-        // Observe recording step count in real-time + resolve target app name
         recordingObserverJob?.cancel()
         recordingObserverJob = serviceScope.launch {
             service.getRecorder().actionCount.collect { count ->
                 val currentState = _overlayState.value
-                // Resolve target app name from first recorded action
                 val appName = if (currentState.targetAppName.isEmpty() && count > 0) {
                     val actions = service.getRecorder().getActions()
                     val pkg = actions.firstOrNull()?.packageName ?: ""
                     if (pkg.isNotEmpty()) AppResolver.getAppName(this@FloatingOverlayService, pkg) else ""
-                } else {
-                    currentState.targetAppName
-                }
-                _overlayState.value = currentState.copy(
-                    stepCount = count,
-                    targetAppName = appName
-                )
+                } else currentState.targetAppName
+                _overlayState.value = currentState.copy(stepCount = count, targetAppName = appName)
             }
         }
     }
@@ -244,20 +287,49 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         TpingAccessibilityService.setRecording(false)
         val service = TpingAccessibilityService.instance ?: return
         val actions = service.getRecorder().stopRecording()
+        val targetPkg = actions.firstOrNull()?.packageName ?: ""
+        val appName = if (targetPkg.isNotEmpty()) AppResolver.getAppName(this, targetPkg) else ""
+        val suggestedName = appName.ifEmpty { "Workflow" }
         _overlayState.value = _overlayState.value.copy(
             mode = "idle",
-            statusText = "บันทึกแล้ว ${actions.size} ขั้นตอน",
-            recordingDone = true
+            statusText = "บันทึกแล้ว ${actions.size} ขั้นตอน - ตั้งชื่อเพื่อบันทึก",
+            recordingDone = true,
+            showSaveDialog = true,
+            suggestedWorkflowName = suggestedName
         )
+        setOverlayFocusable(true)
+    }
+
+    private fun saveRecordingFromOverlay(name: String) {
+        val service = TpingAccessibilityService.instance ?: return
+        val actions = service.getRecorder().getActions()
+        if (actions.isEmpty()) return
+        val targetPkg = actions.firstOrNull()?.packageName ?: ""
+        val targetAppName = if (targetPkg.isNotEmpty()) AppResolver.getAppName(this, targetPkg) else ""
+
+        serviceScope.launch {
+            try {
+                val db = (application as TpingApplication).database
+                db.workflowDao().insert(
+                    Workflow(name = name, stepsJson = gson.toJson(actions),
+                        targetAppPackage = targetPkg, targetAppName = targetAppName)
+                )
+                _overlayState.value = _overlayState.value.copy(
+                    showSaveDialog = false, recordingDone = false,
+                    statusText = "บันทึก \"$name\" แล้ว!"
+                )
+                setOverlayFocusable(false)
+                service.getRecorder().clear()
+            } catch (_: Exception) {
+                _overlayState.value = _overlayState.value.copy(statusText = "เกิดข้อผิดพลาด")
+            }
+        }
     }
 
     private fun tagDataField(fieldKey: String) {
         val service = TpingAccessibilityService.instance ?: return
         service.getRecorder().tagLastActionAsDataField(fieldKey)
-        _overlayState.value = _overlayState.value.copy(
-            showTagDialog = false,
-            statusText = "ผูกข้อมูล: $fieldKey"
-        )
+        _overlayState.value = _overlayState.value.copy(showTagDialog = false, statusText = "ผูกข้อมูล: $fieldKey")
         setOverlayFocusable(false)
     }
 
@@ -265,52 +337,85 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         val service = TpingAccessibilityService.instance ?: return ""
         val actions = service.getRecorder().getActions()
         val lastAction = actions.lastOrNull() ?: return ""
-        return AppResolver.suggestFieldName(
-            resourceId = lastAction.resourceId,
-            hintText = lastAction.hintText,
-            contentDescription = lastAction.contentDescription
-        )
+        return AppResolver.suggestFieldName(lastAction.resourceId, lastAction.hintText, lastAction.contentDescription)
     }
 
-    // ====== Playback Controls (connected to actual PlaybackEngine) ======
+    // ====== Playback from Overlay ======
+
+    private fun startPlaybackFromOverlay(workflowId: Long, profileId: Long?, loops: Int) {
+        _overlayState.value = _overlayState.value.copy(showPlayDialog = false, mode = "playing", statusText = "กำลังเตรียม...")
+        setOverlayFocusable(false)
+        serviceScope.launch {
+            try {
+                val db = (application as TpingApplication).database
+                val workflow = db.workflowDao().getById(workflowId) ?: return@launch
+                val actions: List<RecordedAction> = try {
+                    val type = object : TypeToken<List<RecordedAction>>() {}.type
+                    gson.fromJson(workflow.stepsJson, type) ?: emptyList()
+                } catch (_: Exception) { emptyList() }
+
+                val dataFields: List<DataField> = if (profileId != null) {
+                    val profile = db.dataProfileDao().getById(profileId)
+                    if (profile != null) try {
+                        val type = object : TypeToken<List<DataField>>() {}.type
+                        gson.fromJson<List<DataField>>(profile.fieldsJson, type) ?: emptyList()
+                    } catch (_: Exception) { emptyList() } else emptyList()
+                } else emptyList()
+
+                // Auto-launch target app
+                val targetPkg = workflow.targetAppPackage
+                if (targetPkg.isNotEmpty()) {
+                    val appName = AppResolver.getAppName(this@FloatingOverlayService, targetPkg)
+                    _overlayState.value = _overlayState.value.copy(statusText = "กำลังเปิด $appName...")
+                    AppResolver.launchApp(this@FloatingOverlayService, targetPkg)
+                    delay(1500)
+                    for (i in 0 until 15) {
+                        val currentPkg = try {
+                            TpingAccessibilityService.instance?.rootInActiveWindow?.packageName?.toString() ?: ""
+                        } catch (_: Exception) { "" }
+                        if (currentPkg == targetPkg) break
+                        delay(300)
+                    }
+                    delay(500)
+                }
+
+                if (playbackEngine == null) playbackEngine = PlaybackEngine()
+                observePlaybackState()
+                playbackEngine?.play(actions = actions, dataFields = dataFields, loopCount = loops, scope = serviceScope)
+            } catch (e: Exception) {
+                _overlayState.value = _overlayState.value.copy(mode = "idle", statusText = "เกิดข้อผิดพลาด")
+            }
+        }
+    }
+
+    // ====== Playback Controls ======
 
     private fun pausePlayback() {
         playbackEngine?.pause()
         _overlayState.value = _overlayState.value.copy(mode = "paused", statusText = "หยุดชั่วคราว")
     }
-
     private fun resumePlayback() {
         playbackEngine?.resume()
         _overlayState.value = _overlayState.value.copy(mode = "playing", statusText = "กำลังเล่นต่อ...")
     }
-
     private fun stopPlayback() {
         playbackEngine?.stop()
         _overlayState.value = _overlayState.value.copy(mode = "idle", statusText = "หยุดแล้ว")
     }
-
     private fun toggleExpand() {
-        val current = _overlayState.value
-        _overlayState.value = current.copy(isExpanded = !current.isExpanded)
+        _overlayState.value = _overlayState.value.copy(isExpanded = !_overlayState.value.isExpanded)
     }
-
-    // Called by PlaybackEngine to update overlay during playback
     fun updatePlaybackState(step: Int, total: Int, desc: String, loop: Int, totalLoops: Int) {
         _overlayState.value = _overlayState.value.copy(
-            mode = "playing",
-            currentStep = step, totalSteps = total,
-            statusText = desc,
-            currentLoop = loop, totalLoops = totalLoops,
+            mode = "playing", currentStep = step, totalSteps = total,
+            statusText = desc, currentLoop = loop, totalLoops = totalLoops,
             progress = if (total > 0) step.toFloat() / total else 0f
         )
     }
 
     private fun createNotification(): Notification {
         val intent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
-            this, 0, intent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
+        val pendingIntent = PendingIntent.getActivity(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         return NotificationCompat.Builder(this, TpingApplication.CHANNEL_ID)
             .setContentTitle("Tping กำลังทำงาน")
             .setContentText("Xman Studio - แตะเพื่อเปิดแอพ")
@@ -330,25 +435,24 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
         overlayView?.let { windowManager?.removeView(it) }
-        overlayView = null
-        overlayParams = null
-        instance = null
+        overlayView = null; overlayParams = null; instance = null
         super.onDestroy()
     }
 }
+
+data class WorkflowItem(val id: Long, val name: String, val appName: String, val stepCount: Int)
+data class ProfileItem(val id: Long, val name: String)
 
 data class OverlayState(
     val mode: String = "idle",
     val isExpanded: Boolean = true,
     val statusText: String = "พร้อมใช้งาน",
-    val currentStep: Int = 0,
-    val totalSteps: Int = 0,
-    val stepCount: Int = 0,
-    val currentLoop: Int = 0,
-    val totalLoops: Int = 0,
-    val progress: Float = 0f,
-    val showTagDialog: Boolean = false,
-    val recordingDone: Boolean = false,
-    val targetAppName: String = "",
-    val suggestedFieldName: String = ""
+    val currentStep: Int = 0, val totalSteps: Int = 0, val stepCount: Int = 0,
+    val currentLoop: Int = 0, val totalLoops: Int = 0, val progress: Float = 0f,
+    val showTagDialog: Boolean = false, val showPlayDialog: Boolean = false,
+    val showSaveDialog: Boolean = false, val recordingDone: Boolean = false,
+    val targetAppName: String = "", val suggestedFieldName: String = "",
+    val suggestedWorkflowName: String = "",
+    val workflowItems: List<WorkflowItem> = emptyList(),
+    val profileItems: List<ProfileItem> = emptyList()
 )

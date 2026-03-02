@@ -6,6 +6,8 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -35,10 +37,14 @@ fun FloatingOverlayContent(
     state: OverlayState,
     onStartRecord: () -> Unit,
     onStopRecord: () -> Unit,
+    onSaveRecording: (String) -> Unit,
+    onDismissSaveDialog: () -> Unit,
     onTagData: (String) -> Unit,
     onShowTagDialog: () -> Unit,
     onDismissTagDialog: () -> Unit,
-    onPlay: () -> Unit,
+    onShowPlayDialog: () -> Unit,
+    onDismissPlayDialog: () -> Unit,
+    onStartPlayback: (Long, Long?, Int) -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onStop: () -> Unit,
@@ -53,6 +59,7 @@ fun FloatingOverlayContent(
             onStartRecord = onStartRecord,
             onStopRecord = onStopRecord,
             onShowTagDialog = onShowTagDialog,
+            onShowPlayDialog = onShowPlayDialog,
             onPause = onPause,
             onResume = onResume,
             onStop = onStop,
@@ -67,6 +74,25 @@ fun FloatingOverlayContent(
             suggestion = state.suggestedFieldName,
             onConfirm = { fieldKey -> onTagData(fieldKey) },
             onDismiss = onDismissTagDialog
+        )
+    }
+
+    // Save Workflow Dialog (after recording)
+    if (state.showSaveDialog) {
+        SaveWorkflowDialog(
+            suggestedName = state.suggestedWorkflowName,
+            onSave = onSaveRecording,
+            onDismiss = onDismissSaveDialog
+        )
+    }
+
+    // Play Selection Dialog
+    if (state.showPlayDialog) {
+        PlaySelectDialog(
+            workflows = state.workflowItems,
+            profiles = state.profileItems,
+            onStart = onStartPlayback,
+            onDismiss = onDismissPlayDialog
         )
     }
 }
@@ -108,6 +134,7 @@ fun ExpandedOverlay(
     onStartRecord: () -> Unit,
     onStopRecord: () -> Unit,
     onShowTagDialog: () -> Unit,
+    onShowPlayDialog: () -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onStop: () -> Unit,
@@ -131,7 +158,7 @@ fun ExpandedOverlay(
 
     Card(
         modifier = Modifier
-            .width(230.dp)
+            .width(240.dp)
             .shadow(12.dp, RoundedCornerShape(16.dp)),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xF5181818)),
@@ -207,6 +234,7 @@ fun ExpandedOverlay(
                 when (state.mode) {
                     "idle" -> {
                         OverlayButton(Icons.Default.FiberManualRecord, "บันทึก", RecordColor, onStartRecord)
+                        OverlayButton(Icons.Default.PlayArrow, "เล่น", PlayColor, onShowPlayDialog)
                     }
                     "recording" -> {
                         OverlayButton(Icons.Default.Label, "Tag", TagColor, onShowTagDialog)
@@ -247,6 +275,235 @@ fun OverlayButton(icon: ImageVector, label: String, color: Color, onClick: () ->
         Text(label, color = Color(0xFFBBBBBB), fontSize = 10.sp)
     }
 }
+
+// ====== Save Workflow Dialog ======
+
+@Composable
+fun SaveWorkflowDialog(
+    suggestedName: String,
+    onSave: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var name by remember { mutableStateOf(suggestedName) }
+
+    Card(
+        modifier = Modifier.width(270.dp).padding(8.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xF5222222)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.Save, null, tint = PlayColor, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("บันทึก Workflow", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("ตั้งชื่อเพื่อเรียกใช้ภายหลัง", color = Color(0xFF999999), fontSize = 11.sp)
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("ชื่อ Workflow", color = Color(0xFF888888)) },
+                placeholder = { Text("เช่น สมัครสมาชิก, Login", color = Color(0xFF555555), fontSize = 12.sp) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color(0xFFCCCCCC),
+                    focusedBorderColor = PlayColor,
+                    unfocusedBorderColor = Color(0xFF444444)
+                )
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onDismiss) {
+                    Text("ทิ้ง", color = Color(0xFF999999))
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = { if (name.isNotBlank()) onSave(name.trim()) },
+                    colors = ButtonDefaults.buttonColors(containerColor = PlayColor),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.Save, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("บันทึก", fontSize = 13.sp)
+                }
+            }
+        }
+    }
+}
+
+// ====== Play Selection Dialog ======
+
+@Composable
+fun PlaySelectDialog(
+    workflows: List<WorkflowItem>,
+    profiles: List<ProfileItem>,
+    onStart: (Long, Long?, Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var selectedWorkflowId by remember { mutableStateOf<Long?>(null) }
+    var selectedProfileId by remember { mutableStateOf<Long?>(null) }
+    var loops by remember { mutableIntStateOf(1) }
+
+    Card(
+        modifier = Modifier.width(280.dp).padding(8.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xF5222222)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            // Header
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.PlayArrow, null, tint = PlayColor, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("เลือก Workflow", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("เลือกขั้นตอนและข้อมูลที่จะใช้", color = Color(0xFF999999), fontSize = 11.sp)
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Workflow list
+            if (workflows.isEmpty()) {
+                Text("ยังไม่มี Workflow", color = Color(0xFF666666), fontSize = 12.sp,
+                    modifier = Modifier.padding(vertical = 8.dp))
+            } else {
+                LazyColumn(modifier = Modifier.heightIn(max = 150.dp)) {
+                    items(workflows) { wf ->
+                        val isSelected = selectedWorkflowId == wf.id
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isSelected) PlayColor.copy(alpha = 0.2f) else Color.Transparent)
+                                .clickable { selectedWorkflowId = wf.id }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isSelected) {
+                                Icon(Icons.Default.CheckCircle, null, tint = PlayColor, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(wf.name, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Row {
+                                    Text("${wf.stepCount} ขั้นตอน", color = Color(0xFF888888), fontSize = 10.sp)
+                                    if (wf.appName.isNotEmpty()) {
+                                        Text(" | ", color = Color(0xFF555555), fontSize = 10.sp)
+                                        Text(wf.appName, color = TagColor, fontSize = 10.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Profile picker (optional)
+            if (profiles.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text("ชุดข้อมูล (ไม่บังคับ)", color = Color(0xFFBBBBBB), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Spacer(modifier = Modifier.height(4.dp))
+                LazyColumn(modifier = Modifier.heightIn(max = 80.dp)) {
+                    items(profiles) { profile ->
+                        val isSelected = selectedProfileId == profile.id
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isSelected) TagColor.copy(alpha = 0.2f) else Color.Transparent)
+                                .clickable {
+                                    selectedProfileId = if (isSelected) null else profile.id
+                                }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            if (isSelected) {
+                                Icon(Icons.Default.CheckCircle, null, tint = TagColor, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                            }
+                            Text(profile.name, color = Color(0xFFCCCCCC), fontSize = 12.sp,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                }
+            }
+
+            // Loop count
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("จำนวนรอบ", color = Color(0xFFBBBBBB), fontSize = 12.sp)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF333333))
+                            .clickable { if (loops > 1) loops-- },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Remove, "Decrease", tint = Color.White, modifier = Modifier.size(16.dp))
+                    }
+                    Text(
+                        "$loops",
+                        color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp,
+                        modifier = Modifier.padding(horizontal = 12.dp)
+                    )
+                    Box(
+                        modifier = Modifier
+                            .size(28.dp)
+                            .clip(CircleShape)
+                            .background(Color(0xFF333333))
+                            .clickable { if (loops < 999) loops++ },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(Icons.Default.Add, "Increase", tint = Color.White, modifier = Modifier.size(16.dp))
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Action buttons
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onDismiss) {
+                    Text("ยกเลิก", color = Color(0xFF999999))
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = {
+                        val wfId = selectedWorkflowId
+                        if (wfId != null) onStart(wfId, selectedProfileId, loops)
+                    },
+                    enabled = selectedWorkflowId != null,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = PlayColor,
+                        disabledContainerColor = PlayColor.copy(alpha = 0.3f)
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.PlayArrow, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("เริ่มเล่น", fontSize = 13.sp)
+                }
+            }
+        }
+    }
+}
+
+// ====== Tag Data Dialog ======
 
 @Composable
 fun TagDataDialog(
