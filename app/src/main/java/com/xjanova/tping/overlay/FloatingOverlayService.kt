@@ -1,6 +1,5 @@
 package com.xjanova.tping.overlay
 
-import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.Service
@@ -9,7 +8,6 @@ import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -42,7 +40,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
-import kotlin.math.abs
 
 class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwner {
 
@@ -148,7 +145,6 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         }
     }
 
-    @SuppressLint("ClickableViewAccessibility")
     private fun showOverlay() {
         if (overlayView != null) return
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
@@ -211,41 +207,19 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     onResume = { resumePlayback() },
                     onStop = { stopPlayback() },
                     onToggleExpand = { toggleExpand() },
-                    onClose = { stopSelf() }
+                    onClose = { stopSelf() },
+                    onDragDelta = { dx, dy -> moveOverlay(dx, dy) }
                 )
-            }
-
-            var initialX = 0; var initialY = 0
-            var initialTouchX = 0f; var initialTouchY = 0f
-            var isDragging = false
-
-            setOnTouchListener { _, event ->
-                when (event.action) {
-                    MotionEvent.ACTION_DOWN -> {
-                        initialX = params.x; initialY = params.y
-                        initialTouchX = event.rawX; initialTouchY = event.rawY
-                        isDragging = false
-                        false
-                    }
-                    MotionEvent.ACTION_MOVE -> {
-                        val dx = abs(event.rawX - initialTouchX)
-                        val dy = abs(event.rawY - initialTouchY)
-                        if (dx > 10 || dy > 10) {
-                            isDragging = true
-                            params.x = initialX + (event.rawX - initialTouchX).toInt()
-                            params.y = initialY + (event.rawY - initialTouchY).toInt()
-                            windowManager?.updateViewLayout(this, params)
-                            true
-                        } else false
-                    }
-                    MotionEvent.ACTION_UP -> {
-                        if (isDragging) true else false
-                    }
-                    else -> false
-                }
             }
         }
         windowManager?.addView(overlayView, params)
+    }
+
+    private fun moveOverlay(dx: Float, dy: Float) {
+        val params = overlayParams ?: return
+        params.x += dx.toInt()
+        params.y += dy.toInt()
+        try { windowManager?.updateViewLayout(overlayView, params) } catch (_: Exception) {}
     }
 
     private fun setOverlayFocusable(focusable: Boolean) {

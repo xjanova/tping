@@ -5,6 +5,9 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -21,6 +24,8 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -49,11 +54,12 @@ fun FloatingOverlayContent(
     onResume: () -> Unit,
     onStop: () -> Unit,
     onToggleExpand: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onDragDelta: (Float, Float) -> Unit = { _, _ -> }
 ) {
     Column {
         if (!state.isExpanded) {
-            MiniOverlay(mode = state.mode, step = state.currentStep, onClick = onToggleExpand)
+            MiniOverlay(mode = state.mode, step = state.currentStep, onClick = onToggleExpand, onDragDelta = onDragDelta)
         } else {
             // Show dialog OR main panel (not both overlapping)
             when {
@@ -90,7 +96,8 @@ fun FloatingOverlayContent(
                         onResume = onResume,
                         onStop = onStop,
                         onMinimize = onToggleExpand,
-                        onClose = onClose
+                        onClose = onClose,
+                        onDragDelta = onDragDelta
                     )
                 }
             }
@@ -99,7 +106,7 @@ fun FloatingOverlayContent(
 }
 
 @Composable
-fun MiniOverlay(mode: String, step: Int, onClick: () -> Unit) {
+fun MiniOverlay(mode: String, step: Int, onClick: () -> Unit, onDragDelta: (Float, Float) -> Unit = { _, _ -> }) {
     val bgColor = when (mode) {
         "recording" -> RecordColor
         "playing" -> PlayColor
@@ -117,7 +124,27 @@ fun MiniOverlay(mode: String, step: Int, onClick: () -> Unit) {
                     colors = listOf(bgColor, bgColor.copy(alpha = 0.8f))
                 )
             )
-            .clickable(onClick = onClick),
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    val down = awaitFirstDown()
+                    var dragged = false
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        if (event.changes.all { !it.pressed }) {
+                            // All fingers released
+                            if (!dragged) onClick()
+                            break
+                        }
+                        val change = event.changes.first()
+                        val delta = change.positionChange()
+                        if (delta.x != 0f || delta.y != 0f) {
+                            dragged = true
+                            change.consume()
+                            onDragDelta(delta.x, delta.y)
+                        }
+                    }
+                }
+            },
         contentAlignment = Alignment.Center
     ) {
         when (mode) {
@@ -140,7 +167,8 @@ fun ExpandedOverlay(
     onResume: () -> Unit,
     onStop: () -> Unit,
     onMinimize: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onDragDelta: (Float, Float) -> Unit = { _, _ -> }
 ) {
     val headerColor = when (state.mode) {
         "recording" -> RecordColor
@@ -166,7 +194,7 @@ fun ExpandedOverlay(
         elevation = CardDefaults.cardElevation(defaultElevation = 12.dp)
     ) {
         Column {
-            // Header with gradient
+            // Header with gradient (draggable)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -175,6 +203,12 @@ fun ExpandedOverlay(
                             listOf(headerColor, headerColor.copy(alpha = 0.7f))
                         )
                     )
+                    .pointerInput(Unit) {
+                        detectDragGestures { change, dragAmount ->
+                            change.consume()
+                            onDragDelta(dragAmount.x, dragAmount.y)
+                        }
+                    }
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
