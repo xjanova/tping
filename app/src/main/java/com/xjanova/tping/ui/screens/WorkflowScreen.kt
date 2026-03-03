@@ -22,6 +22,7 @@ import com.xjanova.tping.data.entity.Workflow
 import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.service.TpingAccessibilityService
 import com.xjanova.tping.ui.viewmodel.MainViewModel
+import com.xjanova.tping.util.PermissionHelper
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -32,6 +33,7 @@ fun WorkflowScreen(
     val context = LocalContext.current
     val workflows by viewModel.workflows.collectAsState()
     var showSaveDialog by remember { mutableStateOf(false) }
+    var permissionMessage by remember { mutableStateOf("") }
 
     Scaffold(
         topBar = {
@@ -88,23 +90,39 @@ fun WorkflowScreen(
                         )
                         Spacer(modifier = Modifier.height(12.dp))
 
+                        // Permission warning message
+                        if (permissionMessage.isNotEmpty()) {
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = Color(0xFFF59E0B).copy(alpha = 0.15f)
+                                ),
+                                shape = RoundedCornerShape(8.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Text(
+                                    permissionMessage,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFFF59E0B),
+                                    modifier = Modifier.padding(10.dp),
+                                    lineHeight = 17.sp
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+
                         Button(
                             onClick = {
                                 if (TpingAccessibilityService.instance == null) {
-                                    context.startActivity(
-                                        Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                                    )
+                                    permissionMessage = "ต้องเปิด Accessibility Service ก่อน\nกดปุ่มด้านล่างเพื่อไปเปิด แล้วเลือก Tping → เปิด"
+                                    PermissionHelper.openAccessibilitySettings(context)
                                 } else if (!Settings.canDrawOverlays(context)) {
-                                    context.startActivity(
-                                        Intent(
-                                            Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                                            android.net.Uri.parse("package:${context.packageName}")
-                                        )
-                                    )
+                                    permissionMessage = "ต้องเปิด Overlay Permission ก่อน\nกดอนุญาตให้ Tping แสดงทับแอพอื่น"
+                                    PermissionHelper.openOverlaySettings(context)
                                 } else {
-                                    // Start overlay in recording mode
+                                    permissionMessage = ""
+                                    // Start overlay in idle mode (user records from overlay)
                                     val intent = Intent(context, FloatingOverlayService::class.java)
-                                    intent.putExtra("mode", "recording")
+                                    intent.putExtra("mode", "idle")
                                     context.startForegroundService(intent)
                                 }
                             },
