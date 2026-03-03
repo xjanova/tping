@@ -9,6 +9,7 @@ import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.DisplayMetrics
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
@@ -212,6 +213,10 @@ class TpingAccessibilityService : AccessibilityService() {
     // ====== Playback ======
 
     fun clickAtNode(action: RecordedAction, callback: () -> Unit) {
+        // Game mode: always use coordinate-based click (no accessibility nodes)
+        if (action.isGameMode) {
+            clickAtCoordinates(action, callback); return
+        }
         val rootNode = rootInActiveWindow ?: run {
             clickAtCoordinates(action, callback); return
         }
@@ -236,6 +241,10 @@ class TpingAccessibilityService : AccessibilityService() {
     }
 
     fun longClickAtNode(action: RecordedAction, callback: () -> Unit) {
+        // Game mode: always use coordinate-based long click (no accessibility nodes)
+        if (action.isGameMode) {
+            longClickAtCoordinates(action, callback); return
+        }
         val rootNode = rootInActiveWindow ?: run {
             longClickAtCoordinates(action, callback); return
         }
@@ -259,9 +268,23 @@ class TpingAccessibilityService : AccessibilityService() {
         longClickAtCoordinates(action, callback)
     }
 
+    private fun scaleCoordinates(action: RecordedAction): Pair<Float, Float> {
+        val rawX = (action.boundsLeft + action.boundsRight) / 2f
+        val rawY = (action.boundsTop + action.boundsBottom) / 2f
+        if (!action.isGameMode || action.screenWidth <= 0 || action.screenHeight <= 0) {
+            return Pair(rawX, rawY)
+        }
+        // Scale from recorded resolution to current screen resolution
+        val metrics = resources.displayMetrics
+        val currentWidth = metrics.widthPixels.toFloat()
+        val currentHeight = metrics.heightPixels.toFloat()
+        val scaleX = currentWidth / action.screenWidth
+        val scaleY = currentHeight / action.screenHeight
+        return Pair(rawX * scaleX, rawY * scaleY)
+    }
+
     private fun clickAtCoordinates(action: RecordedAction, callback: () -> Unit) {
-        val x = (action.boundsLeft + action.boundsRight) / 2f
-        val y = (action.boundsTop + action.boundsBottom) / 2f
+        val (x, y) = scaleCoordinates(action)
         val path = Path().apply { moveTo(x, y) }
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, 100))
@@ -273,8 +296,7 @@ class TpingAccessibilityService : AccessibilityService() {
     }
 
     private fun longClickAtCoordinates(action: RecordedAction, callback: () -> Unit) {
-        val x = (action.boundsLeft + action.boundsRight) / 2f
-        val y = (action.boundsTop + action.boundsBottom) / 2f
+        val (x, y) = scaleCoordinates(action)
         val path = Path().apply { moveTo(x, y) }
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, 600))

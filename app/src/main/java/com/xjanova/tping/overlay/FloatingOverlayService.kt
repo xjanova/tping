@@ -7,6 +7,7 @@ import android.content.Intent
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.IBinder
+import android.util.DisplayMetrics
 import android.view.Gravity
 import android.view.WindowManager
 import androidx.compose.runtime.collectAsState
@@ -26,6 +27,7 @@ import com.google.gson.reflect.TypeToken
 import com.xjanova.tping.MainActivity
 import com.xjanova.tping.R
 import com.xjanova.tping.TpingApplication
+import com.xjanova.tping.data.entity.ActionType
 import com.xjanova.tping.data.entity.DataField
 import com.xjanova.tping.data.entity.RecordedAction
 import com.xjanova.tping.data.entity.Workflow
@@ -53,6 +55,11 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     private var windowManager: WindowManager? = null
     private var overlayView: ComposeView? = null
     private var overlayParams: WindowManager.LayoutParams? = null
+    private var crosshairView: ComposeView? = null
+    private var pendingGameActionType: ActionType = ActionType.CLICK
+    private val gameActions = mutableListOf<RecordedAction>()
+    private var gameStepCounter = 0
+    private var gameLastActionTime = System.currentTimeMillis()
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var playbackObserverJob: Job? = null
     private var recordingObserverJob: Job? = null
@@ -183,8 +190,18 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                 val state by _overlayState.collectAsState()
                 FloatingOverlayContent(
                     state = state,
-                    onStartRecord = { startRecording() },
+                    onStartRecord = {
+                        setOverlayFocusable(true)
+                        _overlayState.value = _overlayState.value.copy(showRecordModeDialog = true)
+                    },
+                    onStartNormalRecord = { startRecording() },
+                    onStartGameRecord = { startGameRecording() },
+                    onDismissRecordModeDialog = {
+                        _overlayState.value = _overlayState.value.copy(showRecordModeDialog = false)
+                        setOverlayFocusable(false)
+                    },
                     onStopRecord = { stopRecording() },
+                    onStopGameRecord = { stopGameRecording() },
                     onSaveRecording = { name -> saveRecordingFromOverlay(name) },
                     onDismissSaveDialog = {
                         _overlayState.value = _overlayState.value.copy(showSaveDialog = false)
@@ -217,7 +234,9 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     onStop = { stopPlayback() },
                     onToggleExpand = { toggleExpand() },
                     onClose = { stopSelf() },
-                    onDragDelta = { dx, dy -> moveOverlay(dx, dy) }
+                    onDragDelta = { dx, dy -> moveOverlay(dx, dy) },
+                    onShowGameCrosshair = { actionType -> showCrosshair(actionType) },
+                    onAddGameWait = { delayMs -> addGameWaitAction(delayMs) }
                 )
             }
         }
@@ -290,6 +309,11 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     }
 
     private fun saveRecordingFromOverlay(name: String) {
+        // Check if this is a game mode recording
+        if (gameActions.isNotEmpty()) {
+            saveGameRecordingFromOverlay(name)
+            return
+        }
         val service = TpingAccessibilityService.instance ?: return
         val actions = service.getRecorder().getActions()
         if (actions.isEmpty()) return
@@ -327,6 +351,174 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         val actions = service.getRecorder().getActions()
         val lastAction = actions.lastOrNull() ?: return ""
         return AppResolver.suggestFieldName(lastAction.resourceId, lastAction.hintText, lastAction.contentDescription)
+    }
+
+    // ====== Game Mode Recording ======
+
+    private fun getScreenMetrics(): DisplayMetrics {
+        return resources.displayMetrics
+    }
+
+    private fun startGameRecording() {
+        _overlayState.value = _overlayState.value.copy(
+            showRecordModeDialog = false,
+            mode = "game_recording", stepCount = 0,
+            statusText = "โหมดเกม - กดเพิ่มจุดกด",
+            targetAppName = "", recordingDone = false
+        )
+        setOverlayFocusable(false)
+        gameActions.clear()
+        gameStepCounter = 0
+        gameLastActionTime = System.currentTimeMillis()
+    }
+
+    private fun showCrosshair(actionType: ActionType) {
+        if (crosshairView != null) return
+        pendingGameActionType = actionType
+        _overlayState.value = _overlayState.value.copy(showGameCrosshair = true)
+
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+            else
+                @Suppress("DEPRECATION")
+                WindowManager.LayoutParams.TYPE_PHONE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+            PixelFormat.TRANSLUCENT
+        )
+
+        val metrics = getScreenMetrics()
+        crosshairView = ComposeView(this).apply {
+            setViewTreeLifecycleOwner(this@FloatingOverlayService)
+            setViewTreeSavedStateRegistryOwner(this@FloatingOverlayService)
+            setContent {
+                CrosshairOverlay(
+                    screenWidth = metrics.widthPixels,
+                    screenHeight = metrics.heightPixels,
+                    actionLabel = when (actionType) {
+                        ActionType.CLICK -> "กด"
+                        ActionType.LONG_CLICK -> "กดค้าง"
+                        else -> "กด"
+                    },
+                    onConfirm = { x, y ->
+                        addGameTapAction(actionType, x, y)
+                        hideCrosshair()
+                    },
+                    onCancel = { hideCrosshair() }
+                )
+            }
+        }
+        windowManager?.addView(crosshairView, params)
+    }
+
+    private fun hideCrosshair() {
+        crosshairView?.let {
+            try { windowManager?.removeView(it) } catch (_: Exception) {}
+        }
+        crosshairView = null
+        _overlayState.value = _overlayState.value.copy(showGameCrosshair = false)
+    }
+
+    private fun addGameTapAction(actionType: ActionType, x: Int, y: Int) {
+        val metrics = getScreenMetrics()
+        val now = System.currentTimeMillis()
+        val delay = (now - gameLastActionTime).coerceIn(100, 5000)
+        gameLastActionTime = now
+
+        val action = RecordedAction(
+            stepOrder = ++gameStepCounter,
+            actionType = actionType,
+            boundsLeft = x - 1, boundsTop = y - 1,
+            boundsRight = x + 1, boundsBottom = y + 1,
+            delayAfterMs = if (gameStepCounter == 1) 500 else delay,
+            screenWidth = metrics.widthPixels,
+            screenHeight = metrics.heightPixels,
+            isGameMode = true
+        )
+        gameActions.add(action)
+        _overlayState.value = _overlayState.value.copy(
+            stepCount = gameActions.size,
+            statusText = "${actionType.name} ที่ ($x, $y) — ${gameActions.size} ขั้นตอน"
+        )
+    }
+
+    private fun addGameWaitAction(delayMs: Long) {
+        val action = RecordedAction(
+            stepOrder = ++gameStepCounter,
+            actionType = ActionType.WAIT,
+            delayAfterMs = delayMs,
+            screenWidth = getScreenMetrics().widthPixels,
+            screenHeight = getScreenMetrics().heightPixels,
+            isGameMode = true
+        )
+        gameActions.add(action)
+        gameLastActionTime = System.currentTimeMillis()
+        _overlayState.value = _overlayState.value.copy(
+            stepCount = gameActions.size,
+            statusText = "รอ ${delayMs}ms — ${gameActions.size} ขั้นตอน"
+        )
+    }
+
+    private fun stopGameRecording() {
+        if (gameActions.isEmpty()) {
+            _overlayState.value = _overlayState.value.copy(
+                mode = "idle", statusText = "ไม่มีขั้นตอน"
+            )
+            return
+        }
+        // Detect target app from foreground
+        val currentPkg = try {
+            TpingAccessibilityService.instance?.rootInActiveWindow?.packageName?.toString() ?: ""
+        } catch (_: Exception) { "" }
+        val appName = if (currentPkg.isNotEmpty() && currentPkg != packageName) {
+            AppResolver.getAppName(this, currentPkg)
+        } else ""
+        val suggestedName = if (appName.isNotEmpty()) "$appName (เกม)" else "Game Workflow"
+
+        // Set package on all actions
+        if (currentPkg.isNotEmpty()) {
+            for (i in gameActions.indices) {
+                gameActions[i] = gameActions[i].copy(packageName = currentPkg)
+            }
+        }
+
+        _overlayState.value = _overlayState.value.copy(
+            mode = "idle",
+            statusText = "บันทึกแล้ว ${gameActions.size} ขั้นตอน (เกม)",
+            recordingDone = true, showSaveDialog = true,
+            suggestedWorkflowName = suggestedName,
+            targetAppName = appName
+        )
+        setOverlayFocusable(true)
+    }
+
+    // Override saveRecordingFromOverlay to handle game mode actions too
+    private fun saveGameRecordingFromOverlay(name: String) {
+        if (gameActions.isEmpty()) return
+        val targetPkg = gameActions.firstOrNull()?.packageName ?: ""
+        val targetAppName = if (targetPkg.isNotEmpty()) AppResolver.getAppName(this, targetPkg) else ""
+
+        serviceScope.launch {
+            try {
+                val db = (application as TpingApplication).database
+                db.workflowDao().insert(
+                    Workflow(name = name, stepsJson = gson.toJson(gameActions),
+                        targetAppPackage = targetPkg, targetAppName = targetAppName)
+                )
+                _overlayState.value = _overlayState.value.copy(
+                    showSaveDialog = false, recordingDone = false,
+                    statusText = "บันทึก \"$name\" แล้ว!"
+                )
+                setOverlayFocusable(false)
+                gameActions.clear()
+            } catch (_: Exception) {
+                _overlayState.value = _overlayState.value.copy(statusText = "เกิดข้อผิดพลาด")
+            }
+        }
     }
 
     // ====== Playback from Overlay ======
@@ -431,6 +623,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_PAUSE)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_STOP)
         lifecycleRegistry.handleLifecycleEvent(Lifecycle.Event.ON_DESTROY)
+        hideCrosshair()
         overlayView?.let { windowManager?.removeView(it) }
         overlayView = null; overlayParams = null; instance = null
         super.onDestroy()
@@ -441,13 +634,15 @@ data class WorkflowItem(val id: Long, val name: String, val appName: String, val
 data class ProfileItem(val id: Long, val name: String, val fieldKeys: List<String> = emptyList())
 
 data class OverlayState(
-    val mode: String = "idle",
+    val mode: String = "idle", // idle, recording, game_recording, playing, paused
     val isExpanded: Boolean = true,
     val statusText: String = "พร้อมใช้งาน",
     val currentStep: Int = 0, val totalSteps: Int = 0, val stepCount: Int = 0,
     val currentLoop: Int = 0, val totalLoops: Int = 0, val progress: Float = 0f,
     val showTagDialog: Boolean = false, val showPlayDialog: Boolean = false,
     val showSaveDialog: Boolean = false, val recordingDone: Boolean = false,
+    val showRecordModeDialog: Boolean = false,
+    val showGameCrosshair: Boolean = false,
     val targetAppName: String = "", val suggestedFieldName: String = "",
     val suggestedWorkflowName: String = "",
     val workflowItems: List<WorkflowItem> = emptyList(),

@@ -22,7 +22,12 @@ data class RecordedAction(
     // Extra
     val packageName: String = "",
     // Smart field detection
-    val hintText: String = ""      // hint text from the input field for auto-suggesting field names
+    val hintText: String = "",     // hint text from the input field for auto-suggesting field names
+    // Screen resolution for coordinate scaling (game mode)
+    val screenWidth: Int = 0,
+    val screenHeight: Int = 0,
+    // Game mode flag: true = recorded via crosshair (coordinate-only, no accessibility node)
+    val isGameMode: Boolean = false
 )
 
 enum class ActionType {

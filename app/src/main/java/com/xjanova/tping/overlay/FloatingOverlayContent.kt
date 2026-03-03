@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -16,32 +17,50 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.xjanova.tping.data.entity.ActionType
+import kotlin.math.roundToInt
 
 private val RecordColor = Color(0xFFEF4444)
 private val PlayColor = Color(0xFF22C55E)
 private val PauseColor = Color(0xFFF59E0B)
 private val PrimaryColor = Color(0xFF6750A4)
 private val TagColor = Color(0xFF3B82F6)
+private val GameColor = Color(0xFFE040FB)
 
 @Composable
 fun FloatingOverlayContent(
     state: OverlayState,
     onStartRecord: () -> Unit,
+    onStartNormalRecord: () -> Unit,
+    onStartGameRecord: () -> Unit,
+    onDismissRecordModeDialog: () -> Unit,
     onStopRecord: () -> Unit,
+    onStopGameRecord: () -> Unit,
     onSaveRecording: (String) -> Unit,
     onDismissSaveDialog: () -> Unit,
     onTagData: (String) -> Unit,
@@ -55,7 +74,9 @@ fun FloatingOverlayContent(
     onStop: () -> Unit,
     onToggleExpand: () -> Unit,
     onClose: () -> Unit,
-    onDragDelta: (Float, Float) -> Unit = { _, _ -> }
+    onDragDelta: (Float, Float) -> Unit = { _, _ -> },
+    onShowGameCrosshair: (ActionType) -> Unit = {},
+    onAddGameWait: (Long) -> Unit = {}
 ) {
     Column {
         if (!state.isExpanded) {
@@ -63,6 +84,13 @@ fun FloatingOverlayContent(
         } else {
             // Show dialog OR main panel (not both overlapping)
             when {
+                state.showRecordModeDialog -> {
+                    RecordModeDialog(
+                        onNormal = onStartNormalRecord,
+                        onGame = onStartGameRecord,
+                        onDismiss = onDismissRecordModeDialog
+                    )
+                }
                 state.showTagDialog -> {
                     TagDataDialog(
                         suggestion = state.suggestedFieldName,
@@ -90,6 +118,7 @@ fun FloatingOverlayContent(
                         state = state,
                         onStartRecord = onStartRecord,
                         onStopRecord = onStopRecord,
+                        onStopGameRecord = onStopGameRecord,
                         onShowTagDialog = onShowTagDialog,
                         onShowPlayDialog = onShowPlayDialog,
                         onPause = onPause,
@@ -97,7 +126,9 @@ fun FloatingOverlayContent(
                         onStop = onStop,
                         onMinimize = onToggleExpand,
                         onClose = onClose,
-                        onDragDelta = onDragDelta
+                        onDragDelta = onDragDelta,
+                        onShowGameCrosshair = onShowGameCrosshair,
+                        onAddGameWait = onAddGameWait
                     )
                 }
             }
@@ -109,6 +140,7 @@ fun FloatingOverlayContent(
 fun MiniOverlay(mode: String, step: Int, onClick: () -> Unit, onDragDelta: (Float, Float) -> Unit = { _, _ -> }) {
     val bgColor = when (mode) {
         "recording" -> RecordColor
+        "game_recording" -> GameColor
         "playing" -> PlayColor
         "paused" -> PauseColor
         else -> PrimaryColor
@@ -149,6 +181,7 @@ fun MiniOverlay(mode: String, step: Int, onClick: () -> Unit, onDragDelta: (Floa
     ) {
         when (mode) {
             "recording" -> Text("●", color = Color.White, fontSize = 22.sp)
+            "game_recording" -> Text("●", color = Color.White, fontSize = 22.sp)
             "playing" -> Text("▶", color = Color.White, fontSize = 18.sp)
             "paused" -> Text("⏸", color = Color.White, fontSize = 16.sp)
             else -> Text("T", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Bold)
@@ -161,6 +194,7 @@ fun ExpandedOverlay(
     state: OverlayState,
     onStartRecord: () -> Unit,
     onStopRecord: () -> Unit,
+    onStopGameRecord: () -> Unit,
     onShowTagDialog: () -> Unit,
     onShowPlayDialog: () -> Unit,
     onPause: () -> Unit,
@@ -168,10 +202,13 @@ fun ExpandedOverlay(
     onStop: () -> Unit,
     onMinimize: () -> Unit,
     onClose: () -> Unit,
-    onDragDelta: (Float, Float) -> Unit = { _, _ -> }
+    onDragDelta: (Float, Float) -> Unit = { _, _ -> },
+    onShowGameCrosshair: (ActionType) -> Unit = {},
+    onAddGameWait: (Long) -> Unit = {}
 ) {
     val headerColor = when (state.mode) {
         "recording" -> RecordColor
+        "game_recording" -> GameColor
         "playing" -> PlayColor
         "paused" -> PauseColor
         else -> PrimaryColor
@@ -180,6 +217,7 @@ fun ExpandedOverlay(
     val appLabel = if (state.targetAppName.isNotEmpty()) " ${state.targetAppName}" else ""
     val headerText = when (state.mode) {
         "recording" -> "● REC$appLabel [${state.stepCount}]"
+        "game_recording" -> "● GAME [${state.stepCount}]"
         "playing" -> "▶ PLAY  ${state.currentStep}/${state.totalSteps}"
         "paused" -> "⏸ PAUSED"
         else -> "⌨ Tping"
@@ -262,26 +300,48 @@ fun ExpandedOverlay(
             Spacer(modifier = Modifier.height(6.dp))
 
             // Controls
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly
-            ) {
-                when (state.mode) {
-                    "idle" -> {
-                        OverlayButton(Icons.Default.FiberManualRecord, "บันทึก", RecordColor, onStartRecord)
-                        OverlayButton(Icons.Default.PlayArrow, "เล่น", PlayColor, onShowPlayDialog)
+            when (state.mode) {
+                "game_recording" -> {
+                    // Game mode: 2 rows of buttons
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        OverlayButton(Icons.Default.TouchApp, "กด", GameColor) { onShowGameCrosshair(ActionType.CLICK) }
+                        OverlayButton(Icons.Default.PanTool, "กดค้าง", Color(0xFFFF7043)) { onShowGameCrosshair(ActionType.LONG_CLICK) }
+                        OverlayButton(Icons.Default.Timer, "รอ 1s", PauseColor) { onAddGameWait(1000) }
                     }
-                    "recording" -> {
-                        OverlayButton(Icons.Default.Label, "Tag", TagColor, onShowTagDialog)
-                        OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStopRecord)
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        OverlayButton(Icons.Default.Timer3, "รอ 3s", PauseColor) { onAddGameWait(3000) }
+                        OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStopGameRecord)
                     }
-                    "playing" -> {
-                        OverlayButton(Icons.Default.Pause, "พัก", PauseColor, onPause)
-                        OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStop)
-                    }
-                    "paused" -> {
-                        OverlayButton(Icons.Default.PlayArrow, "ต่อ", PlayColor, onResume)
-                        OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStop)
+                }
+                else -> {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        when (state.mode) {
+                            "idle" -> {
+                                OverlayButton(Icons.Default.FiberManualRecord, "บันทึก", RecordColor, onStartRecord)
+                                OverlayButton(Icons.Default.PlayArrow, "เล่น", PlayColor, onShowPlayDialog)
+                            }
+                            "recording" -> {
+                                OverlayButton(Icons.Default.Label, "Tag", TagColor, onShowTagDialog)
+                                OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStopRecord)
+                            }
+                            "playing" -> {
+                                OverlayButton(Icons.Default.Pause, "พัก", PauseColor, onPause)
+                                OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStop)
+                            }
+                            "paused" -> {
+                                OverlayButton(Icons.Default.PlayArrow, "ต่อ", PlayColor, onResume)
+                                OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStop)
+                            }
+                        }
                     }
                 }
             }
@@ -717,6 +777,247 @@ fun TagDataDialog(
                     Text("ผูกข้อมูล", fontSize = 13.sp)
                 }
             }
+        }
+    }
+}
+
+// ====== Record Mode Dialog (Normal vs Game) ======
+
+@Composable
+fun RecordModeDialog(
+    onNormal: () -> Unit,
+    onGame: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    Card(
+        modifier = Modifier.width(260.dp).padding(8.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xF5222222)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.FiberManualRecord, null, tint = RecordColor, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("เลือกโหมดบันทึก", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+            Text("เลือกวิธีบันทึกที่เหมาะกับแอพเป้าหมาย", color = Color(0xFF999999), fontSize = 11.sp)
+
+            Spacer(modifier = Modifier.height(14.dp))
+
+            // Normal mode option
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(RecordColor.copy(alpha = 0.1f))
+                    .clickable(onClick = onNormal)
+                    .border(1.dp, RecordColor.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(RecordColor.copy(alpha = 0.2f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.FiberManualRecord, null, tint = RecordColor, modifier = Modifier.size(22.dp))
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text("ปกติ (แอพ)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("จับการกด/พิมพ์อัตโนมัติ", color = Color(0xFF999999), fontSize = 11.sp)
+                    Text("เหมาะกับ: แอพทั่วไป, เว็บ", color = Color(0xFF777777), fontSize = 10.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Game mode option
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(GameColor.copy(alpha = 0.1f))
+                    .clickable(onClick = onGame)
+                    .border(1.dp, GameColor.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(GameColor.copy(alpha = 0.2f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.SportsEsports, null, tint = GameColor, modifier = Modifier.size(22.dp))
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text("เกม (พิกัด)", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Text("เลือกจุดกดด้วยกากบาท", color = Color(0xFF999999), fontSize = 11.sp)
+                    Text("เหมาะกับ: เกม, แอพพิเศษ", color = Color(0xFF777777), fontSize = 10.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onDismiss) {
+                    Text("ยกเลิก", color = Color(0xFF999999))
+                }
+            }
+        }
+    }
+}
+
+// ====== Crosshair Overlay for Game Mode ======
+
+@Composable
+fun CrosshairOverlay(
+    screenWidth: Int,
+    screenHeight: Int,
+    actionLabel: String,
+    onConfirm: (Int, Int) -> Unit,
+    onCancel: () -> Unit
+) {
+    val density = LocalDensity.current
+
+    // Crosshair position state — start at center
+    var crosshairX by remember { mutableFloatStateOf(screenWidth / 2f) }
+    var crosshairY by remember { mutableFloatStateOf(screenHeight / 2f) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.3f))
+            .pointerInput(Unit) {
+                detectDragGestures { change, dragAmount ->
+                    change.consume()
+                    crosshairX = (crosshairX + dragAmount.x).coerceIn(0f, screenWidth.toFloat())
+                    crosshairY = (crosshairY + dragAmount.y).coerceIn(0f, screenHeight.toFloat())
+                }
+            }
+    ) {
+        // Top bar with controls
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color(0xDD000000))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            // Cancel button
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFF444444))
+                    .clickable(onClick = onCancel)
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Text("ยกเลิก", color = Color.White, fontSize = 13.sp)
+            }
+
+            // Coordinate display
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(
+                    actionLabel,
+                    color = GameColor,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp
+                )
+                Text(
+                    "(${crosshairX.roundToInt()}, ${crosshairY.roundToInt()})",
+                    color = Color(0xFFCCCCCC),
+                    fontSize = 12.sp
+                )
+            }
+
+            // Confirm button
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(GameColor)
+                    .clickable {
+                        onConfirm(crosshairX.roundToInt(), crosshairY.roundToInt())
+                    }
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Text("ยืนยัน ✓", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            }
+        }
+
+        // Crosshair lines and circle
+        val crossXDp = with(density) { crosshairX.toDp() }
+        val crossYDp = with(density) { crosshairY.toDp() }
+
+        // Horizontal line
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .offset(y = crossYDp)
+                .background(GameColor.copy(alpha = 0.6f))
+        )
+
+        // Vertical line
+        Box(
+            modifier = Modifier
+                .width(1.dp)
+                .fillMaxHeight()
+                .offset(x = crossXDp)
+                .background(GameColor.copy(alpha = 0.6f))
+        )
+
+        // Center circle
+        Box(
+            modifier = Modifier
+                .offset {
+                    IntOffset(
+                        (crosshairX - with(density) { 20.dp.toPx() }).roundToInt(),
+                        (crosshairY - with(density) { 20.dp.toPx() }).roundToInt()
+                    )
+                }
+                .size(40.dp)
+                .border(2.dp, GameColor, CircleShape)
+                .clip(CircleShape)
+                .background(GameColor.copy(alpha = 0.15f))
+        )
+
+        // Inner dot
+        Box(
+            modifier = Modifier
+                .offset {
+                    IntOffset(
+                        (crosshairX - with(density) { 4.dp.toPx() }).roundToInt(),
+                        (crosshairY - with(density) { 4.dp.toPx() }).roundToInt()
+                    )
+                }
+                .size(8.dp)
+                .clip(CircleShape)
+                .background(GameColor)
+        )
+
+        // Instruction text at bottom
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 48.dp)
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color(0xCC000000))
+                .padding(horizontal = 20.dp, vertical = 10.dp)
+        ) {
+            Text(
+                "ลากเพื่อเลื่อนกากบาท แล้วกด ยืนยัน",
+                color = Color.White,
+                fontSize = 13.sp,
+                textAlign = TextAlign.Center
+            )
         }
     }
 }
