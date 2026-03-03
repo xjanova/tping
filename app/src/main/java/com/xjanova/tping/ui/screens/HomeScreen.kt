@@ -213,6 +213,80 @@ fun HomeScreen(
                 }
             }
 
+            // ===== Accessibility Shortcut Setup =====
+            if (isAccessibilityEnabled && hasOverlayPermission) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFF8B5CF6).copy(alpha = 0.08f)
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Accessibility,
+                                    contentDescription = null,
+                                    tint = Color(0xFF8B5CF6),
+                                    modifier = Modifier.size(22.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    "ตั้งค่าปุ่มลัดการช่วยเหลือพิเศษ",
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFF8B5CF6)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                "ตั้งค่าปุ่มลัดเพื่อเปิด Tping ได้ทันทีจากทุกหน้าจอ\n" +
+                                "ไม่ต้องกลับมาที่แอพ กดปุ่มลัดแล้ว Tping เปิดเลย",
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            )
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            // Brand-specific shortcut instructions
+                            Card(
+                                colors = CardDefaults.cardColors(
+                                    containerColor = Color(0xFF8B5CF6).copy(alpha = 0.08f)
+                                ),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(
+                                    PermissionHelper.getAccessibilityShortcutInstructions(),
+                                    fontSize = 11.sp,
+                                    lineHeight = 16.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                    modifier = Modifier.padding(10.dp)
+                                )
+                            }
+
+                            Spacer(modifier = Modifier.height(10.dp))
+
+                            Button(
+                                onClick = { PermissionHelper.openAccessibilityShortcutSettings(context) },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6)),
+                                shape = RoundedCornerShape(10.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Icon(
+                                    Icons.Default.Settings,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("ไปตั้งค่าปุ่มลัด", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
             // ===== Start Overlay Button =====
             item {
                 val allGranted = isAccessibilityEnabled && hasOverlayPermission
@@ -399,12 +473,13 @@ fun HomeScreen(
                             // ===== Section: Accessibility Button =====
                             GuideSection(
                                 icon = Icons.Default.Accessibility,
-                                title = "ปุ่มการช่วยเหลือพิเศษ",
+                                title = "ปุ่มลัดการช่วยเหลือพิเศษ",
                                 color = Color(0xFF8B5CF6)
                             ) {
-                                GuideStep("เปิดได้ทันที", "เมื่อเปิด Accessibility แล้ว ระบบจะแสดง \"ปุ่มการช่วยเหลือพิเศษ\" (ปุ่มเล็ก ๆ ที่ขอบจอ)")
-                                GuideStep("กดเพื่อเปิด Overlay", "กดปุ่มนั้นเพื่อเปิดแผงควบคุม Tping ได้ทันที ไม่ต้องกลับมาที่แอพ")
-                                GuideStep("ตั้งค่าเพิ่มเติม", "ไปที่ ตั้งค่า → การช่วยเหลือพิเศษ → ปุ่มลัดการช่วยเหลือพิเศษ → เลือก Tping")
+                                GuideStep("ต้องตั้งค่าก่อน", "ไปที่ ตั้งค่า → การช่วยเหลือพิเศษ → ปุ่มลัด → เลือก Tping (ใช้ปุ่ม \"ไปตั้งค่าปุ่มลัด\" ด้านบน)")
+                                GuideStep("เลือกวิธีเปิด", "ปุ่มลอย (ปุ่มเล็ก ๆ ที่ขอบจอ) / กดปุ่มเพิ่ม-ลดเสียงค้าง 3 วินาที / ปัดขึ้น 2 นิ้ว (แล้วแต่รุ่น)")
+                                GuideStep("กดเพื่อเปิด Overlay", "กดปุ่มลัดแล้ว Tping จะเปิดแผงควบคุมลอยหน้าจอทันที ไม่ต้องกลับมาที่แอพ")
+                                GuideStep("ใช้งานได้ทุกแอพ", "ปุ่มลัดใช้ได้ทุกที่ ไม่ว่าจะอยู่ในเกมหรือแอพไหน")
                             }
 
                             // ===== Section 2: Data Setup =====

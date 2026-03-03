@@ -127,6 +127,105 @@ object PermissionHelper {
     }
 
     /**
+     * Open Accessibility Shortcut Settings (ปุ่มลัดการช่วยเหลือพิเศษ).
+     * Tries brand-specific deep links first.
+     */
+    fun openAccessibilityShortcutSettings(context: Context) {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+
+        // Try brand-specific shortcut settings
+        val shortcutIntents = mutableListOf<Intent>()
+
+        if (manufacturer.contains("samsung")) {
+            // Samsung: Settings → Accessibility → Advanced settings → Accessibility button
+            shortcutIntents.add(
+                Intent().apply {
+                    component = ComponentName(
+                        "com.android.settings",
+                        "com.android.settings.Settings\$AccessibilityButtonSettingsActivity"
+                    )
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+            )
+        }
+
+        // Generic: try the accessibility shortcut settings activity
+        shortcutIntents.add(
+            Intent().apply {
+                component = ComponentName(
+                    "com.android.settings",
+                    "com.android.settings.accessibility.AccessibilityButtonFragment"
+                )
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+        shortcutIntents.add(
+            Intent().apply {
+                component = ComponentName(
+                    "com.android.settings",
+                    "com.android.settings.accessibility.ShortcutServicePickerFragment"
+                )
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        )
+
+        for (intent in shortcutIntents) {
+            try {
+                context.startActivity(intent)
+                return
+            } catch (_: Exception) {}
+        }
+
+        // Fallback: open general accessibility settings
+        openAccessibilitySettings(context)
+    }
+
+    /**
+     * Get brand-specific instructions for setting up the accessibility shortcut button.
+     */
+    fun getAccessibilityShortcutInstructions(): String {
+        val manufacturer = Build.MANUFACTURER.lowercase()
+        val brand = Build.MANUFACTURER
+
+        return when {
+            manufacturer.contains("samsung") ->
+                "สำหรับ $brand:\n" +
+                "1. ตั้งค่า → การช่วยเหลือพิเศษ\n" +
+                "2. เลื่อนล่าง → \"ปุ่มขั้นสูง\" หรือ \"ปุ่มลัดการช่วยเหลือพิเศษ\"\n" +
+                "3. เลือก \"ปุ่มลอย\" หรือ \"แถบนำทาง\"\n" +
+                "4. เลือก Tping จากรายการ"
+
+            manufacturer.contains("xiaomi") || manufacturer.contains("redmi") ->
+                "สำหรับ $brand:\n" +
+                "1. ตั้งค่า → การตั้งค่าเพิ่มเติม → การเข้าถึง\n" +
+                "2. เลื่อนล่าง → \"ปุ่มลัดการเข้าถึง\"\n" +
+                "3. เปิด Tping"
+
+            manufacturer.contains("huawei") || manufacturer.contains("honor") ->
+                "สำหรับ $brand:\n" +
+                "1. ตั้งค่า → การเข้าถึง\n" +
+                "2. \"ปุ่มลัดการเข้าถึง\" → เปิด Tping"
+
+            manufacturer.contains("oppo") || manufacturer.contains("realme") || manufacturer.contains("oneplus") ->
+                "สำหรับ $brand:\n" +
+                "1. ตั้งค่า → การตั้งค่าเพิ่มเติม → การเข้าถึง\n" +
+                "2. \"ปุ่มลัดการเข้าถึง\" → เลือก Tping"
+
+            manufacturer.contains("google") ->
+                "สำหรับ $brand Pixel:\n" +
+                "1. ตั้งค่า → การเข้าถึง\n" +
+                "2. \"ปุ่มลัดการเข้าถึง\" → เลือก Tping\n" +
+                "3. เลือกวิธี: ปุ่มลอย / กดปุ่มเพิ่มลดเสียง 3 วินาที"
+
+            else ->
+                "สำหรับ $brand:\n" +
+                "1. ตั้งค่า → การเข้าถึง (Accessibility)\n" +
+                "2. ค้นหา \"ปุ่มลัด\" หรือ \"Shortcut\"\n" +
+                "3. เลือก Tping จากรายการ"
+        }
+    }
+
+    /**
      * Get brand-specific instructions for enabling Accessibility.
      */
     fun getAccessibilityInstructions(): String {
