@@ -1,16 +1,20 @@
 package com.xjanova.tping.service
 
+import android.accessibilityservice.AccessibilityButtonController
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.Intent
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.xjanova.tping.data.entity.ActionType
 import com.xjanova.tping.data.entity.RecordedAction
+import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.recorder.ActionRecorder
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -47,10 +51,36 @@ class TpingAccessibilityService : AccessibilityService() {
         "com.xjanova.tping"
     )
 
+    private var accessibilityButtonCallback: AccessibilityButtonController.AccessibilityButtonCallback? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         Log.d(TAG, "Accessibility Service connected")
+
+        // Register accessibility button callback (ปุ่มการช่วยเหลือพิเศษ)
+        try {
+            val controller = accessibilityButtonController
+            accessibilityButtonCallback = object : AccessibilityButtonController.AccessibilityButtonCallback() {
+                override fun onClicked(controller: AccessibilityButtonController) {
+                    Log.d(TAG, "Accessibility button clicked - launching overlay")
+                    launchOverlay()
+                }
+            }
+            controller.registerAccessibilityButtonCallback(accessibilityButtonCallback!!)
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not register accessibility button callback: ${e.message}")
+        }
+    }
+
+    private fun launchOverlay() {
+        if (!Settings.canDrawOverlays(this)) {
+            Log.w(TAG, "No overlay permission - cannot launch overlay")
+            return
+        }
+        val intent = Intent(this, FloatingOverlayService::class.java)
+        intent.putExtra("mode", "idle")
+        startForegroundService(intent)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -168,6 +198,13 @@ class TpingAccessibilityService : AccessibilityService() {
     }
 
     override fun onDestroy() {
+        // Unregister accessibility button callback
+        try {
+            accessibilityButtonCallback?.let {
+                accessibilityButtonController.unregisterAccessibilityButtonCallback(it)
+            }
+        } catch (_: Exception) {}
+        accessibilityButtonCallback = null
         instance = null
         super.onDestroy()
     }

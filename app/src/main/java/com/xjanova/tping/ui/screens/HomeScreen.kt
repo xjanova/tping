@@ -88,7 +88,7 @@ fun HomeScreen(
                     Column {
                         Text("Tping", fontWeight = FontWeight.Bold, fontSize = 20.sp)
                         Text(
-                            "by Xman Studio",
+                            "ช่วยพิมพ์ สำหรับผู้ที่ใช้นิ้วไม่สะดวก",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
                         )
@@ -266,6 +266,15 @@ fun HomeScreen(
                                 fontSize = 12.sp,
                                 textAlign = TextAlign.Center
                             )
+                            if (allGranted) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "หรือใช้ \"ปุ่มการช่วยเหลือพิเศษ\" เปิดได้เลย",
+                                    color = Color.White.copy(alpha = 0.6f),
+                                    fontSize = 10.sp,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
                         }
                     }
                 }
@@ -387,6 +396,17 @@ fun HomeScreen(
                                 }
                             }
 
+                            // ===== Section: Accessibility Button =====
+                            GuideSection(
+                                icon = Icons.Default.Accessibility,
+                                title = "ปุ่มการช่วยเหลือพิเศษ",
+                                color = Color(0xFF8B5CF6)
+                            ) {
+                                GuideStep("เปิดได้ทันที", "เมื่อเปิด Accessibility แล้ว ระบบจะแสดง \"ปุ่มการช่วยเหลือพิเศษ\" (ปุ่มเล็ก ๆ ที่ขอบจอ)")
+                                GuideStep("กดเพื่อเปิด Overlay", "กดปุ่มนั้นเพื่อเปิดแผงควบคุม Tping ได้ทันที ไม่ต้องกลับมาที่แอพ")
+                                GuideStep("ตั้งค่าเพิ่มเติม", "ไปที่ ตั้งค่า → การช่วยเหลือพิเศษ → ปุ่มลัดการช่วยเหลือพิเศษ → เลือก Tping")
+                            }
+
                             // ===== Section 2: Data Setup =====
                             GuideSection(
                                 icon = Icons.Default.Storage,
@@ -457,7 +477,7 @@ fun HomeScreen(
             // Footer
             item {
                 Text(
-                    "Xman Studio - Tping Auto Typing",
+                    "Tping - ช่วยพิมพ์สำหรับผู้ที่ใช้นิ้วไม่สะดวก | Xman Studio",
                     fontSize = 11.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),

@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Tping</string>
-    <string name="accessibility_description">Tping Auto Typing - ใช้สำหรับบันทึกและเล่นซ้ำการกรอกข้อมูลอัตโนมัติ</string>
+    <string name="accessibility_description">Tping - แอพช่วยพิมพ์สำหรับผู้ที่ใช้นิ้วไม่สะดวก\n\nช่วยบันทึกขั้นตอนการกรอกข้อมูลและเล่นซ้ำอัตโนมัติ เพื่อให้ผู้ที่มีข้อจำกัดทางนิ้วมือสามารถใช้แอพต่าง ๆ ได้สะดวกขึ้น\n\nรองรับปุ่มการช่วยเหลือพิเศษ: กดปุ่มเพื่อเปิดแผงควบคุม Tping ได้ทันที</string>
+    <string name="accessibility_summary">ช่วยพิมพ์อัตโนมัติสำหรับผู้ที่ใช้นิ้วไม่สะดวก</string>
     <string name="notification_channel_name">Tping Service</string>
     <string name="notification_channel_desc">แสดงสถานะการทำงานของ Tping</string>
 </resources>
