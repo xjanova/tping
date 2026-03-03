@@ -37,10 +37,17 @@ fun PlayScreen(
     val playbackState by viewModel.playbackEngine.state.collectAsState()
     val launchStatus by viewModel.launchStatus.collectAsState()
 
-    // Get target app info of selected workflow
+    // Get target app info and data keys of selected workflow
     val selectedWorkflow = workflows.find { it.id == selectedWorkflowId }
     val targetAppName = remember(selectedWorkflowId) {
         selectedWorkflow?.let { viewModel.resolveAppName(it) } ?: ""
+    }
+    val requiredDataKeys = remember(selectedWorkflowId) {
+        selectedWorkflow?.let { viewModel.getDataKeysFromWorkflow(it) } ?: emptyList()
+    }
+    val selectedProfile = profiles.find { it.id == selectedProfileId }
+    val selectedProfileFields = remember(selectedProfileId) {
+        selectedProfile?.let { viewModel.getFieldsFromProfile(it) } ?: emptyList()
     }
 
     Scaffold(
@@ -170,6 +177,75 @@ fun PlayScreen(
                 }
             }
 
+            // Data requirements for selected workflow
+            if (requiredDataKeys.isNotEmpty() && selectedWorkflowId != null) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFFF59E0B).copy(alpha = 0.08f)
+                        ),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.DataObject,
+                                    contentDescription = null,
+                                    tint = Color(0xFFF59E0B),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    "ข้อมูลที่ต้องใช้:",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFF59E0B)
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            requiredDataKeys.forEach { key ->
+                                val hasKey = selectedProfileFields.any { it.key == key }
+                                val matchValue = selectedProfileFields.find { it.key == key }?.value
+                                Row(
+                                    modifier = Modifier.padding(vertical = 1.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        if (hasKey) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                        contentDescription = null,
+                                        tint = if (hasKey) Color(0xFF22C55E) else Color(0xFFEF4444),
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text(
+                                        key,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (hasKey) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                    )
+                                    if (matchValue != null) {
+                                        Text(
+                                            " → $matchValue",
+                                            fontSize = 12.sp,
+                                            color = Color(0xFF22C55E).copy(alpha = 0.8f)
+                                        )
+                                    }
+                                }
+                            }
+                            if (selectedProfileId == null) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "⬇ เลือกชุดข้อมูลด้านล่างเพื่อกรอกอัตโนมัติ",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // Launch status
             if (launchStatus.isNotEmpty()) {
                 item {
@@ -198,19 +274,59 @@ fun PlayScreen(
             // Select Data Profile
             item {
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("เลือกชุดข้อมูล", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        if (requiredDataKeys.isNotEmpty()) "เลือกชุดข้อมูล" else "เลือกชุดข้อมูล (ไม่บังคับ)",
+                        fontWeight = FontWeight.Bold, fontSize = 16.sp
+                    )
+                }
             }
             if (profiles.isEmpty()) {
                 item {
-                    Text(
-                        "ยังไม่มีข้อมูล - ไปเพิ่มข้อมูลก่อน",
-                        fontSize = 13.sp,
-                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
-                    )
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant
+                        ),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Text(
+                                "ยังไม่มีชุดข้อมูล",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "ไปที่ \"จัดการข้อมูล\" เพื่อสร้างชุดข้อมูล\n" +
+                                "ตั้ง Key ให้ตรงกับที่ Tag ไว้ตอนบันทึก",
+                                fontSize = 12.sp,
+                                lineHeight = 17.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                            if (requiredDataKeys.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Key ที่ต้องใช้: ${requiredDataKeys.joinToString(", ")}",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF3B82F6),
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
                 }
             } else {
                 items(profiles) { profile ->
                     val isSelected = selectedProfileId == profile.id
+                    val fields = viewModel.getFieldsFromProfile(profile)
+                    val matchCount = if (requiredDataKeys.isNotEmpty()) {
+                        requiredDataKeys.count { key -> fields.any { it.key == key } }
+                    } else -1
                     Card(
                         onClick = { viewModel.selectProfile(profile.id) },
                         modifier = Modifier.fillMaxWidth(),
@@ -234,7 +350,29 @@ fun PlayScreen(
                                 )
                                 Spacer(modifier = Modifier.width(8.dp))
                             }
-                            Text(profile.name, fontWeight = FontWeight.Medium)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(profile.name, fontWeight = FontWeight.Medium)
+                                Text(
+                                    "${fields.size} ฟิลด์: ${fields.joinToString(", ") { it.key }}",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f),
+                                    maxLines = 1
+                                )
+                            }
+                            // Match indicator
+                            if (matchCount >= 0) {
+                                val matchColor = when {
+                                    matchCount == requiredDataKeys.size -> Color(0xFF22C55E)
+                                    matchCount > 0 -> Color(0xFFF59E0B)
+                                    else -> Color(0xFFEF4444)
+                                }
+                                Text(
+                                    "$matchCount/${requiredDataKeys.size}",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = matchColor
+                                )
+                            }
                         }
                     }
                 }

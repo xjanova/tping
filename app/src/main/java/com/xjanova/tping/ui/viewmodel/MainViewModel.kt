@@ -220,6 +220,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     /**
+     * Extract data field keys that a workflow requires (fields tagged during recording).
+     */
+    fun getDataKeysFromWorkflow(workflow: Workflow): List<String> {
+        val actions = getActionsFromWorkflow(workflow)
+        return actions.filter { it.dataFieldKey.isNotEmpty() }.map { it.dataFieldKey }.distinct()
+    }
+
+    /**
      * Resolve app name for a given workflow (for display).
      */
     fun resolveAppName(workflow: Workflow): String {

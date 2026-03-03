@@ -387,8 +387,13 @@ fun PlaySelectDialog(
     var selectedProfileId by remember { mutableStateOf<Long?>(null) }
     var loops by remember { mutableIntStateOf(1) }
 
+    val selectedWorkflow = workflows.find { it.id == selectedWorkflowId }
+    val selectedProfile = profiles.find { it.id == selectedProfileId }
+    val requiredKeys = selectedWorkflow?.dataKeys ?: emptyList()
+    val profileKeys = selectedProfile?.fieldKeys ?: emptyList()
+
     Card(
-        modifier = Modifier.width(280.dp).padding(8.dp),
+        modifier = Modifier.width(290.dp).padding(8.dp),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xF5222222)),
         elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
@@ -410,7 +415,7 @@ fun PlaySelectDialog(
                 Text("ยังไม่มี Workflow", color = Color(0xFF666666), fontSize = 12.sp,
                     modifier = Modifier.padding(vertical = 8.dp))
             } else {
-                LazyColumn(modifier = Modifier.heightIn(max = 150.dp)) {
+                LazyColumn(modifier = Modifier.heightIn(max = 130.dp)) {
                     items(workflows) { wf ->
                         val isSelected = selectedWorkflowId == wf.id
                         Row(
@@ -435,6 +440,10 @@ fun PlaySelectDialog(
                                         Text(" | ", color = Color(0xFF555555), fontSize = 10.sp)
                                         Text(wf.appName, color = TagColor, fontSize = 10.sp)
                                     }
+                                    if (wf.dataKeys.isNotEmpty()) {
+                                        Text(" | ", color = Color(0xFF555555), fontSize = 10.sp)
+                                        Text("${wf.dataKeys.size} ฟิลด์", color = Color(0xFFF59E0B), fontSize = 10.sp)
+                                    }
                                 }
                             }
                         }
@@ -442,9 +451,89 @@ fun PlaySelectDialog(
                 }
             }
 
-            // Profile picker (optional)
-            if (profiles.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(10.dp))
+            // Show required data keys for selected workflow
+            if (selectedWorkflow != null && requiredKeys.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFFF59E0B).copy(alpha = 0.1f))
+                        .padding(8.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
+                    Icon(Icons.Default.DataObject, null, tint = Color(0xFFF59E0B), modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Column {
+                        Text("ต้องใช้ข้อมูล:", color = Color(0xFFF59E0B), fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        requiredKeys.forEach { key ->
+                            val hasKey = profileKeys.contains(key)
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    if (hasKey) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
+                                    null,
+                                    tint = if (hasKey) PlayColor else Color(0xFF666666),
+                                    modifier = Modifier.size(12.dp)
+                                )
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text(key, color = if (hasKey) Color(0xFFCCCCCC) else Color(0xFF888888), fontSize = 11.sp)
+                            }
+                        }
+                        if (selectedProfileId == null) {
+                            Spacer(modifier = Modifier.height(2.dp))
+                            Text("⬆ เลือกชุดข้อมูลด้านล่าง", color = Color(0xFF888888), fontSize = 10.sp)
+                        }
+                    }
+                }
+            }
+
+            // Profile picker
+            if (selectedWorkflow != null && requiredKeys.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("ชุดข้อมูล", color = Color(0xFFBBBBBB), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Spacer(modifier = Modifier.height(4.dp))
+                if (profiles.isEmpty()) {
+                    Text("ยังไม่มีชุดข้อมูล - สร้างในแอพ Tping → จัดการข้อมูล", color = Color(0xFF888888), fontSize = 11.sp,
+                        modifier = Modifier.padding(vertical = 4.dp))
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 80.dp)) {
+                        items(profiles) { profile ->
+                            val isSelected = selectedProfileId == profile.id
+                            val matchCount = requiredKeys.count { profile.fieldKeys.contains(it) }
+                            val matchColor = when {
+                                matchCount == requiredKeys.size -> PlayColor
+                                matchCount > 0 -> Color(0xFFF59E0B)
+                                else -> Color(0xFF666666)
+                            }
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) TagColor.copy(alpha = 0.2f) else Color.Transparent)
+                                    .clickable {
+                                        selectedProfileId = if (isSelected) null else profile.id
+                                    }
+                                    .padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                if (isSelected) {
+                                    Icon(Icons.Default.CheckCircle, null, tint = TagColor, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                }
+                                Text(profile.name, color = Color(0xFFCCCCCC), fontSize = 12.sp,
+                                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                                // Match indicator
+                                Text(
+                                    "$matchCount/${requiredKeys.size}",
+                                    color = matchColor, fontSize = 10.sp, fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
+                }
+            } else if (profiles.isNotEmpty() && (selectedWorkflow == null || requiredKeys.isEmpty())) {
+                Spacer(modifier = Modifier.height(8.dp))
                 Text("ชุดข้อมูล (ไม่บังคับ)", color = Color(0xFFBBBBBB), fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 Spacer(modifier = Modifier.height(4.dp))
                 LazyColumn(modifier = Modifier.heightIn(max = 80.dp)) {
@@ -510,6 +599,23 @@ fun PlaySelectDialog(
             }
 
             Spacer(modifier = Modifier.height(14.dp))
+
+            // Auto-launch info
+            if (selectedWorkflow?.appName?.isNotEmpty() == true) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(TagColor.copy(alpha = 0.1f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.RocketLaunch, null, tint = TagColor, modifier = Modifier.size(12.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("จะเปิด ${selectedWorkflow.appName} อัตโนมัติ", color = TagColor, fontSize = 10.sp)
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+            }
 
             // Action buttons
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {

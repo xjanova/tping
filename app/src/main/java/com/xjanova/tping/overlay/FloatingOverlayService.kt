@@ -101,18 +101,27 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                             val appName = wf.targetAppName.ifEmpty {
                                 if (wf.targetAppPackage.isNotEmpty()) AppResolver.getAppName(this@FloatingOverlayService, wf.targetAppPackage) else ""
                             }
-                            val stepCount = try {
+                            val actions: List<RecordedAction> = try {
                                 val type = object : TypeToken<List<RecordedAction>>() {}.type
-                                (gson.fromJson<List<RecordedAction>>(wf.stepsJson, type))?.size ?: 0
-                            } catch (_: Exception) { 0 }
-                            WorkflowItem(wf.id, wf.name, appName, stepCount)
+                                gson.fromJson<List<RecordedAction>>(wf.stepsJson, type) ?: emptyList()
+                            } catch (_: Exception) { emptyList() }
+                            val stepCount = actions.size
+                            val dataKeys = actions.filter { it.dataFieldKey.isNotEmpty() }.map { it.dataFieldKey }.distinct()
+                            WorkflowItem(wf.id, wf.name, appName, stepCount, dataKeys)
                         }
                         _overlayState.value = _overlayState.value.copy(workflowItems = items)
                     }
                 }
                 launch {
                     db.dataProfileDao().getAll().collect { profiles ->
-                        val items = profiles.map { ProfileItem(it.id, it.name) }
+                        val items = profiles.map { p ->
+                            val fieldKeys = try {
+                                val type = object : TypeToken<List<DataField>>() {}.type
+                                val fields: List<DataField> = gson.fromJson(p.fieldsJson, type) ?: emptyList()
+                                fields.map { it.key }
+                            } catch (_: Exception) { emptyList() }
+                            ProfileItem(p.id, p.name, fieldKeys)
+                        }
                         _overlayState.value = _overlayState.value.copy(profileItems = items)
                     }
                 }
@@ -428,8 +437,8 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     }
 }
 
-data class WorkflowItem(val id: Long, val name: String, val appName: String, val stepCount: Int)
-data class ProfileItem(val id: Long, val name: String)
+data class WorkflowItem(val id: Long, val name: String, val appName: String, val stepCount: Int, val dataKeys: List<String> = emptyList())
+data class ProfileItem(val id: Long, val name: String, val fieldKeys: List<String> = emptyList())
 
 data class OverlayState(
     val mode: String = "idle",

@@ -357,12 +357,80 @@ fun WorkflowCard(
                 Spacer(modifier = Modifier.height(8.dp))
                 Divider()
                 Spacer(modifier = Modifier.height(8.dp))
+
+                // Show data field summary
+                val dataKeys = actions.filter { it.dataFieldKey.isNotEmpty() }.map { it.dataFieldKey }.distinct()
+                if (dataKeys.isNotEmpty()) {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFFF59E0B).copy(alpha = 0.08f)
+                        ),
+                        shape = RoundedCornerShape(6.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.DataObject,
+                                contentDescription = null,
+                                tint = Color(0xFFF59E0B),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                "ข้อมูลที่ต้องใช้: ${dataKeys.joinToString(", ")}",
+                                fontSize = 11.sp,
+                                color = Color(0xFFF59E0B),
+                                fontWeight = FontWeight.Medium
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                }
+
                 actions.forEach { action ->
-                    Text(
-                        "${action.stepOrder}. ${action.actionType} → ${action.resourceId.substringAfterLast("/")} ${if (action.dataFieldKey.isNotEmpty()) "[${action.dataFieldKey}]" else ""}",
-                        fontSize = 12.sp,
-                        modifier = Modifier.padding(vertical = 2.dp)
-                    )
+                    Row(
+                        modifier = Modifier.padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "${action.stepOrder}.",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.width(24.dp)
+                        )
+                        Text(
+                            when (action.actionType.name) {
+                                "CLICK" -> "กด"
+                                "INPUT_TEXT" -> "พิมพ์"
+                                "LONG_CLICK" -> "กดค้าง"
+                                "SCROLL_UP" -> "เลื่อนขึ้น"
+                                "SCROLL_DOWN" -> "เลื่อนลง"
+                                "BACK_BUTTON" -> "ย้อนกลับ"
+                                "WAIT" -> "รอ"
+                                else -> action.actionType.name
+                            },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.width(50.dp)
+                        )
+                        Text(
+                            buildString {
+                                val target = action.resourceId.substringAfterLast("/").ifEmpty { action.text.take(20) }
+                                if (target.isNotEmpty()) append(target)
+                                if (action.dataFieldKey.isNotEmpty()) {
+                                    append(" ")
+                                    append("[${action.dataFieldKey}]")
+                                }
+                            },
+                            fontSize = 12.sp,
+                            color = if (action.dataFieldKey.isNotEmpty()) Color(0xFF3B82F6)
+                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                    }
                 }
             }
         }
