@@ -58,6 +58,7 @@ fun HomeScreen(
         )
     }
     var showGuide by remember { mutableStateOf(false) }
+    var waitingForPermission by remember { mutableStateOf(false) }
 
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -78,6 +79,14 @@ fun HomeScreen(
             hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
                 ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
             else true
+
+            // Auto-launch overlay after returning from settings
+            if (waitingForPermission && isAccessibilityEnabled && hasOverlayPermission) {
+                waitingForPermission = false
+                val intent = Intent(context, FloatingOverlayService::class.java)
+                intent.putExtra("mode", "idle")
+                context.startForegroundService(intent)
+            }
         }
     }
 
@@ -307,8 +316,10 @@ fun HomeScreen(
                             )
                             .clickable {
                                 if (!isAccessibilityEnabled) {
+                                    waitingForPermission = true
                                     PermissionHelper.openAccessibilitySettings(context)
                                 } else if (!hasOverlayPermission) {
+                                    waitingForPermission = true
                                     PermissionHelper.openOverlaySettings(context)
                                 } else {
                                     val intent = Intent(context, FloatingOverlayService::class.java)

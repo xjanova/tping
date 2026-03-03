@@ -14,9 +14,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.xjanova.tping.data.entity.RecordedAction
 import com.xjanova.tping.data.entity.Workflow
 import com.xjanova.tping.overlay.FloatingOverlayService
@@ -31,9 +34,32 @@ fun WorkflowScreen(
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val workflows by viewModel.workflows.collectAsState()
     var showSaveDialog by remember { mutableStateOf(false) }
     var permissionMessage by remember { mutableStateOf("") }
+    var waitingForPermission by remember { mutableStateOf(false) }
+
+    // Auto-launch overlay when returning from settings with permissions granted
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            if (waitingForPermission) {
+                val hasAccess = TpingAccessibilityService.instance != null
+                val hasOverlay = Settings.canDrawOverlays(context)
+                if (hasAccess && hasOverlay) {
+                    waitingForPermission = false
+                    permissionMessage = ""
+                    val intent = Intent(context, FloatingOverlayService::class.java)
+                    intent.putExtra("mode", "idle")
+                    context.startForegroundService(intent)
+                } else if (hasAccess && !hasOverlay) {
+                    // Accessibility granted, now need overlay
+                    permissionMessage = "เปิด Accessibility แล้ว! ต้องเปิด Overlay อีก 1 อย่าง"
+                    PermissionHelper.openOverlaySettings(context)
+                }
+            }
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -113,14 +139,16 @@ fun WorkflowScreen(
                         Button(
                             onClick = {
                                 if (TpingAccessibilityService.instance == null) {
-                                    permissionMessage = "ต้องเปิด Accessibility Service ก่อน\nกดปุ่มด้านล่างเพื่อไปเปิด แล้วเลือก Tping → เปิด"
+                                    permissionMessage = "ต้องเปิด Accessibility Service ก่อน\nเปิดแล้วกลับมา จะเริ่มให้อัตโนมัติ"
+                                    waitingForPermission = true
                                     PermissionHelper.openAccessibilitySettings(context)
                                 } else if (!Settings.canDrawOverlays(context)) {
-                                    permissionMessage = "ต้องเปิด Overlay Permission ก่อน\nกดอนุญาตให้ Tping แสดงทับแอพอื่น"
+                                    permissionMessage = "ต้องเปิด Overlay Permission ก่อน\nเปิดแล้วกลับมา จะเริ่มให้อัตโนมัติ"
+                                    waitingForPermission = true
                                     PermissionHelper.openOverlaySettings(context)
                                 } else {
                                     permissionMessage = ""
-                                    // Start overlay in idle mode (user records from overlay)
+                                    waitingForPermission = false
                                     val intent = Intent(context, FloatingOverlayService::class.java)
                                     intent.putExtra("mode", "idle")
                                     context.startForegroundService(intent)
