@@ -263,7 +263,13 @@ fun ExpandedOverlay(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(headerText, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (state.mode == "game_recording") {
+                        Icon(Icons.Default.DragIndicator, "Drag", tint = Color.White.copy(alpha = 0.7f), modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                    }
+                    Text(headerText, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Icon(
                         Icons.Default.Remove, "Minimize", tint = Color.White.copy(alpha = 0.9f),
@@ -481,7 +487,28 @@ fun PlaySelectDialog(
             Spacer(modifier = Modifier.height(4.dp))
             Text("เลือกขั้นตอนและข้อมูลที่จะใช้", color = Color(0xFF999999), fontSize = 11.sp)
 
-            Spacer(modifier = Modifier.height(10.dp))
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Smart playback tip
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(Color(0xFFF59E0B).copy(alpha = 0.12f))
+                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                Icon(Icons.Default.Info, null, tint = Color(0xFFF59E0B), modifier = Modifier.size(14.dp))
+                Spacer(modifier = Modifier.width(6.dp))
+                Text(
+                    "ควรเริ่มเล่นที่หน้าจอเดียวกับที่เริ่มบันทึก เพื่อให้กดตำแหน่งถูกต้อง",
+                    color = Color(0xFFF59E0B),
+                    fontSize = 10.sp,
+                    lineHeight = 14.sp
+                )
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
 
             // Workflow list
             if (workflows.isEmpty()) {

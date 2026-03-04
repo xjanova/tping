@@ -27,6 +27,7 @@ import com.google.gson.reflect.TypeToken
 import com.xjanova.tping.MainActivity
 import com.xjanova.tping.R
 import com.xjanova.tping.TpingApplication
+import com.xjanova.tping.data.license.LicenseManager
 import com.xjanova.tping.data.entity.ActionType
 import com.xjanova.tping.data.entity.DataField
 import com.xjanova.tping.data.entity.RecordedAction
@@ -272,6 +273,12 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     // ====== Recording Controls ======
 
     private fun startRecording() {
+        if (!LicenseManager.isLicenseValid()) {
+            _overlayState.value = _overlayState.value.copy(
+                statusText = "⛔ License หมดอายุ — กรุณาซื้อคีย์"
+            )
+            return
+        }
         val service = TpingAccessibilityService.instance
         if (service == null) {
             _overlayState.value = _overlayState.value.copy(
@@ -369,10 +376,16 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     }
 
     private fun startGameRecording() {
+        if (!LicenseManager.isLicenseValid()) {
+            _overlayState.value = _overlayState.value.copy(
+                statusText = "⛔ License หมดอายุ — กรุณาซื้อคีย์"
+            )
+            return
+        }
         _overlayState.value = _overlayState.value.copy(
             showRecordModeDialog = false,
             mode = "game_recording", stepCount = 0,
-            statusText = "โหมดเกม - กดเพิ่มจุดกด",
+            statusText = "โหมดเกม — ลากแถบด้านบนเพื่อย้าย",
             targetAppName = "", recordingDone = false
         )
         setOverlayFocusable(false)
@@ -574,6 +587,14 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     // ====== Playback from Overlay ======
 
     private fun startPlaybackFromOverlay(workflowId: Long, profileId: Long?, loops: Int) {
+        if (!LicenseManager.isLicenseValid()) {
+            _overlayState.value = _overlayState.value.copy(
+                showPlayDialog = false,
+                statusText = "⛔ License หมดอายุ — กรุณาซื้อคีย์"
+            )
+            setOverlayFocusable(false)
+            return
+        }
         if (TpingAccessibilityService.instance == null) {
             _overlayState.value = _overlayState.value.copy(
                 showPlayDialog = false,

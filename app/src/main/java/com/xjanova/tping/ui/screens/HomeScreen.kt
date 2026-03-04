@@ -32,6 +32,8 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import com.xjanova.tping.data.license.LicenseManager
+import com.xjanova.tping.data.license.LicenseStatus
 import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.service.TpingAccessibilityService
 import com.xjanova.tping.ui.viewmodel.MainViewModel
@@ -117,6 +119,8 @@ fun HomeScreen(
             )
         }
     ) { padding ->
+        val licenseState by LicenseManager.state.collectAsState()
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -124,6 +128,84 @@ fun HomeScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // License Status Card
+            item {
+                val licColor = when (licenseState.status) {
+                    LicenseStatus.ACTIVE -> Color(0xFF22C55E)
+                    LicenseStatus.TRIAL -> Color(0xFF3B82F6)
+                    LicenseStatus.EXPIRED -> Color(0xFFEF4444)
+                    LicenseStatus.NONE -> Color(0xFFF59E0B)
+                    LicenseStatus.CHECKING -> Color(0xFF888888)
+                }
+                val licIcon = when (licenseState.status) {
+                    LicenseStatus.ACTIVE -> Icons.Default.VerifiedUser
+                    LicenseStatus.TRIAL -> Icons.Default.CardGiftcard
+                    LicenseStatus.EXPIRED -> Icons.Default.TimerOff
+                    LicenseStatus.NONE -> Icons.Default.Key
+                    LicenseStatus.CHECKING -> Icons.Default.HourglassTop
+                }
+                val licText = when (licenseState.status) {
+                    LicenseStatus.ACTIVE -> {
+                        val typeDisplay = LicenseManager.getLicenseTypeDisplay()
+                        if (licenseState.licenseType == "lifetime") {
+                            "ไลเซนส์: $typeDisplay (ไม่มีวันหมดอายุ)"
+                        } else {
+                            "ไลเซนส์: $typeDisplay — เหลือ ${licenseState.remainingDays} วัน"
+                        }
+                    }
+                    LicenseStatus.TRIAL -> "ทดลองใช้ฟรี — เหลือ ${licenseState.remainingHours} ชั่วโมง"
+                    LicenseStatus.EXPIRED -> "ไลเซนส์หมดอายุ — กดซื้อคีย์ใหม่"
+                    LicenseStatus.NONE -> "กรุณากรอก License Key"
+                    LicenseStatus.CHECKING -> "กำลังตรวจสอบ..."
+                }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = licColor.copy(alpha = 0.1f)
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(licIcon, null, tint = licColor, modifier = Modifier.size(22.dp))
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                licText,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = licColor
+                            )
+                            if (licenseState.status == LicenseStatus.ACTIVE) {
+                                Text(
+                                    "Device: ${licenseState.deviceId.take(8)}...",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                                )
+                            }
+                        }
+                        if (licenseState.status == LicenseStatus.EXPIRED || licenseState.status == LicenseStatus.NONE) {
+                            TextButton(
+                                onClick = {
+                                    val intent = android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        Uri.parse(LicenseManager.getPurchaseUrl())
+                                    )
+                                    context.startActivity(intent)
+                                }
+                            ) {
+                                Text("ซื้อคีย์", fontSize = 12.sp, color = licColor, fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
+                }
+            }
+
             // Permission Status
             item {
                 val allGranted = isAccessibilityEnabled && hasOverlayPermission && hasNotificationPermission

@@ -98,6 +98,12 @@ dependencies {
     // Gson for JSON serialization
     implementation("com.google.code.gson:gson:2.10.1")
 
+    // OkHttp for license API
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+
+    // Encrypted SharedPreferences for secure license storage
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

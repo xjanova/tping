@@ -14,6 +14,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import com.xjanova.tping.data.entity.DataField
 import com.xjanova.tping.data.entity.DataProfile
 import com.xjanova.tping.ui.viewmodel.MainViewModel
@@ -68,6 +70,8 @@ fun DataProfileScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Text("ยังไม่มีข้อมูล", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                     Text("กด + เพื่อเพิ่มชุดข้อมูลใหม่", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("ตัวอย่าง: ชื่อผู้ใช้, รหัสผ่าน, อีเมล", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
                 }
             }
         } else {
@@ -138,11 +142,25 @@ fun ProfileCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    profile.name,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp
-                )
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                    Text(
+                        profile.name,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp
+                    )
+                    if (profile.name.startsWith("ตัวอย่าง:")) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            "ไกด์",
+                            fontSize = 9.sp,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier
+                                .background(Color(0xFF8B5CF6), RoundedCornerShape(4.dp))
+                                .padding(horizontal = 6.dp, vertical = 1.dp)
+                        )
+                    }
+                }
                 Row {
                     IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.Edit, "Edit", modifier = Modifier.size(18.dp))
