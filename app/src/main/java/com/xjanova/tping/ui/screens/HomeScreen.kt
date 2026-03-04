@@ -32,8 +32,11 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.OutlinedTextField
 import com.xjanova.tping.data.license.LicenseManager
 import com.xjanova.tping.data.license.LicenseStatus
+import kotlinx.coroutines.launch
 import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.service.TpingAccessibilityService
 import com.xjanova.tping.ui.viewmodel.MainViewModel
@@ -91,6 +94,12 @@ fun HomeScreen(
             }
         }
     }
+
+    var licenseKeyInput by remember { mutableStateOf("") }
+    var isActivating by remember { mutableStateOf(false) }
+    var activateError by remember { mutableStateOf("") }
+    var activateSuccess by remember { mutableStateOf("") }
+    val activateScope = rememberCoroutineScope()
 
     Scaffold(
         topBar = {
@@ -201,6 +210,58 @@ fun HomeScreen(
                             ) {
                                 Text("ซื้อคีย์", fontSize = 12.sp, color = licColor, fontWeight = FontWeight.Bold)
                             }
+                        }
+                    }
+
+                    // License key input when expired/none
+                    if (licenseState.status == LicenseStatus.EXPIRED || licenseState.status == LicenseStatus.NONE) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            OutlinedTextField(
+                                value = licenseKeyInput,
+                                onValueChange = {
+                                    licenseKeyInput = it.uppercase().take(19)
+                                    activateError = ""
+                                    activateSuccess = ""
+                                },
+                                placeholder = { Text("XXXX-XXXX-XXXX-XXXX", fontSize = 12.sp) },
+                                singleLine = true,
+                                modifier = Modifier.weight(1f),
+                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                                shape = RoundedCornerShape(8.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Button(
+                                onClick = {
+                                    if (licenseKeyInput.isBlank()) return@Button
+                                    isActivating = true
+                                    activateError = ""
+                                    activateScope.launch {
+                                        val result = LicenseManager.activateKey(context, licenseKeyInput.trim())
+                                        isActivating = false
+                                        result.onSuccess { activateSuccess = "สำเร็จ! ($it)" }
+                                            .onFailure { activateError = it.message ?: "ผิดพลาด" }
+                                    }
+                                },
+                                enabled = !isActivating && licenseKeyInput.isNotBlank(),
+                                shape = RoundedCornerShape(8.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                            ) {
+                                if (isActivating) {
+                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)
+                                } else {
+                                    Text("ใช้คีย์", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+                        if (activateError.isNotEmpty()) {
+                            Text(activateError, color = Color(0xFFEF4444), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                        }
+                        if (activateSuccess.isNotEmpty()) {
+                            Text(activateSuccess, color = Color(0xFF22C55E), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
                         }
                     }
                 }
