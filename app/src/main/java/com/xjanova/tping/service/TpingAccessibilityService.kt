@@ -308,6 +308,32 @@ class TpingAccessibilityService : AccessibilityService() {
     }
 
     fun inputTextAtNode(action: RecordedAction, text: String, callback: () -> Unit) {
+        // Game mode: click at coordinates to focus field, wait, then set text
+        if (action.isGameMode) {
+            clickAtCoordinates(action) {
+                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                    try {
+                        val freshRoot = rootInActiveWindow
+                        val focused = freshRoot?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                        if (focused != null) {
+                            focused.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+                            val clearArgs = Bundle().apply {
+                                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+                            }
+                            focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
+                            val args = Bundle().apply {
+                                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+                            }
+                            focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+                            safeRecycle(focused)
+                        }
+                    } catch (_: Exception) {}
+                    callback()
+                }, 400)
+            }
+            return
+        }
+
         val rootNode = rootInActiveWindow ?: run { callback(); return }
         var targetNode: AccessibilityNodeInfo? = null
 

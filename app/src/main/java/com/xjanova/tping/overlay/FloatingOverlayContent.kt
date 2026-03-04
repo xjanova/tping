@@ -76,7 +76,10 @@ fun FloatingOverlayContent(
     onClose: () -> Unit,
     onDragDelta: (Float, Float) -> Unit = { _, _ -> },
     onShowGameCrosshair: (ActionType) -> Unit = {},
-    onAddGameWait: (Long) -> Unit = {}
+    onAddGameWait: (Long) -> Unit = {},
+    onShowGameInputCrosshair: () -> Unit = {},
+    onGameTagConfirm: (String) -> Unit = {},
+    onDismissGameTagDialog: () -> Unit = {}
 ) {
     Column {
         if (!state.isExpanded) {
@@ -89,6 +92,13 @@ fun FloatingOverlayContent(
                         onNormal = onStartNormalRecord,
                         onGame = onStartGameRecord,
                         onDismiss = onDismissRecordModeDialog
+                    )
+                }
+                state.showGameTagDialog -> {
+                    GameDataFieldDialog(
+                        coordsText = state.pendingInputCoords,
+                        onConfirm = { fieldKey -> onGameTagConfirm(fieldKey) },
+                        onDismiss = onDismissGameTagDialog
                     )
                 }
                 state.showTagDialog -> {
@@ -128,7 +138,8 @@ fun FloatingOverlayContent(
                         onClose = onClose,
                         onDragDelta = onDragDelta,
                         onShowGameCrosshair = onShowGameCrosshair,
-                        onAddGameWait = onAddGameWait
+                        onAddGameWait = onAddGameWait,
+                        onShowGameInputCrosshair = onShowGameInputCrosshair
                     )
                 }
             }
@@ -204,7 +215,8 @@ fun ExpandedOverlay(
     onClose: () -> Unit,
     onDragDelta: (Float, Float) -> Unit = { _, _ -> },
     onShowGameCrosshair: (ActionType) -> Unit = {},
-    onAddGameWait: (Long) -> Unit = {}
+    onAddGameWait: (Long) -> Unit = {},
+    onShowGameInputCrosshair: () -> Unit = {}
 ) {
     val headerColor = when (state.mode) {
         "recording" -> RecordColor
@@ -309,12 +321,13 @@ fun ExpandedOverlay(
                     ) {
                         OverlayButton(Icons.Default.TouchApp, "กด", GameColor) { onShowGameCrosshair(ActionType.CLICK) }
                         OverlayButton(Icons.Default.PanTool, "กดค้าง", Color(0xFFFF7043)) { onShowGameCrosshair(ActionType.LONG_CLICK) }
-                        OverlayButton(Icons.Default.Timer, "รอ 1s", PauseColor) { onAddGameWait(1000) }
+                        OverlayButton(Icons.Default.EditNote, "กรอก", TagColor, onShowGameInputCrosshair)
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
+                        OverlayButton(Icons.Default.Timer, "รอ 1s", PauseColor) { onAddGameWait(1000) }
                         OverlayButton(Icons.Default.Timer3, "รอ 3s", PauseColor) { onAddGameWait(3000) }
                         OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStopGameRecord)
                     }
@@ -1018,6 +1031,115 @@ fun CrosshairOverlay(
                 fontSize = 13.sp,
                 textAlign = TextAlign.Center
             )
+        }
+    }
+}
+
+// ====== Game Data Field Dialog ======
+
+@Composable
+fun GameDataFieldDialog(
+    coordsText: String = "",
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var fieldKey by remember { mutableStateOf("") }
+
+    val quickKeys = listOf("ชื่อผู้ใช้", "รหัสผ่าน", "อีเมล", "เบอร์โทร")
+
+    Card(
+        modifier = Modifier.width(270.dp).padding(8.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xF5222222)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.EditNote, null, tint = TagColor, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("กรอกข้อมูลตรงนี้", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Show coordinate info
+            if (coordsText.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(GameColor.copy(alpha = 0.15f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.MyLocation, null, tint = GameColor, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("ตำแหน่ง: $coordsText", color = GameColor, fontSize = 11.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("เลือกหรือพิมพ์ชื่อฟิลด์ข้อมูล", color = Color(0xFF999999), fontSize = 11.sp)
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            // Quick key chips
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                quickKeys.forEach { key ->
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                if (fieldKey == key) TagColor.copy(alpha = 0.3f)
+                                else Color(0xFF333333)
+                            )
+                            .clickable { fieldKey = key }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            key,
+                            color = if (fieldKey == key) TagColor else Color(0xFFBBBBBB),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            OutlinedTextField(
+                value = fieldKey,
+                onValueChange = { fieldKey = it },
+                label = { Text("Data Key", color = Color(0xFF888888)) },
+                placeholder = { Text("เช่น ชื่อผู้ใช้, รหัสผ่าน", color = Color(0xFF555555), fontSize = 12.sp) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = Color.White,
+                    unfocusedTextColor = Color(0xFFCCCCCC),
+                    focusedBorderColor = TagColor,
+                    unfocusedBorderColor = Color(0xFF444444)
+                )
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onDismiss) {
+                    Text("ยกเลิก", color = Color(0xFF999999))
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = { if (fieldKey.isNotBlank()) onConfirm(fieldKey.trim()) },
+                    colors = ButtonDefaults.buttonColors(containerColor = TagColor),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.Check, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("ยืนยัน", fontSize = 13.sp)
+                }
+            }
         }
     }
 }

@@ -57,6 +57,9 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     private var overlayParams: WindowManager.LayoutParams? = null
     private var crosshairView: ComposeView? = null
     private var pendingGameActionType: ActionType = ActionType.CLICK
+    private var crosshairMode: String = "tap" // "tap" or "input"
+    private var pendingGameInputX: Int = 0
+    private var pendingGameInputY: Int = 0
     private val gameActions = mutableListOf<RecordedAction>()
     private var gameStepCounter = 0
     private var gameLastActionTime = System.currentTimeMillis()
@@ -236,7 +239,13 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     onClose = { stopSelf() },
                     onDragDelta = { dx, dy -> moveOverlay(dx, dy) },
                     onShowGameCrosshair = { actionType -> showCrosshair(actionType) },
-                    onAddGameWait = { delayMs -> addGameWaitAction(delayMs) }
+                    onAddGameWait = { delayMs -> addGameWaitAction(delayMs) },
+                    onShowGameInputCrosshair = { showCrosshair(ActionType.CLICK, "input") },
+                    onGameTagConfirm = { fieldKey -> addGameInputAction(fieldKey) },
+                    onDismissGameTagDialog = {
+                        _overlayState.value = _overlayState.value.copy(showGameTagDialog = false)
+                        setOverlayFocusable(false)
+                    }
                 )
             }
         }
@@ -372,9 +381,10 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         gameLastActionTime = System.currentTimeMillis()
     }
 
-    private fun showCrosshair(actionType: ActionType) {
+    private fun showCrosshair(actionType: ActionType, mode: String = "tap") {
         if (crosshairView != null) return
         pendingGameActionType = actionType
+        crosshairMode = mode
         _overlayState.value = _overlayState.value.copy(showGameCrosshair = true)
 
         val params = WindowManager.LayoutParams(
@@ -391,6 +401,13 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             PixelFormat.TRANSLUCENT
         )
 
+        val actionLabel = when {
+            mode == "input" -> "กรอกข้อมูล"
+            actionType == ActionType.CLICK -> "กด"
+            actionType == ActionType.LONG_CLICK -> "กดค้าง"
+            else -> "กด"
+        }
+
         val metrics = getScreenMetrics()
         crosshairView = ComposeView(this).apply {
             setViewTreeLifecycleOwner(this@FloatingOverlayService)
@@ -399,14 +416,21 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                 CrosshairOverlay(
                     screenWidth = metrics.widthPixels,
                     screenHeight = metrics.heightPixels,
-                    actionLabel = when (actionType) {
-                        ActionType.CLICK -> "กด"
-                        ActionType.LONG_CLICK -> "กดค้าง"
-                        else -> "กด"
-                    },
+                    actionLabel = actionLabel,
                     onConfirm = { x, y ->
-                        addGameTapAction(actionType, x, y)
                         hideCrosshair()
+                        if (mode == "input") {
+                            // Store coordinates and show tag dialog
+                            pendingGameInputX = x
+                            pendingGameInputY = y
+                            setOverlayFocusable(true)
+                            _overlayState.value = _overlayState.value.copy(
+                                showGameTagDialog = true,
+                                pendingInputCoords = "($x, $y)"
+                            )
+                        } else {
+                            addGameTapAction(actionType, x, y)
+                        }
                     },
                     onCancel = { hideCrosshair() }
                 )
@@ -461,6 +485,32 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             stepCount = gameActions.size,
             statusText = "รอ ${delayMs}ms — ${gameActions.size} ขั้นตอน"
         )
+    }
+
+    private fun addGameInputAction(fieldKey: String) {
+        val metrics = getScreenMetrics()
+        val now = System.currentTimeMillis()
+        val delay = (now - gameLastActionTime).coerceIn(100, 5000)
+        gameLastActionTime = now
+
+        val action = RecordedAction(
+            stepOrder = ++gameStepCounter,
+            actionType = ActionType.INPUT_TEXT,
+            boundsLeft = pendingGameInputX - 1, boundsTop = pendingGameInputY - 1,
+            boundsRight = pendingGameInputX + 1, boundsBottom = pendingGameInputY + 1,
+            dataFieldKey = fieldKey,
+            delayAfterMs = if (gameStepCounter == 1) 500 else delay,
+            screenWidth = metrics.widthPixels,
+            screenHeight = metrics.heightPixels,
+            isGameMode = true
+        )
+        gameActions.add(action)
+        _overlayState.value = _overlayState.value.copy(
+            showGameTagDialog = false,
+            stepCount = gameActions.size,
+            statusText = "กรอก [$fieldKey] ที่ (${pendingGameInputX}, ${pendingGameInputY}) — ${gameActions.size} ขั้นตอน"
+        )
+        setOverlayFocusable(false)
     }
 
     private fun stopGameRecording() {
@@ -643,6 +693,8 @@ data class OverlayState(
     val showSaveDialog: Boolean = false, val recordingDone: Boolean = false,
     val showRecordModeDialog: Boolean = false,
     val showGameCrosshair: Boolean = false,
+    val showGameTagDialog: Boolean = false,
+    val pendingInputCoords: String = "",
     val targetAppName: String = "", val suggestedFieldName: String = "",
     val suggestedWorkflowName: String = "",
     val workflowItems: List<WorkflowItem> = emptyList(),
