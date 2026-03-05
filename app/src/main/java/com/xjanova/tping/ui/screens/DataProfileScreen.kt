@@ -15,7 +15,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.CircleShape
 import com.xjanova.tping.data.entity.DataField
 import com.xjanova.tping.data.entity.DataProfile
 import com.xjanova.tping.ui.viewmodel.MainViewModel
@@ -29,6 +28,10 @@ fun DataProfileScreen(
     val profiles by viewModel.dataProfiles.collectAsState()
     var showAddDialog by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf<DataProfile?>(null) }
+
+    // Group profiles by category
+    val grouped = profiles.groupBy { it.category.ifEmpty { "" } }
+    val categories = grouped.keys.sorted()
 
     Scaffold(
         topBar = {
@@ -71,7 +74,7 @@ fun DataProfileScreen(
                     Text("ยังไม่มีข้อมูล", color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f))
                     Text("กด + เพื่อเพิ่มชุดข้อมูลใหม่", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f))
                     Spacer(modifier = Modifier.height(8.dp))
-                    Text("ตัวอย่าง: ชื่อผู้ใช้, รหัสผ่าน, อีเมล", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
+                    Text("ตั้งหมวดหมู่เพื่อจัดกลุ่ม เช่น \"โซเชียล\", \"เกม\"", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f))
                 }
             }
         } else {
@@ -82,28 +85,70 @@ fun DataProfileScreen(
                     .padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                items(profiles) { profile ->
-                    ProfileCard(
-                        profile = profile,
-                        fields = viewModel.getFieldsFromProfile(profile),
-                        onEdit = { editingProfile = profile },
-                        onCopy = { viewModel.copyProfile(profile) },
-                        onDelete = { viewModel.deleteProfile(profile) }
-                    )
+                categories.forEach { cat ->
+                    val catProfiles = grouped[cat] ?: emptyList()
+                    if (cat.isNotEmpty()) {
+                        item(key = "cat_$cat") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Folder, null, tint = Color(0xFFF59E0B), modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(cat, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "${catProfiles.size} ชุด",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+                    } else if (categories.size > 1) {
+                        // Show "no category" header only if there are also categorized items
+                        item(key = "cat_uncategorized") {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(top = 8.dp, bottom = 4.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.FolderOpen, null, tint = Color(0xFF888888), modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("ไม่มีหมวด", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color(0xFF888888))
+                            }
+                        }
+                    }
+                    items(catProfiles, key = { it.id }) { profile ->
+                        ProfileCard(
+                            profile = profile,
+                            fields = viewModel.getFieldsFromProfile(profile),
+                            onEdit = { editingProfile = profile },
+                            onCopy = { viewModel.copyProfile(profile) },
+                            onDelete = { viewModel.deleteProfile(profile) }
+                        )
+                    }
                 }
             }
         }
     }
+
+    // Existing categories for suggestions
+    val existingCategories = profiles.map { it.category }.filter { it.isNotEmpty() }.distinct()
 
     // Add Dialog
     if (showAddDialog) {
         ProfileEditDialog(
             title = "เพิ่มชุดข้อมูลใหม่",
             initialName = "",
+            initialCategory = "",
             initialFields = listOf(DataField("", "")),
+            existingCategories = existingCategories,
             onDismiss = { showAddDialog = false },
-            onSave = { name, fields ->
-                viewModel.saveProfile(name, fields)
+            onSave = { name, category, fields ->
+                viewModel.saveProfile(name, category, fields)
                 showAddDialog = false
             }
         )
@@ -114,10 +159,12 @@ fun DataProfileScreen(
         ProfileEditDialog(
             title = "แก้ไขข้อมูล",
             initialName = profile.name,
+            initialCategory = profile.category,
             initialFields = viewModel.getFieldsFromProfile(profile),
+            existingCategories = existingCategories,
             onDismiss = { editingProfile = null },
-            onSave = { name, fields ->
-                viewModel.updateProfile(profile.copy(name = name), fields)
+            onSave = { name, category, fields ->
+                viewModel.updateProfile(profile, name, category, fields)
                 editingProfile = null
             }
         )
@@ -150,15 +197,15 @@ fun ProfileCard(
                         fontWeight = FontWeight.Bold,
                         fontSize = 16.sp
                     )
-                    if (profile.name.startsWith("ตัวอย่าง:")) {
+                    if (profile.category.isNotEmpty()) {
                         Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            "ไกด์",
+                            profile.category,
                             fontSize = 9.sp,
                             color = Color.White,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier
-                                .background(Color(0xFF8B5CF6), RoundedCornerShape(4.dp))
+                                .background(Color(0xFFF59E0B), RoundedCornerShape(4.dp))
                                 .padding(horizontal = 6.dp, vertical = 1.dp)
                         )
                     }
@@ -219,15 +266,20 @@ fun ProfileCard(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileEditDialog(
     title: String,
     initialName: String,
+    initialCategory: String,
     initialFields: List<DataField>,
+    existingCategories: List<String> = emptyList(),
     onDismiss: () -> Unit,
-    onSave: (String, List<DataField>) -> Unit
+    onSave: (String, String, List<DataField>) -> Unit
 ) {
     var name by remember { mutableStateOf(initialName) }
+    var category by remember { mutableStateOf(initialCategory) }
+    var showCategoryDropdown by remember { mutableStateOf(false) }
     var fields by remember {
         mutableStateOf(
             if (initialFields.isEmpty()) listOf(DataField("", ""))
@@ -240,6 +292,50 @@ fun ProfileEditDialog(
         title = { Text(title) },
         text = {
             Column {
+                // Category field with dropdown
+                ExposedDropdownMenuBox(
+                    expanded = showCategoryDropdown && existingCategories.isNotEmpty(),
+                    onExpandedChange = { showCategoryDropdown = it }
+                ) {
+                    OutlinedTextField(
+                        value = category,
+                        onValueChange = {
+                            category = it
+                            showCategoryDropdown = true
+                        },
+                        label = { Text("หมวดหมู่") },
+                        placeholder = { Text("เช่น โซเชียล, เกม") },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        singleLine = true,
+                        trailingIcon = {
+                            if (existingCategories.isNotEmpty()) {
+                                ExposedDropdownMenuDefaults.TrailingIcon(expanded = showCategoryDropdown)
+                            }
+                        }
+                    )
+                    if (existingCategories.isNotEmpty()) {
+                        val filtered = existingCategories.filter { it.contains(category, ignoreCase = true) }
+                        if (filtered.isNotEmpty()) {
+                            ExposedDropdownMenu(
+                                expanded = showCategoryDropdown,
+                                onDismissRequest = { showCategoryDropdown = false }
+                            ) {
+                                filtered.forEach { cat ->
+                                    DropdownMenuItem(
+                                        text = { Text(cat) },
+                                        onClick = {
+                                            category = cat
+                                            showCategoryDropdown = false
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
                 OutlinedTextField(
                     value = name,
                     onValueChange = { name = it },
@@ -307,7 +403,7 @@ fun ProfileEditDialog(
                 onClick = {
                     val validFields = fields.filter { it.key.isNotBlank() }
                     if (name.isNotBlank() && validFields.isNotEmpty()) {
-                        onSave(name, validFields)
+                        onSave(name, category.trim(), validFields)
                     }
                 }
             ) {

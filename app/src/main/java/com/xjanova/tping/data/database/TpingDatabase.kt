@@ -18,7 +18,7 @@ import kotlinx.coroutines.launch
 
 @Database(
     entities = [DataProfile::class, Workflow::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 abstract class TpingDatabase : RoomDatabase() {
@@ -37,6 +37,13 @@ abstract class TpingDatabase : RoomDatabase() {
             }
         }
 
+        // Migration 2→3: Add category column to data_profiles table
+        private val MIGRATION_2_3 = object : Migration(2, 3) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE data_profiles ADD COLUMN category TEXT NOT NULL DEFAULT ''")
+            }
+        }
+
         fun getDatabase(context: Context): TpingDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -44,7 +51,7 @@ abstract class TpingDatabase : RoomDatabase() {
                     TpingDatabase::class.java,
                     "tping_database"
                 )
-                    .addMigrations(MIGRATION_1_2)
+                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                     .addCallback(SeedCallback())
                     .fallbackToDestructiveMigration()
                     .build()
@@ -72,7 +79,8 @@ abstract class TpingDatabase : RoomDatabase() {
                         )
                         dao.insert(
                             DataProfile(
-                                name = "ตัวอย่าง: บัญชีเกม",
+                                name = "บัญชี 1",
+                                category = "เกม",
                                 fieldsJson = gson.toJson(gameFields)
                             )
                         )
@@ -85,7 +93,8 @@ abstract class TpingDatabase : RoomDatabase() {
                         )
                         dao.insert(
                             DataProfile(
-                                name = "ตัวอย่าง: โซเชียล",
+                                name = "บัญชี 1",
+                                category = "โซเชียล",
                                 fieldsJson = gson.toJson(socialFields)
                             )
                         )

@@ -23,4 +23,10 @@ interface DataProfileDao {
 
     @Query("DELETE FROM data_profiles")
     suspend fun deleteAll()
+
+    @Query("SELECT DISTINCT category FROM data_profiles WHERE category != '' ORDER BY category")
+    fun getCategories(): Flow<List<String>>
+
+    @Query("SELECT * FROM data_profiles WHERE category = :category ORDER BY createdAt")
+    suspend fun getByCategory(category: String): List<DataProfile>
 }

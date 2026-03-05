@@ -7,6 +7,7 @@ import androidx.room.PrimaryKey
 data class DataProfile(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val name: String,
+    val category: String = "",
     val fieldsJson: String, // JSON array of DataField
     val createdAt: Long = System.currentTimeMillis()
 )

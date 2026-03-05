@@ -129,15 +129,32 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                 }
                 launch {
                     db.dataProfileDao().getAll().collect { profiles ->
-                        val items = profiles.map { p ->
-                            val fieldKeys = try {
+                        // Build category items grouped by category
+                        val allKeys = mutableSetOf<String>()
+                        val grouped = profiles.filter { it.category.isNotEmpty() }.groupBy { it.category }
+                        val catItems = grouped.map { (cat, catProfiles) ->
+                            val fieldKeys = catProfiles.flatMap { p ->
+                                try {
+                                    val type = object : TypeToken<List<DataField>>() {}.type
+                                    val fields: List<DataField> = gson.fromJson(p.fieldsJson, type) ?: emptyList()
+                                    fields.map { it.key }
+                                } catch (_: Exception) { emptyList() }
+                            }.distinct()
+                            allKeys.addAll(fieldKeys)
+                            ProfileCategoryItem(cat, catProfiles.size, fieldKeys, catProfiles.map { it.id })
+                        }
+                        // Also collect keys from uncategorized profiles
+                        profiles.filter { it.category.isEmpty() }.forEach { p ->
+                            try {
                                 val type = object : TypeToken<List<DataField>>() {}.type
                                 val fields: List<DataField> = gson.fromJson(p.fieldsJson, type) ?: emptyList()
-                                fields.map { it.key }
-                            } catch (_: Exception) { emptyList() }
-                            ProfileItem(p.id, p.name, fieldKeys)
+                                allKeys.addAll(fields.map { it.key })
+                            } catch (_: Exception) {}
                         }
-                        _overlayState.value = _overlayState.value.copy(profileItems = items)
+                        _overlayState.value = _overlayState.value.copy(
+                            profileCategories = catItems,
+                            allFieldKeys = allKeys.toList().sorted()
+                        )
                     }
                 }
             } catch (_: Exception) {}
@@ -234,8 +251,8 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                         _overlayState.value = _overlayState.value.copy(showPlayDialog = false)
                         setOverlayFocusable(false)
                     },
-                    onStartPlayback = { workflowId, profileIds, loops, rotate ->
-                        startPlaybackFromOverlay(workflowId, profileIds, loops, rotate)
+                    onStartPlayback = { workflowId, category, loops, shuffle ->
+                        startPlaybackFromOverlay(workflowId, category, loops, shuffle)
                     },
                     onPause = { pausePlayback() },
                     onResume = { resumePlayback() },
@@ -678,7 +695,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
 
     // ====== Playback from Overlay ======
 
-    private fun startPlaybackFromOverlay(workflowId: Long, profileIds: List<Long>, loops: Int, rotateData: Boolean) {
+    private fun startPlaybackFromOverlay(workflowId: Long, category: String, loops: Int, shuffleData: Boolean) {
         if (!LicenseManager.isLicenseValid()) {
             _overlayState.value = _overlayState.value.copy(
                 showPlayDialog = false,
@@ -706,14 +723,14 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     gson.fromJson(workflow.stepsJson, type) ?: emptyList()
                 } catch (_: Exception) { emptyList() }
 
-                // Load all selected profiles
-                val dataFieldSets: List<List<DataField>> = if (profileIds.isNotEmpty()) {
-                    profileIds.mapNotNull { pid ->
-                        val profile = db.dataProfileDao().getById(pid)
-                        if (profile != null) try {
+                // Load all profiles in the selected category
+                val dataFieldSets: List<List<DataField>> = if (category.isNotEmpty()) {
+                    val profiles = db.dataProfileDao().getByCategory(category)
+                    profiles.mapNotNull { profile ->
+                        try {
                             val type = object : TypeToken<List<DataField>>() {}.type
                             gson.fromJson<List<DataField>>(profile.fieldsJson, type)
-                        } catch (_: Exception) { null } else null
+                        } catch (_: Exception) { null }
                     }
                 } else emptyList()
 
@@ -723,7 +740,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     actions = actions,
                     dataFieldSets = dataFieldSets,
                     loopCount = loops,
-                    rotateData = rotateData,
+                    shuffleData = shuffleData,
                     scope = serviceScope
                 )
             } catch (e: Exception) {
@@ -786,7 +803,12 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
 }
 
 data class WorkflowItem(val id: Long, val name: String, val appName: String, val stepCount: Int, val dataKeys: List<String> = emptyList())
-data class ProfileItem(val id: Long, val name: String, val fieldKeys: List<String> = emptyList())
+data class ProfileCategoryItem(
+    val category: String,
+    val profileCount: Int,
+    val fieldKeys: List<String>,
+    val profileIds: List<Long>
+)
 
 data class OverlayState(
     val mode: String = "idle", // idle, recording, game_recording, playing, paused
@@ -803,5 +825,6 @@ data class OverlayState(
     val targetAppName: String = "", val suggestedFieldName: String = "",
     val suggestedWorkflowName: String = "",
     val workflowItems: List<WorkflowItem> = emptyList(),
-    val profileItems: List<ProfileItem> = emptyList()
+    val profileCategories: List<ProfileCategoryItem> = emptyList(),
+    val allFieldKeys: List<String> = emptyList()
 )

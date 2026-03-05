@@ -51,17 +51,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // ====== Data Profile Operations ======
 
-    fun saveProfile(name: String, fields: List<DataField>) {
+    fun saveProfile(name: String, category: String, fields: List<DataField>) {
         viewModelScope.launch {
             val json = gson.toJson(fields)
-            profileDao.insert(DataProfile(name = name, fieldsJson = json))
+            profileDao.insert(DataProfile(name = name, category = category, fieldsJson = json))
         }
     }
 
-    fun updateProfile(profile: DataProfile, fields: List<DataField>) {
+    fun updateProfile(profile: DataProfile, name: String, category: String, fields: List<DataField>) {
         viewModelScope.launch {
             val json = gson.toJson(fields)
-            profileDao.update(profile.copy(fieldsJson = json))
+            profileDao.update(profile.copy(name = name, category = category, fieldsJson = json))
         }
     }
 
@@ -74,7 +74,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun copyProfile(profile: DataProfile) {
         viewModelScope.launch {
             val newName = "${profile.name} (สำเนา)"
-            profileDao.insert(DataProfile(name = newName, fieldsJson = profile.fieldsJson))
+            profileDao.insert(DataProfile(name = newName, category = profile.category, fieldsJson = profile.fieldsJson))
         }
     }
 

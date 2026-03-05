@@ -68,7 +68,7 @@ fun FloatingOverlayContent(
     onDismissTagDialog: () -> Unit,
     onShowPlayDialog: () -> Unit,
     onDismissPlayDialog: () -> Unit,
-    onStartPlayback: (Long, List<Long>, Int, Boolean) -> Unit,
+    onStartPlayback: (Long, String, Int, Boolean) -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onStop: () -> Unit,
@@ -98,6 +98,7 @@ fun FloatingOverlayContent(
                 state.showGameTagDialog -> {
                     GameDataFieldDialog(
                         coordsText = state.pendingInputCoords,
+                        availableKeys = state.allFieldKeys,
                         onConfirm = { fieldKey -> onGameTagConfirm(fieldKey) },
                         onDismiss = onDismissGameTagDialog
                     )
@@ -105,6 +106,7 @@ fun FloatingOverlayContent(
                 state.showTagDialog -> {
                     TagDataDialog(
                         suggestion = state.suggestedFieldName,
+                        availableKeys = state.allFieldKeys,
                         onConfirm = { fieldKey -> onTagData(fieldKey) },
                         onDismiss = onDismissTagDialog
                     )
@@ -119,7 +121,7 @@ fun FloatingOverlayContent(
                 state.showPlayDialog -> {
                     PlaySelectDialog(
                         workflows = state.workflowItems,
-                        profiles = state.profileItems,
+                        categories = state.profileCategories,
                         onStart = onStartPlayback,
                         onDismiss = onDismissPlayDialog
                     )
@@ -467,19 +469,19 @@ fun SaveWorkflowDialog(
 @Composable
 fun PlaySelectDialog(
     workflows: List<WorkflowItem>,
-    profiles: List<ProfileItem>,
-    onStart: (Long, List<Long>, Int, Boolean) -> Unit,
+    categories: List<ProfileCategoryItem>,
+    onStart: (Long, String, Int, Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     var selectedWorkflowId by remember { mutableStateOf<Long?>(null) }
-    var selectedProfileIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
+    var selectedCategory by remember { mutableStateOf("") }
     var loops by remember { mutableIntStateOf(1) }
-    var rotateData by remember { mutableStateOf(false) }
+    var shuffleMode by remember { mutableStateOf(false) }
 
     val selectedWorkflow = workflows.find { it.id == selectedWorkflowId }
-    val firstSelectedProfile = profiles.find { it.id == selectedProfileIds.firstOrNull() }
     val requiredKeys = selectedWorkflow?.dataKeys ?: emptyList()
-    val profileKeys = firstSelectedProfile?.fieldKeys ?: emptyList()
+    val selectedCatItem = categories.find { it.category == selectedCategory }
+    val categoryKeys = selectedCatItem?.fieldKeys ?: emptyList()
 
     Card(
         modifier = Modifier.width(290.dp).heightIn(max = 400.dp).padding(8.dp),
@@ -495,7 +497,7 @@ fun PlaySelectDialog(
                 Text("เลือก Workflow", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
             }
             Spacer(modifier = Modifier.height(4.dp))
-            Text("เลือกขั้นตอนและข้อมูลที่จะใช้", color = Color(0xFF999999), fontSize = 11.sp)
+            Text("เลือกขั้นตอนและหมวดข้อมูล", color = Color(0xFF999999), fontSize = 11.sp)
 
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -585,7 +587,7 @@ fun PlaySelectDialog(
                         Text("ต้องใช้ข้อมูล:", color = Color(0xFFF59E0B), fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.height(2.dp))
                         requiredKeys.forEach { key ->
-                            val hasKey = profileKeys.contains(key)
+                            val hasKey = categoryKeys.contains(key)
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(
                                     if (hasKey) Icons.Default.CheckCircle else Icons.Default.RadioButtonUnchecked,
@@ -597,143 +599,123 @@ fun PlaySelectDialog(
                                 Text(key, color = if (hasKey) Color(0xFFCCCCCC) else Color(0xFF888888), fontSize = 11.sp)
                             }
                         }
-                        if (selectedProfileIds.isEmpty()) {
+                        if (selectedCategory.isEmpty()) {
                             Spacer(modifier = Modifier.height(2.dp))
-                            Text("⬆ เลือกชุดข้อมูลด้านล่าง", color = Color(0xFF888888), fontSize = 10.sp)
+                            Text("⬆ เลือกหมวดข้อมูลด้านล่าง", color = Color(0xFF888888), fontSize = 10.sp)
                         }
                     }
                 }
             }
 
-            // Profile picker
-            if (selectedWorkflow != null && requiredKeys.isNotEmpty()) {
+            // Category picker (show when workflow has data keys OR categories exist)
+            if (selectedWorkflow != null && requiredKeys.isNotEmpty() && categories.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("ชุดข้อมูล", color = Color(0xFFBBBBBB), fontSize = 12.sp, fontWeight = FontWeight.Medium)
-                    if (selectedProfileIds.size > 1) {
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("(${selectedProfileIds.size} ชุด)", color = TagColor, fontSize = 10.sp)
-                    }
-                }
-                Spacer(modifier = Modifier.height(4.dp))
-                if (profiles.isEmpty()) {
-                    Text("ยังไม่มีชุดข้อมูล - สร้างในแอพ Tping → จัดการข้อมูล", color = Color(0xFF888888), fontSize = 11.sp,
-                        modifier = Modifier.padding(vertical = 4.dp))
-                } else {
-                    Column {
-                        profiles.forEach { profile ->
-                            val isSelected = profile.id in selectedProfileIds
-                            val matchCount = requiredKeys.count { profile.fieldKeys.contains(it) }
-                            val matchColor = when {
-                                matchCount == requiredKeys.size -> PlayColor
-                                matchCount > 0 -> Color(0xFFF59E0B)
-                                else -> Color(0xFF666666)
-                            }
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
-                                    .background(if (isSelected) TagColor.copy(alpha = 0.2f) else Color.Transparent)
-                                    .clickable {
-                                        selectedProfileIds = if (isSelected) {
-                                            selectedProfileIds - profile.id
-                                        } else {
-                                            selectedProfileIds + profile.id
-                                        }
-                                    }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Icon(
-                                    if (isSelected) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
-                                    null,
-                                    tint = if (isSelected) TagColor else Color(0xFF666666),
-                                    modifier = Modifier.size(16.dp)
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text(profile.name, color = Color(0xFFCCCCCC), fontSize = 12.sp,
-                                    maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
-                                // Match indicator
-                                Text(
-                                    "$matchCount/${requiredKeys.size}",
-                                    color = matchColor, fontSize = 10.sp, fontWeight = FontWeight.Bold
-                                )
-                            }
-                        }
-                    }
-
-                    // Rotation toggle (only show when multiple profiles selected)
-                    if (selectedProfileIds.size > 1) {
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
-                                .background(Color(0xFF2A2A2A))
-                                .clickable { rotateData = !rotateData }
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                if (rotateData) Icons.Default.SyncAlt else Icons.Default.Repeat,
-                                null,
-                                tint = if (rotateData) PauseColor else Color(0xFF888888),
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    if (rotateData) "หมุนวนข้อมูล" else "ใช้ชุดแรกทุกรอบ",
-                                    color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium
-                                )
-                                Text(
-                                    if (rotateData) "แต่ละรอบใช้ข้อมูลชุดถัดไป" else "ทุกรอบใช้ข้อมูลชุดเดียวกัน",
-                                    color = Color(0xFF888888), fontSize = 9.sp
-                                )
-                            }
-                            Switch(
-                                checked = rotateData,
-                                onCheckedChange = { rotateData = it },
-                                modifier = Modifier.height(20.dp),
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = PauseColor,
-                                    checkedTrackColor = PauseColor.copy(alpha = 0.3f)
-                                )
-                            )
-                        }
-                    }
-                }
-            } else if (profiles.isNotEmpty() && (selectedWorkflow == null || requiredKeys.isEmpty())) {
-                Spacer(modifier = Modifier.height(8.dp))
-                Text("ชุดข้อมูล (ไม่บังคับ)", color = Color(0xFFBBBBBB), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Text("หมวดข้อมูล", color = Color(0xFFBBBBBB), fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 Spacer(modifier = Modifier.height(4.dp))
                 Column {
-                    profiles.forEach { profile ->
-                        val isSelected = profile.id in selectedProfileIds
+                    categories.forEach { cat ->
+                        val isSelected = selectedCategory == cat.category
+                        val matchCount = requiredKeys.count { cat.fieldKeys.contains(it) }
+                        val matchColor = when {
+                            matchCount == requiredKeys.size -> PlayColor
+                            matchCount > 0 -> Color(0xFFF59E0B)
+                            else -> Color(0xFF666666)
+                        }
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(if (isSelected) TagColor.copy(alpha = 0.2f) else Color.Transparent)
-                                .clickable {
-                                    selectedProfileIds = if (isSelected) {
-                                        selectedProfileIds - profile.id
-                                    } else {
-                                        selectedProfileIds + profile.id
-                                    }
-                                }
+                                .clickable { selectedCategory = if (isSelected) "" else cat.category }
                                 .padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(
-                                if (isSelected) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                if (isSelected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
                                 null,
                                 tint = if (isSelected) TagColor else Color(0xFF666666),
                                 modifier = Modifier.size(16.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text(profile.name, color = Color(0xFFCCCCCC), fontSize = 12.sp,
-                                maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(cat.category, color = Color(0xFFCCCCCC), fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text("${cat.profileCount} ชุด", color = Color(0xFF888888), fontSize = 10.sp)
+                            }
+                            Text(
+                                "$matchCount/${requiredKeys.size}",
+                                color = matchColor, fontSize = 10.sp, fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                }
+
+                // Shuffle toggle (show when category selected and has multiple profiles)
+                if (selectedCatItem != null && selectedCatItem.profileCount > 1) {
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color(0xFF2A2A2A))
+                            .clickable { shuffleMode = !shuffleMode }
+                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            if (shuffleMode) Icons.Default.Shuffle else Icons.Default.FormatListNumbered,
+                            null,
+                            tint = if (shuffleMode) PauseColor else Color(0xFF888888),
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                if (shuffleMode) "สุ่มข้อมูล" else "ใช้ตามลำดับ",
+                                color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                if (shuffleMode) "สุ่มแต่ไม่ซ้ำในหมวดเดียวกัน" else "แต่ละรอบใช้ข้อมูลชุดถัดไป",
+                                color = Color(0xFF888888), fontSize = 9.sp
+                            )
+                        }
+                        Switch(
+                            checked = shuffleMode,
+                            onCheckedChange = { shuffleMode = it },
+                            modifier = Modifier.height(20.dp),
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = PauseColor,
+                                checkedTrackColor = PauseColor.copy(alpha = 0.3f)
+                            )
+                        )
+                    }
+                }
+            } else if (categories.isNotEmpty() && (selectedWorkflow == null || requiredKeys.isEmpty())) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text("หมวดข้อมูล (ไม่บังคับ)", color = Color(0xFFBBBBBB), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Spacer(modifier = Modifier.height(4.dp))
+                Column {
+                    categories.forEach { cat ->
+                        val isSelected = selectedCategory == cat.category
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isSelected) TagColor.copy(alpha = 0.2f) else Color.Transparent)
+                                .clickable { selectedCategory = if (isSelected) "" else cat.category }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                if (isSelected) Icons.Default.RadioButtonChecked else Icons.Default.RadioButtonUnchecked,
+                                null,
+                                tint = if (isSelected) TagColor else Color(0xFF666666),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(cat.category, color = Color(0xFFCCCCCC), fontSize = 12.sp,
+                                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                            Text("${cat.profileCount} ชุด", color = Color(0xFF888888), fontSize = 10.sp)
                         }
                     }
                 }
@@ -776,25 +758,6 @@ fun PlaySelectDialog(
                 }
             }
 
-            Spacer(modifier = Modifier.height(14.dp))
-
-            // Auto-launch info
-            if (selectedWorkflow?.appName?.isNotEmpty() == true) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(6.dp))
-                        .background(TagColor.copy(alpha = 0.1f))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Icon(Icons.Default.RocketLaunch, null, tint = TagColor, modifier = Modifier.size(12.dp))
-                    Spacer(modifier = Modifier.width(4.dp))
-                    Text("จะเปิด ${selectedWorkflow.appName} อัตโนมัติ", color = TagColor, fontSize = 10.sp)
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
-
             } // ---- End scrollable content area ----
 
             Spacer(modifier = Modifier.height(4.dp))
@@ -808,7 +771,7 @@ fun PlaySelectDialog(
                 Button(
                     onClick = {
                         val wfId = selectedWorkflowId
-                        if (wfId != null) onStart(wfId, selectedProfileIds.toList(), loops, rotateData)
+                        if (wfId != null) onStart(wfId, selectedCategory, loops, shuffleMode)
                     },
                     enabled = selectedWorkflowId != null,
                     colors = ButtonDefaults.buttonColors(
@@ -831,6 +794,7 @@ fun PlaySelectDialog(
 @Composable
 fun TagDataDialog(
     suggestion: String = "",
+    availableKeys: List<String> = emptyList(),
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -845,10 +809,34 @@ fun TagDataDialog(
         Column(modifier = Modifier.padding(16.dp)) {
             Text("ผูกข้อมูลกับช่องนี้", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 14.sp)
             Spacer(modifier = Modifier.height(4.dp))
-            Text("ใส่ชื่อ Key ที่ตรงกับข้อมูลที่ตั้งไว้", color = Color(0xFF999999), fontSize = 11.sp)
+            Text("เลือก Key จากชุดข้อมูล หรือพิมพ์เอง", color = Color(0xFF999999), fontSize = 11.sp)
 
-            // Smart suggestion chip
-            if (suggestion.isNotEmpty()) {
+            // Available field key chips from profiles
+            if (availableKeys.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                @OptIn(ExperimentalLayoutApi::class)
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    availableKeys.forEach { key ->
+                        val isSelected = fieldKey == key
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (isSelected) TagColor.copy(alpha = 0.3f) else Color(0xFF333333))
+                                .clickable { fieldKey = key }
+                                .padding(horizontal = 10.dp, vertical = 5.dp)
+                        ) {
+                            Text(key, color = if (isSelected) TagColor else Color(0xFFCCCCCC), fontSize = 11.sp)
+                        }
+                    }
+                }
+            }
+
+            // Smart suggestion chip (only if not already in availableKeys)
+            if (suggestion.isNotEmpty() && suggestion !in availableKeys) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -1149,12 +1137,14 @@ fun CrosshairOverlay(
 @Composable
 fun GameDataFieldDialog(
     coordsText: String = "",
+    availableKeys: List<String> = emptyList(),
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var fieldKey by remember { mutableStateOf("") }
 
-    val quickKeys = listOf("ชื่อผู้ใช้", "รหัสผ่าน", "อีเมล", "เบอร์โทร")
+    // Use available keys from profiles, fallback to defaults if none
+    val quickKeys = availableKeys.ifEmpty { listOf("ชื่อผู้ใช้", "รหัสผ่าน", "อีเมล", "เบอร์โทร") }
 
     Card(
         modifier = Modifier.width(270.dp).padding(8.dp),

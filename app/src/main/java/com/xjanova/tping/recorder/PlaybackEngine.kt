@@ -39,7 +39,7 @@ class PlaybackEngine {
         actions: List<RecordedAction>,
         dataFieldSets: List<List<DataField>>,
         loopCount: Int = 1,
-        rotateData: Boolean = false,
+        shuffleData: Boolean = false,
         scope: CoroutineScope
     ) {
         if (actions.isEmpty()) return
@@ -53,6 +53,13 @@ class PlaybackEngine {
         isPaused = false
         TpingAccessibilityService.setPlaying(true)
 
+        // Prepare data order: shuffle or sequential (always rotate through all sets)
+        val orderedSets = if (dataFieldSets.size > 1 && shuffleData) {
+            dataFieldSets.shuffled()
+        } else {
+            dataFieldSets
+        }
+
         playbackJob = scope.launch(Dispatchers.Main) {
             _state.value = PlaybackState(
                 isPlaying = true,
@@ -64,13 +71,13 @@ class PlaybackEngine {
                 for (loop in 1..loopCount) {
                     _state.value = _state.value.copy(currentLoop = loop)
 
-                    // Pick data fields for this loop
-                    val dataFields = if (dataFieldSets.isEmpty()) {
+                    // Pick data fields for this loop — rotate through all sets
+                    val dataFields = if (orderedSets.isEmpty()) {
                         emptyList()
-                    } else if (rotateData && dataFieldSets.size > 1) {
-                        dataFieldSets[(loop - 1) % dataFieldSets.size]
+                    } else if (orderedSets.size > 1) {
+                        orderedSets[(loop - 1) % orderedSets.size]
                     } else {
-                        dataFieldSets.firstOrNull() ?: emptyList()
+                        orderedSets.firstOrNull() ?: emptyList()
                     }
 
                     for ((index, action) in actions.withIndex()) {
