@@ -87,6 +87,7 @@ fun DataProfileScreen(
                         profile = profile,
                         fields = viewModel.getFieldsFromProfile(profile),
                         onEdit = { editingProfile = profile },
+                        onCopy = { viewModel.copyProfile(profile) },
                         onDelete = { viewModel.deleteProfile(profile) }
                     )
                 }
@@ -128,6 +129,7 @@ fun ProfileCard(
     profile: DataProfile,
     fields: List<DataField>,
     onEdit: () -> Unit,
+    onCopy: () -> Unit,
     onDelete: () -> Unit
 ) {
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -162,6 +164,9 @@ fun ProfileCard(
                     }
                 }
                 Row {
+                    IconButton(onClick = onCopy, modifier = Modifier.size(32.dp)) {
+                        Icon(Icons.Default.ContentCopy, "Copy", modifier = Modifier.size(18.dp))
+                    }
                     IconButton(onClick = onEdit, modifier = Modifier.size(32.dp)) {
                         Icon(Icons.Default.Edit, "Edit", modifier = Modifier.size(18.dp))
                     }

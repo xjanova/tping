@@ -71,6 +71,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun copyProfile(profile: DataProfile) {
+        viewModelScope.launch {
+            val newName = "${profile.name} (สำเนา)"
+            profileDao.insert(DataProfile(name = newName, fieldsJson = profile.fieldsJson))
+        }
+    }
+
     fun getFieldsFromProfile(profile: DataProfile): List<DataField> {
         return try {
             val type = object : TypeToken<List<DataField>>() {}.type

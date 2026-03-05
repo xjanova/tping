@@ -190,7 +190,7 @@ class PlaybackEngine {
             }
             ActionType.INPUT_TEXT -> {
                 val field = if (action.dataFieldKey.isNotEmpty()) "[${action.dataFieldKey}]" else action.inputText.take(15)
-                "พิมพ์: $field"
+                "กด+กรอก: $field"
             }
             ActionType.SCROLL_UP -> "เลื่อนขึ้น"
             ActionType.SCROLL_DOWN -> "เลื่อนลง"
