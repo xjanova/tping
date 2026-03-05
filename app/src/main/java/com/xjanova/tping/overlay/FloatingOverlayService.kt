@@ -717,23 +717,6 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     }
                 } else emptyList()
 
-                // Auto-launch target app
-                val targetPkg = workflow.targetAppPackage
-                if (targetPkg.isNotEmpty()) {
-                    val appName = AppResolver.getAppName(this@FloatingOverlayService, targetPkg)
-                    _overlayState.value = _overlayState.value.copy(statusText = "กำลังเปิด $appName...")
-                    AppResolver.launchApp(this@FloatingOverlayService, targetPkg)
-                    delay(1500)
-                    for (i in 0 until 15) {
-                        val currentPkg = try {
-                            TpingAccessibilityService.instance?.rootInActiveWindow?.packageName?.toString() ?: ""
-                        } catch (_: Exception) { "" }
-                        if (currentPkg == targetPkg) break
-                        delay(300)
-                    }
-                    delay(500)
-                }
-
                 if (playbackEngine == null) playbackEngine = PlaybackEngine()
                 observePlaybackState()
                 playbackEngine?.play(

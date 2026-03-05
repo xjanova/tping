@@ -14,6 +14,8 @@ class PlaybackEngine {
 
     companion object {
         private const val TAG = "PlaybackEngine"
+        /** Minimum delay between steps (ms). Users can add WAIT steps for more. */
+        const val MIN_STEP_DELAY_MS = 3000L
     }
 
     private var playbackJob: Job? = null
@@ -80,11 +82,13 @@ class PlaybackEngine {
                         if (!isActive) return@launch
 
                         val stepNum = index + 1
+                        val stepDesc = "[${stepNum}/${actions.size}] ${describeAction(action)}"
                         _state.value = _state.value.copy(
                             currentStep = stepNum,
-                            currentActionDesc = describeAction(action),
+                            currentActionDesc = stepDesc,
                             progress = stepNum.toFloat() / actions.size
                         )
+                        Log.d(TAG, "Step $stepDesc")
 
                         // Resolve data field
                         val textToInput = if (action.dataFieldKey.isNotEmpty()) {
@@ -96,8 +100,14 @@ class PlaybackEngine {
                         // Execute action
                         executeAction(service, action, textToInput)
 
-                        // Delay
-                        delay(action.delayAfterMs)
+                        // Delay: enforce minimum 3s between steps so the screen has time to respond
+                        // WAIT actions use their own delay which is already intentional
+                        val stepDelay = if (action.actionType == ActionType.WAIT) {
+                            action.delayAfterMs
+                        } else {
+                            action.delayAfterMs.coerceAtLeast(MIN_STEP_DELAY_MS)
+                        }
+                        delay(stepDelay)
                     }
 
                     // Delay between loops
@@ -163,14 +173,29 @@ class PlaybackEngine {
     }
 
     private fun describeAction(action: RecordedAction): String {
+        val coordText = if (action.isGameMode) {
+            val cx = (action.boundsLeft + action.boundsRight) / 2
+            val cy = (action.boundsTop + action.boundsBottom) / 2
+            "($cx,$cy)"
+        } else ""
+
         return when (action.actionType) {
-            ActionType.CLICK -> "กดที่: ${action.text.ifEmpty { action.resourceId.substringAfterLast("/") }}"
-            ActionType.INPUT_TEXT -> "พิมพ์: ${if (action.dataFieldKey.isNotEmpty()) "[${action.dataFieldKey}]" else action.inputText.take(20)}"
+            ActionType.CLICK -> {
+                val target = action.text.ifEmpty { action.resourceId.substringAfterLast("/") }
+                if (target.isNotEmpty()) "กด: $target" else "กด $coordText"
+            }
+            ActionType.LONG_CLICK -> {
+                val target = action.text.ifEmpty { action.resourceId.substringAfterLast("/") }
+                if (target.isNotEmpty()) "กดค้าง: $target" else "กดค้าง $coordText"
+            }
+            ActionType.INPUT_TEXT -> {
+                val field = if (action.dataFieldKey.isNotEmpty()) "[${action.dataFieldKey}]" else action.inputText.take(15)
+                "พิมพ์: $field"
+            }
             ActionType.SCROLL_UP -> "เลื่อนขึ้น"
             ActionType.SCROLL_DOWN -> "เลื่อนลง"
             ActionType.BACK_BUTTON -> "กดย้อนกลับ"
-            ActionType.WAIT -> "รอ ${action.delayAfterMs}ms"
-            ActionType.LONG_CLICK -> "กดค้าง: ${action.text.ifEmpty { action.resourceId }}"
+            ActionType.WAIT -> "รอ ${action.delayAfterMs / 1000.0}s"
             ActionType.SOLVE_CAPTCHA -> "แก้ Captcha สไลด์"
         }
     }
