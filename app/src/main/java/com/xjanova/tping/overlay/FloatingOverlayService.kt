@@ -230,8 +230,8 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                         _overlayState.value = _overlayState.value.copy(showPlayDialog = false)
                         setOverlayFocusable(false)
                     },
-                    onStartPlayback = { workflowId, profileId, loops ->
-                        startPlaybackFromOverlay(workflowId, profileId, loops)
+                    onStartPlayback = { workflowId, profileIds, loops, rotate ->
+                        startPlaybackFromOverlay(workflowId, profileIds, loops, rotate)
                     },
                     onPause = { pausePlayback() },
                     onResume = { resumePlayback() },
@@ -586,7 +586,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
 
     // ====== Playback from Overlay ======
 
-    private fun startPlaybackFromOverlay(workflowId: Long, profileId: Long?, loops: Int) {
+    private fun startPlaybackFromOverlay(workflowId: Long, profileIds: List<Long>, loops: Int, rotateData: Boolean) {
         if (!LicenseManager.isLicenseValid()) {
             _overlayState.value = _overlayState.value.copy(
                 showPlayDialog = false,
@@ -614,12 +614,15 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     gson.fromJson(workflow.stepsJson, type) ?: emptyList()
                 } catch (_: Exception) { emptyList() }
 
-                val dataFields: List<DataField> = if (profileId != null) {
-                    val profile = db.dataProfileDao().getById(profileId)
-                    if (profile != null) try {
-                        val type = object : TypeToken<List<DataField>>() {}.type
-                        gson.fromJson<List<DataField>>(profile.fieldsJson, type) ?: emptyList()
-                    } catch (_: Exception) { emptyList() } else emptyList()
+                // Load all selected profiles
+                val dataFieldSets: List<List<DataField>> = if (profileIds.isNotEmpty()) {
+                    profileIds.mapNotNull { pid ->
+                        val profile = db.dataProfileDao().getById(pid)
+                        if (profile != null) try {
+                            val type = object : TypeToken<List<DataField>>() {}.type
+                            gson.fromJson<List<DataField>>(profile.fieldsJson, type)
+                        } catch (_: Exception) { null } else null
+                    }
                 } else emptyList()
 
                 // Auto-launch target app
@@ -641,7 +644,13 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
 
                 if (playbackEngine == null) playbackEngine = PlaybackEngine()
                 observePlaybackState()
-                playbackEngine?.play(actions = actions, dataFields = dataFields, loopCount = loops, scope = serviceScope)
+                playbackEngine?.play(
+                    actions = actions,
+                    dataFieldSets = dataFieldSets,
+                    loopCount = loops,
+                    rotateData = rotateData,
+                    scope = serviceScope
+                )
             } catch (e: Exception) {
                 _overlayState.value = _overlayState.value.copy(mode = "idle", statusText = "เกิดข้อผิดพลาด")
             }

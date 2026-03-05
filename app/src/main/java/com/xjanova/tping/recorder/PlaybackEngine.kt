@@ -34,8 +34,9 @@ class PlaybackEngine {
 
     fun play(
         actions: List<RecordedAction>,
-        dataFields: List<DataField>,
+        dataFieldSets: List<List<DataField>>,
         loopCount: Int = 1,
+        rotateData: Boolean = false,
         scope: CoroutineScope
     ) {
         if (actions.isEmpty()) return
@@ -59,6 +60,15 @@ class PlaybackEngine {
             try {
                 for (loop in 1..loopCount) {
                     _state.value = _state.value.copy(currentLoop = loop)
+
+                    // Pick data fields for this loop
+                    val dataFields = if (dataFieldSets.isEmpty()) {
+                        emptyList()
+                    } else if (rotateData && dataFieldSets.size > 1) {
+                        dataFieldSets[(loop - 1) % dataFieldSets.size]
+                    } else {
+                        dataFieldSets.firstOrNull() ?: emptyList()
+                    }
 
                     for ((index, action) in actions.withIndex()) {
                         // Check pause

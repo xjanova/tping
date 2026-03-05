@@ -311,25 +311,7 @@ class TpingAccessibilityService : AccessibilityService() {
         // Game mode: click at coordinates to focus field, wait, then set text
         if (action.isGameMode) {
             clickAtCoordinates(action) {
-                android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                    try {
-                        val freshRoot = rootInActiveWindow
-                        val focused = freshRoot?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-                        if (focused != null) {
-                            focused.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-                            val clearArgs = Bundle().apply {
-                                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
-                            }
-                            focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
-                            val args = Bundle().apply {
-                                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-                            }
-                            focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-                            safeRecycle(focused)
-                        }
-                    } catch (_: Exception) {}
-                    callback()
-                }, 400)
+                setTextWithRetry(text, 0, callback)
             }
             return
         }
@@ -346,34 +328,56 @@ class TpingAccessibilityService : AccessibilityService() {
         }
 
         if (targetNode != null) {
-            targetNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-            val clearArgs = Bundle().apply {
-                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
-            }
-            targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
-            val args = Bundle().apply {
-                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-            }
-            targetNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+            setTextOnNode(targetNode, text)
             safeRecycle(targetNode)
             callback()
         } else {
             // Fallback: click coordinates then set text on focused node
             clickAtCoordinates(action) {
-                try {
-                    val freshRoot = rootInActiveWindow
-                    val focused = freshRoot?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
-                    if (focused != null) {
-                        val args = Bundle().apply {
-                            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
-                        }
-                        focused.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-                        safeRecycle(focused)
-                    }
-                } catch (_: Exception) {}
-                callback()
+                setTextWithRetry(text, 0, callback)
             }
         }
+    }
+
+    /** Set text on a specific node: focus → clear → set text */
+    private fun setTextOnNode(node: AccessibilityNodeInfo, text: String) {
+        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        val clearArgs = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+        }
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        }
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    /** After clicking coordinates, retry findFocus up to 3 times with increasing delay */
+    private fun setTextWithRetry(text: String, attempt: Int, callback: () -> Unit) {
+        val delays = longArrayOf(600, 400, 500) // total wait: up to ~1500ms
+        if (attempt >= delays.size) {
+            Log.w(TAG, "inputText: findFocus failed after ${delays.size} retries for text='${text.take(20)}'")
+            callback()
+            return
+        }
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            try {
+                val freshRoot = rootInActiveWindow
+                val focused = freshRoot?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                if (focused != null) {
+                    setTextOnNode(focused, text)
+                    safeRecycle(focused)
+                    Log.d(TAG, "inputText: success on attempt ${attempt + 1} for text='${text.take(20)}'")
+                    callback()
+                } else {
+                    Log.d(TAG, "inputText: findFocus null on attempt ${attempt + 1}, retrying...")
+                    setTextWithRetry(text, attempt + 1, callback)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "inputText: exception on attempt ${attempt + 1}: ${e.message}")
+                callback()
+            }
+        }, delays[attempt])
     }
 
     private fun findNodeByBounds(root: AccessibilityNodeInfo, action: RecordedAction): AccessibilityNodeInfo? {

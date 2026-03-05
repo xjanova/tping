@@ -162,7 +162,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
             playbackEngine.play(
                 actions = actions,
-                dataFields = dataFields,
+                dataFieldSets = if (dataFields.isNotEmpty()) listOf(dataFields) else emptyList(),
                 loopCount = _loopCount.value,
                 scope = viewModelScope
             )

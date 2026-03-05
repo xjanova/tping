@@ -68,7 +68,7 @@ fun FloatingOverlayContent(
     onDismissTagDialog: () -> Unit,
     onShowPlayDialog: () -> Unit,
     onDismissPlayDialog: () -> Unit,
-    onStartPlayback: (Long, Long?, Int) -> Unit,
+    onStartPlayback: (Long, List<Long>, Int, Boolean) -> Unit,
     onPause: () -> Unit,
     onResume: () -> Unit,
     onStop: () -> Unit,
@@ -459,17 +459,18 @@ fun SaveWorkflowDialog(
 fun PlaySelectDialog(
     workflows: List<WorkflowItem>,
     profiles: List<ProfileItem>,
-    onStart: (Long, Long?, Int) -> Unit,
+    onStart: (Long, List<Long>, Int, Boolean) -> Unit,
     onDismiss: () -> Unit
 ) {
     var selectedWorkflowId by remember { mutableStateOf<Long?>(null) }
-    var selectedProfileId by remember { mutableStateOf<Long?>(null) }
+    var selectedProfileIds by remember { mutableStateOf<Set<Long>>(emptySet()) }
     var loops by remember { mutableIntStateOf(1) }
+    var rotateData by remember { mutableStateOf(false) }
 
     val selectedWorkflow = workflows.find { it.id == selectedWorkflowId }
-    val selectedProfile = profiles.find { it.id == selectedProfileId }
+    val firstSelectedProfile = profiles.find { it.id == selectedProfileIds.firstOrNull() }
     val requiredKeys = selectedWorkflow?.dataKeys ?: emptyList()
-    val profileKeys = selectedProfile?.fieldKeys ?: emptyList()
+    val profileKeys = firstSelectedProfile?.fieldKeys ?: emptyList()
 
     Card(
         modifier = Modifier.width(290.dp).padding(8.dp),
@@ -580,7 +581,7 @@ fun PlaySelectDialog(
                                 Text(key, color = if (hasKey) Color(0xFFCCCCCC) else Color(0xFF888888), fontSize = 11.sp)
                             }
                         }
-                        if (selectedProfileId == null) {
+                        if (selectedProfileIds.isEmpty()) {
                             Spacer(modifier = Modifier.height(2.dp))
                             Text("⬆ เลือกชุดข้อมูลด้านล่าง", color = Color(0xFF888888), fontSize = 10.sp)
                         }
@@ -591,15 +592,21 @@ fun PlaySelectDialog(
             // Profile picker
             if (selectedWorkflow != null && requiredKeys.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(8.dp))
-                Text("ชุดข้อมูล", color = Color(0xFFBBBBBB), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("ชุดข้อมูล", color = Color(0xFFBBBBBB), fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    if (selectedProfileIds.size > 1) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text("(${selectedProfileIds.size} ชุด)", color = TagColor, fontSize = 10.sp)
+                    }
+                }
                 Spacer(modifier = Modifier.height(4.dp))
                 if (profiles.isEmpty()) {
                     Text("ยังไม่มีชุดข้อมูล - สร้างในแอพ Tping → จัดการข้อมูล", color = Color(0xFF888888), fontSize = 11.sp,
                         modifier = Modifier.padding(vertical = 4.dp))
                 } else {
-                    LazyColumn(modifier = Modifier.heightIn(max = 80.dp)) {
+                    LazyColumn(modifier = Modifier.heightIn(max = 100.dp)) {
                         items(profiles) { profile ->
-                            val isSelected = selectedProfileId == profile.id
+                            val isSelected = profile.id in selectedProfileIds
                             val matchCount = requiredKeys.count { profile.fieldKeys.contains(it) }
                             val matchColor = when {
                                 matchCount == requiredKeys.size -> PlayColor
@@ -612,15 +619,22 @@ fun PlaySelectDialog(
                                     .clip(RoundedCornerShape(8.dp))
                                     .background(if (isSelected) TagColor.copy(alpha = 0.2f) else Color.Transparent)
                                     .clickable {
-                                        selectedProfileId = if (isSelected) null else profile.id
+                                        selectedProfileIds = if (isSelected) {
+                                            selectedProfileIds - profile.id
+                                        } else {
+                                            selectedProfileIds + profile.id
+                                        }
                                     }
                                     .padding(horizontal = 10.dp, vertical = 6.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                if (isSelected) {
-                                    Icon(Icons.Default.CheckCircle, null, tint = TagColor, modifier = Modifier.size(14.dp))
-                                    Spacer(modifier = Modifier.width(6.dp))
-                                }
+                                Icon(
+                                    if (isSelected) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                    null,
+                                    tint = if (isSelected) TagColor else Color(0xFF666666),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
                                 Text(profile.name, color = Color(0xFFCCCCCC), fontSize = 12.sp,
                                     maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
                                 // Match indicator
@@ -631,6 +645,47 @@ fun PlaySelectDialog(
                             }
                         }
                     }
+
+                    // Rotation toggle (only show when multiple profiles selected)
+                    if (selectedProfileIds.size > 1) {
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF2A2A2A))
+                                .clickable { rotateData = !rotateData }
+                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                if (rotateData) Icons.Default.SyncAlt else Icons.Default.Repeat,
+                                null,
+                                tint = if (rotateData) PauseColor else Color(0xFF888888),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    if (rotateData) "หมุนวนข้อมูล" else "ใช้ชุดแรกทุกรอบ",
+                                    color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium
+                                )
+                                Text(
+                                    if (rotateData) "แต่ละรอบใช้ข้อมูลชุดถัดไป" else "ทุกรอบใช้ข้อมูลชุดเดียวกัน",
+                                    color = Color(0xFF888888), fontSize = 9.sp
+                                )
+                            }
+                            Switch(
+                                checked = rotateData,
+                                onCheckedChange = { rotateData = it },
+                                modifier = Modifier.height(20.dp),
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = PauseColor,
+                                    checkedTrackColor = PauseColor.copy(alpha = 0.3f)
+                                )
+                            )
+                        }
+                    }
                 }
             } else if (profiles.isNotEmpty() && (selectedWorkflow == null || requiredKeys.isEmpty())) {
                 Spacer(modifier = Modifier.height(8.dp))
@@ -638,22 +693,29 @@ fun PlaySelectDialog(
                 Spacer(modifier = Modifier.height(4.dp))
                 LazyColumn(modifier = Modifier.heightIn(max = 80.dp)) {
                     items(profiles) { profile ->
-                        val isSelected = selectedProfileId == profile.id
+                        val isSelected = profile.id in selectedProfileIds
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(if (isSelected) TagColor.copy(alpha = 0.2f) else Color.Transparent)
                                 .clickable {
-                                    selectedProfileId = if (isSelected) null else profile.id
+                                    selectedProfileIds = if (isSelected) {
+                                        selectedProfileIds - profile.id
+                                    } else {
+                                        selectedProfileIds + profile.id
+                                    }
                                 }
                                 .padding(horizontal = 10.dp, vertical = 6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (isSelected) {
-                                Icon(Icons.Default.CheckCircle, null, tint = TagColor, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                            }
+                            Icon(
+                                if (isSelected) Icons.Default.CheckBox else Icons.Default.CheckBoxOutlineBlank,
+                                null,
+                                tint = if (isSelected) TagColor else Color(0xFF666666),
+                                modifier = Modifier.size(16.dp)
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
                             Text(profile.name, color = Color(0xFFCCCCCC), fontSize = 12.sp,
                                 maxLines = 1, overflow = TextOverflow.Ellipsis)
                         }
@@ -726,7 +788,7 @@ fun PlaySelectDialog(
                 Button(
                     onClick = {
                         val wfId = selectedWorkflowId
-                        if (wfId != null) onStart(wfId, selectedProfileId, loops)
+                        if (wfId != null) onStart(wfId, selectedProfileIds.toList(), loops, rotateData)
                     },
                     enabled = selectedWorkflowId != null,
                     colors = ButtonDefaults.buttonColors(
