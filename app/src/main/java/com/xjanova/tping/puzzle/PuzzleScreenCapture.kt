@@ -1,5 +1,6 @@
 package com.xjanova.tping.puzzle
 
+import android.accessibilityservice.AccessibilityService
 import android.graphics.Bitmap
 import android.os.Build
 import android.util.Log
@@ -32,8 +33,8 @@ object PuzzleScreenCapture {
             service.takeScreenshot(
                 android.view.Display.DEFAULT_DISPLAY,
                 service.mainExecutor,
-                object : android.accessibilityservice.AccessibilityService.TakeScreenshotCallback() {
-                    override fun onSuccess(result: ScreenshotResult) {
+                object : AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
                         try {
                             val hwBitmap = Bitmap.wrapHardwareBuffer(
                                 result.hardwareBuffer, result.colorSpace

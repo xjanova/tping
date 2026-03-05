@@ -6,6 +6,7 @@ import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.Mat
+import org.opencv.core.MatOfDouble
 import org.opencv.core.MatOfPoint
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
@@ -140,10 +141,10 @@ object PuzzleSolver {
 
             for (x in 0 until width) {
                 val col = gray.col(x)
-                val meanMat = Mat()
-                val stddevMat = Mat()
+                val meanMat = MatOfDouble()
+                val stddevMat = MatOfDouble()
                 Core.meanStdDev(col, meanMat, stddevMat)
-                columnVariances[x] = if (stddevMat.rows() > 0 && stddevMat.cols() > 0)
+                columnVariances[x] = if (stddevMat.rows() > 0)
                     stddevMat.get(0, 0)[0] else 0.0
                 col.release()
                 meanMat.release()
