@@ -12,9 +12,9 @@ data class PuzzleConfig(
     val puzzleTop: Int,
     val puzzleRight: Int,
     val puzzleBottom: Int,
-    val sliderPaddingPx: Int = 20,
+    val sliderPaddingPx: Int = 30,
     val maxRetries: Int = 3,
-    val retryDelayMs: Long = 1500,
-    val swipeDurationMs: Long = 600,
+    val retryDelayMs: Long = 2000,
+    val swipeDurationMs: Long = 800,
     val analyzeMethod: String = "edge"
 )

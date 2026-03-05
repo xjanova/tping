@@ -69,11 +69,21 @@ object PuzzleCaptchaAction {
         Log.d(TAG, "Scaled puzzle=(${scaledPuzzleLeft},${scaledPuzzleTop})-(${scaledPuzzleRight},${scaledPuzzleBottom})")
         Log.d(TAG, "Slider: left=$sliderLeft, right=$sliderRight, centerY=$sliderCenterY")
 
+        // Validate bounds
+        if (scaledPuzzleRight <= scaledPuzzleLeft || scaledPuzzleBottom <= scaledPuzzleTop) {
+            Log.e(TAG, "Invalid puzzle bounds after scaling")
+            return
+        }
+        if (sliderRight <= sliderLeft) {
+            Log.e(TAG, "Invalid slider bounds after scaling")
+            return
+        }
+
         for (attempt in 1..config.maxRetries) {
             Log.d(TAG, "--- Attempt $attempt/${config.maxRetries} ---")
 
-            // Wait for CAPTCHA to render
-            delay(if (attempt == 1) 500 else config.retryDelayMs)
+            // Wait for CAPTCHA to render (longer on retries to let new puzzle load)
+            delay(if (attempt == 1) 800 else config.retryDelayMs)
 
             // Capture screenshot
             Log.d(TAG, "Capturing screenshot...")
@@ -111,22 +121,22 @@ object PuzzleCaptchaAction {
             Log.d(TAG, "Gap found at X=$gapOffsetX (puzzleWidth=$puzzleWidth)")
 
             // Calculate swipe distance
-            val sliderWidth = (sliderRight - sliderLeft).toInt()
+            val sliderWidth = (sliderRight - sliderLeft)
             val swipeDistance = calculateSwipeDistance(
-                gapOffsetX, puzzleWidth, sliderWidth, config.sliderPaddingPx
+                gapOffsetX, puzzleWidth, sliderWidth, config.sliderPaddingPx.toFloat()
             )
 
-            // Add jitter on retries
-            val jitter = if (attempt > 1) ((-8..8).random()) else 0
+            // Add jitter on retries to avoid exact same position
+            val jitter = if (attempt > 1) ((-10..10).random()).toFloat() else 0f
 
             val startX = sliderLeft + config.sliderPaddingPx
             val endX = (startX + swipeDistance + jitter)
-                .coerceAtMost(sliderRight - config.sliderPaddingPx)
+                .coerceIn(sliderLeft + config.sliderPaddingPx, sliderRight - config.sliderPaddingPx)
 
-            Log.d(TAG, "Swipe: startX=$startX → endX=$endX, centerY=$sliderCenterY, " +
+            Log.d(TAG, "Swipe: startX=$startX -> endX=$endX, centerY=$sliderCenterY, " +
                     "distance=$swipeDistance, jitter=$jitter, duration=${config.swipeDurationMs}ms")
 
-            // Execute swipe
+            // Execute swipe with human-like duration
             val swipeDone = CompletableDeferred<Unit>()
             service.swipeGesture(
                 startX, sliderCenterY,
@@ -137,12 +147,36 @@ object PuzzleCaptchaAction {
             val swipeResult = withTimeoutOrNull(5000) { swipeDone.await() }
             if (swipeResult == null) {
                 Log.w(TAG, "Swipe timed out on attempt $attempt")
-            } else {
-                Log.d(TAG, "Swipe completed on attempt $attempt")
+                continue
             }
+            Log.d(TAG, "Swipe completed on attempt $attempt")
 
-            // Wait for CAPTCHA to process
-            delay(1000)
+            // Wait for CAPTCHA server to verify
+            delay(1500)
+
+            // Check if CAPTCHA is still visible (puzzle region still on screen)
+            // Take another screenshot and check if the puzzle area changed significantly
+            val verifyScreenshot = PuzzleScreenCapture.captureScreen()
+            if (verifyScreenshot != null) {
+                val verifyBitmap = PuzzleScreenCapture.cropRegion(
+                    verifyScreenshot,
+                    scaledPuzzleLeft, scaledPuzzleTop,
+                    scaledPuzzleRight, scaledPuzzleBottom
+                )
+                verifyScreenshot.recycle()
+
+                if (verifyBitmap != null) {
+                    // If we can still crop the same region and it looks similar,
+                    // the CAPTCHA might still be showing (failed attempt)
+                    val verifyGap = PuzzleSolver.findGapOffset(verifyBitmap, config.analyzeMethod)
+                    verifyBitmap.recycle()
+
+                    if (verifyGap >= 0 && attempt < config.maxRetries) {
+                        Log.d(TAG, "CAPTCHA still visible (gap at $verifyGap), retrying...")
+                        continue
+                    }
+                }
+            }
 
             Log.d(TAG, "=== SOLVE_CAPTCHA DONE (attempt $attempt) ===")
             return
@@ -154,11 +188,11 @@ object PuzzleCaptchaAction {
     fun calculateSwipeDistance(
         gapOffsetX: Int,
         puzzleWidth: Int,
-        sliderWidth: Int,
-        sliderPaddingPx: Int = 20
-    ): Int {
-        if (puzzleWidth <= 0) return 0
+        sliderWidth: Float,
+        sliderPaddingPx: Float = 20f
+    ): Float {
+        if (puzzleWidth <= 0) return 0f
         val effectiveSliderWidth = sliderWidth - (2 * sliderPaddingPx)
-        return ((gapOffsetX.toFloat() / puzzleWidth) * effectiveSliderWidth).toInt()
+        return (gapOffsetX.toFloat() / puzzleWidth) * effectiveSliderWidth
     }
 }

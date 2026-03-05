@@ -18,9 +18,28 @@ object PuzzleSolver {
 
     fun ensureOpenCV(): Boolean {
         if (!opencvInitialized) {
-            opencvInitialized = OpenCVLoader.initLocal()
+            // OpenCV 4.9.0 Maven: initLocal() is the primary method
+            opencvInitialized = try {
+                OpenCVLoader.initLocal()
+            } catch (e: Exception) {
+                Log.e(TAG, "OpenCV initLocal exception: ${e.message}")
+                false
+            }
+            // Fallback: try initDebug() (loads System.loadLibrary)
             if (!opencvInitialized) {
-                Log.e(TAG, "OpenCV initialization failed")
+                Log.w(TAG, "initLocal failed, trying initDebug...")
+                opencvInitialized = try {
+                    @Suppress("DEPRECATION")
+                    OpenCVLoader.initDebug()
+                } catch (e: Exception) {
+                    Log.e(TAG, "OpenCV initDebug exception: ${e.message}")
+                    false
+                }
+            }
+            if (opencvInitialized) {
+                Log.d(TAG, "OpenCV initialized successfully")
+            } else {
+                Log.e(TAG, "OpenCV initialization FAILED (tried both initLocal + initDebug)")
             }
         }
         return opencvInitialized
@@ -33,9 +52,17 @@ object PuzzleSolver {
     fun findGapOffset(puzzleBitmap: Bitmap, method: String = "edge"): Int {
         if (!ensureOpenCV()) return -1
 
-        return when (method) {
+        // Try primary method, fallback to the other if it fails
+        val primary = when (method) {
             "template" -> findGapByColumnVariance(puzzleBitmap)
             else -> findGapByEdgeDetection(puzzleBitmap)
+        }
+        if (primary >= 0) return primary
+
+        Log.d(TAG, "Primary method '$method' failed, trying fallback...")
+        return when (method) {
+            "template" -> findGapByEdgeDetection(puzzleBitmap)
+            else -> findGapByColumnVariance(puzzleBitmap)
         }
     }
 
@@ -74,11 +101,13 @@ object PuzzleSolver {
             )
 
             val imageArea = bitmap.width.toDouble() * bitmap.height
-            val minArea = imageArea * 0.01
-            val maxArea = imageArea * 0.15
+            val minArea = imageArea * 0.005  // Lower threshold to catch smaller gaps
+            val maxArea = imageArea * 0.20   // Higher threshold for larger gaps
 
             var bestX = -1
-            var bestArea = 0.0
+            var bestScore = 0.0
+
+            Log.d(TAG, "Found ${contours.size} contours, imageArea=$imageArea")
 
             for (contour in contours) {
                 val area = Imgproc.contourArea(contour)
@@ -88,20 +117,31 @@ object PuzzleSolver {
                 }
 
                 val rect = Imgproc.boundingRect(contour)
+                if (rect.height <= 0) {
+                    contour.release()
+                    continue
+                }
                 val aspectRatio = rect.width.toFloat() / rect.height
-                if (aspectRatio < 0.4 || aspectRatio > 2.5) {
+                if (aspectRatio < 0.3 || aspectRatio > 3.0) {
                     contour.release()
                     continue
                 }
 
                 // Gap should not be at the very left (that's the floating piece)
-                if (rect.x < bitmap.width * 0.15) {
+                if (rect.x < bitmap.width * 0.10) {
                     contour.release()
                     continue
                 }
 
-                if (area > bestArea) {
-                    bestArea = area
+                // Score: prefer larger area + more square-like shapes (closer to 1.0 ratio)
+                val squareness = 1.0 - Math.abs(1.0 - aspectRatio.toDouble()).coerceAtMost(1.0)
+                val score = area * (0.5 + squareness * 0.5)
+
+                Log.d(TAG, "  contour: x=${rect.x} w=${rect.width} h=${rect.height} " +
+                        "area=${"%.0f".format(area)} ratio=${"%.2f".format(aspectRatio)} score=${"%.0f".format(score)}")
+
+                if (score > bestScore) {
+                    bestScore = score
                     bestX = rect.x + rect.width / 2
                 }
                 contour.release()
@@ -161,6 +201,7 @@ object PuzzleSolver {
             var minAvgVariance = Double.MAX_VALUE
             var minCenterX = -1
 
+            if (endX <= startX + windowSize) return -1
             for (x in startX until (endX - windowSize)) {
                 var sum = 0.0
                 for (w in 0 until windowSize) {
