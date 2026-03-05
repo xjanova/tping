@@ -4,6 +4,7 @@ import android.util.Log
 import com.xjanova.tping.data.entity.ActionType
 import com.xjanova.tping.data.entity.DataField
 import com.xjanova.tping.data.entity.RecordedAction
+import com.xjanova.tping.puzzle.PuzzleCaptchaAction
 import com.xjanova.tping.service.TpingAccessibilityService
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -141,9 +142,13 @@ class PlaybackEngine {
                 delay(action.delayAfterMs)
                 done.complete(Unit)
             }
+            ActionType.SOLVE_CAPTCHA -> {
+                PuzzleCaptchaAction.execute(service, action) { done.complete(Unit) }
+            }
         }
 
-        withTimeoutOrNull(5000) { done.await() }
+        val timeout = if (action.actionType == ActionType.SOLVE_CAPTCHA) 15_000L else 5_000L
+        withTimeoutOrNull(timeout) { done.await() }
     }
 
     private fun describeAction(action: RecordedAction): String {
@@ -155,6 +160,7 @@ class PlaybackEngine {
             ActionType.BACK_BUTTON -> "กดย้อนกลับ"
             ActionType.WAIT -> "รอ ${action.delayAfterMs}ms"
             ActionType.LONG_CLICK -> "กดค้าง: ${action.text.ifEmpty { action.resourceId }}"
+            ActionType.SOLVE_CAPTCHA -> "แก้ Captcha สไลด์"
         }
     }
 

@@ -104,6 +104,9 @@ dependencies {
     // Encrypted SharedPreferences for secure license storage
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
+    // OpenCV for slide puzzle CAPTCHA solving
+    implementation("org.opencv:opencv:4.9.0")
+
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")

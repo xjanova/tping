@@ -79,7 +79,8 @@ fun FloatingOverlayContent(
     onAddGameWait: (Long) -> Unit = {},
     onShowGameInputCrosshair: () -> Unit = {},
     onGameTagConfirm: (String) -> Unit = {},
-    onDismissGameTagDialog: () -> Unit = {}
+    onDismissGameTagDialog: () -> Unit = {},
+    onShowPuzzleCrosshair: () -> Unit = {}
 ) {
     Column {
         if (!state.isExpanded) {
@@ -139,7 +140,8 @@ fun FloatingOverlayContent(
                         onDragDelta = onDragDelta,
                         onShowGameCrosshair = onShowGameCrosshair,
                         onAddGameWait = onAddGameWait,
-                        onShowGameInputCrosshair = onShowGameInputCrosshair
+                        onShowGameInputCrosshair = onShowGameInputCrosshair,
+                        onShowPuzzleCrosshair = onShowPuzzleCrosshair
                     )
                 }
             }
@@ -216,7 +218,8 @@ fun ExpandedOverlay(
     onDragDelta: (Float, Float) -> Unit = { _, _ -> },
     onShowGameCrosshair: (ActionType) -> Unit = {},
     onAddGameWait: (Long) -> Unit = {},
-    onShowGameInputCrosshair: () -> Unit = {}
+    onShowGameInputCrosshair: () -> Unit = {},
+    onShowPuzzleCrosshair: () -> Unit = {}
 ) {
     val headerColor = when (state.mode) {
         "recording" -> RecordColor
@@ -320,7 +323,7 @@ fun ExpandedOverlay(
             // Controls
             when (state.mode) {
                 "game_recording" -> {
-                    // Game mode: 2 rows of buttons
+                    // Game mode: 3 rows of buttons
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
@@ -335,6 +338,12 @@ fun ExpandedOverlay(
                     ) {
                         OverlayButton(Icons.Default.Timer, "รอ 1s", PauseColor) { onAddGameWait(1000) }
                         OverlayButton(Icons.Default.Timer3, "รอ 3s", PauseColor) { onAddGameWait(3000) }
+                        OverlayButton(Icons.Default.Extension, "Captcha", Color(0xFF00BCD4), onShowPuzzleCrosshair)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
                         OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStopGameRecord)
                     }
                 }

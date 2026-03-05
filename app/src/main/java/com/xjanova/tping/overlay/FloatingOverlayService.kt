@@ -32,6 +32,9 @@ import com.xjanova.tping.data.entity.ActionType
 import com.xjanova.tping.data.entity.DataField
 import com.xjanova.tping.data.entity.RecordedAction
 import com.xjanova.tping.data.entity.Workflow
+import com.xjanova.tping.puzzle.PuzzleRecordingFlow
+import com.xjanova.tping.puzzle.PuzzleRecordingState
+import com.xjanova.tping.puzzle.PuzzleRecordingStep
 import com.xjanova.tping.recorder.PlaybackEngine
 import com.xjanova.tping.service.TpingAccessibilityService
 import com.xjanova.tping.util.AppResolver
@@ -64,6 +67,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     private val gameActions = mutableListOf<RecordedAction>()
     private var gameStepCounter = 0
     private var gameLastActionTime = System.currentTimeMillis()
+    private var puzzleRecordingState = PuzzleRecordingState()
     private val serviceScope = CoroutineScope(Dispatchers.Main + Job())
     private var playbackObserverJob: Job? = null
     private var recordingObserverJob: Job? = null
@@ -246,7 +250,8 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     onDismissGameTagDialog = {
                         _overlayState.value = _overlayState.value.copy(showGameTagDialog = false)
                         setOverlayFocusable(false)
-                    }
+                    },
+                    onShowPuzzleCrosshair = { startPuzzleCrosshairFlow() }
                 )
             }
         }
@@ -415,6 +420,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         )
 
         val actionLabel = when {
+            mode == "puzzle" -> PuzzleRecordingFlow.getCrosshairLabel(puzzleRecordingState.step)
             mode == "input" -> "กรอกข้อมูล"
             actionType == ActionType.CLICK -> "กด"
             actionType == ActionType.LONG_CLICK -> "กดค้าง"
@@ -432,20 +438,29 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     actionLabel = actionLabel,
                     onConfirm = { x, y ->
                         hideCrosshair()
-                        if (mode == "input") {
-                            // Store coordinates and show tag dialog
-                            pendingGameInputX = x
-                            pendingGameInputY = y
-                            setOverlayFocusable(true)
-                            _overlayState.value = _overlayState.value.copy(
-                                showGameTagDialog = true,
-                                pendingInputCoords = "($x, $y)"
-                            )
-                        } else {
-                            addGameTapAction(actionType, x, y)
+                        when (mode) {
+                            "puzzle" -> onPuzzleCrosshairConfirm(x, y)
+                            "input" -> {
+                                pendingGameInputX = x
+                                pendingGameInputY = y
+                                setOverlayFocusable(true)
+                                _overlayState.value = _overlayState.value.copy(
+                                    showGameTagDialog = true,
+                                    pendingInputCoords = "($x, $y)"
+                                )
+                            }
+                            else -> addGameTapAction(actionType, x, y)
                         }
                     },
-                    onCancel = { hideCrosshair() }
+                    onCancel = {
+                        hideCrosshair()
+                        if (mode == "puzzle") {
+                            puzzleRecordingState = PuzzleRecordingState()
+                            _overlayState.value = _overlayState.value.copy(
+                                statusText = "ยกเลิก Captcha — ${gameActions.size} ขั้นตอน"
+                            )
+                        }
+                    }
                 )
             }
         }
@@ -524,6 +539,83 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             statusText = "กรอก [$fieldKey] ที่ (${pendingGameInputX}, ${pendingGameInputY}) — ${gameActions.size} ขั้นตอน"
         )
         setOverlayFocusable(false)
+    }
+
+    // ====== Puzzle CAPTCHA Recording ======
+
+    private fun startPuzzleCrosshairFlow() {
+        puzzleRecordingState = PuzzleRecordingState(step = PuzzleRecordingStep.SELECT_PUZZLE_TOP_LEFT)
+        _overlayState.value = _overlayState.value.copy(
+            statusText = "เลือกมุมซ้ายบนของภาพ Puzzle"
+        )
+        showCrosshair(ActionType.CLICK, "puzzle")
+    }
+
+    private fun onPuzzleCrosshairConfirm(x: Int, y: Int) {
+        when (puzzleRecordingState.step) {
+            PuzzleRecordingStep.SELECT_PUZZLE_TOP_LEFT -> {
+                puzzleRecordingState = puzzleRecordingState.copy(
+                    puzzleLeft = x, puzzleTop = y,
+                    step = PuzzleRecordingStep.SELECT_PUZZLE_BOTTOM_RIGHT
+                )
+                _overlayState.value = _overlayState.value.copy(
+                    statusText = "เลือกมุมขวาล่างของภาพ Puzzle"
+                )
+                showCrosshair(ActionType.CLICK, "puzzle")
+            }
+            PuzzleRecordingStep.SELECT_PUZZLE_BOTTOM_RIGHT -> {
+                puzzleRecordingState = puzzleRecordingState.copy(
+                    puzzleRight = x, puzzleBottom = y,
+                    step = PuzzleRecordingStep.SELECT_SLIDER_TOP_LEFT
+                )
+                _overlayState.value = _overlayState.value.copy(
+                    statusText = "เลือกมุมซ้ายบนของแถบเลื่อน"
+                )
+                showCrosshair(ActionType.CLICK, "puzzle")
+            }
+            PuzzleRecordingStep.SELECT_SLIDER_TOP_LEFT -> {
+                puzzleRecordingState = puzzleRecordingState.copy(
+                    sliderLeft = x, sliderTop = y,
+                    step = PuzzleRecordingStep.SELECT_SLIDER_BOTTOM_RIGHT
+                )
+                _overlayState.value = _overlayState.value.copy(
+                    statusText = "เลือกมุมขวาล่างของแถบเลื่อน"
+                )
+                showCrosshair(ActionType.CLICK, "puzzle")
+            }
+            PuzzleRecordingStep.SELECT_SLIDER_BOTTOM_RIGHT -> {
+                puzzleRecordingState = puzzleRecordingState.copy(
+                    sliderRight = x, sliderBottom = y,
+                    step = PuzzleRecordingStep.DONE
+                )
+                addPuzzleCaptchaAction()
+            }
+            else -> {}
+        }
+    }
+
+    private fun addPuzzleCaptchaAction() {
+        val metrics = getScreenMetrics()
+        val now = System.currentTimeMillis()
+        val delay = (now - gameLastActionTime).coerceIn(100, 5000)
+        gameLastActionTime = now
+
+        val action = PuzzleRecordingFlow.buildAction(
+            state = puzzleRecordingState,
+            stepOrder = ++gameStepCounter,
+            delayAfterMs = if (gameStepCounter == 1) 500 else delay,
+            screenWidth = metrics.widthPixels,
+            screenHeight = metrics.heightPixels,
+            packageName = try {
+                TpingAccessibilityService.instance?.rootInActiveWindow?.packageName?.toString() ?: ""
+            } catch (_: Exception) { "" }
+        )
+        gameActions.add(action)
+        puzzleRecordingState = PuzzleRecordingState() // reset
+        _overlayState.value = _overlayState.value.copy(
+            stepCount = gameActions.size,
+            statusText = "Captcha Puzzle — ${gameActions.size} ขั้นตอน"
+        )
     }
 
     private fun stopGameRecording() {

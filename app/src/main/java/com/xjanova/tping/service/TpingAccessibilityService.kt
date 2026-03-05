@@ -414,4 +414,25 @@ class TpingAccessibilityService : AccessibilityService() {
     }
 
     fun getRecorder(): ActionRecorder = recorder
+
+    // ====== Swipe Gesture (for slide puzzle CAPTCHA) ======
+
+    fun swipeGesture(
+        startX: Float, startY: Float,
+        endX: Float, endY: Float,
+        durationMs: Long = 600,
+        callback: () -> Unit
+    ) {
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(endX, endY)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
+            .build()
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(g: GestureDescription?) { callback() }
+            override fun onCancelled(g: GestureDescription?) { callback() }
+        }, null)
+    }
 }
