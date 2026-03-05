@@ -117,6 +117,18 @@ class PlaybackEngine {
         action: RecordedAction,
         textToInput: String
     ) {
+        // SOLVE_CAPTCHA is a suspend function — wrap entire call in timeout
+        if (action.actionType == ActionType.SOLVE_CAPTCHA) {
+            withTimeoutOrNull(30_000L) {
+                try {
+                    PuzzleCaptchaAction.execute(service, action)
+                } catch (e: Exception) {
+                    Log.e(TAG, "SOLVE_CAPTCHA error: ${e.message}")
+                }
+            } ?: Log.w(TAG, "SOLVE_CAPTCHA timed out after 30s")
+            return
+        }
+
         val done = CompletableDeferred<Unit>()
 
         when (action.actionType) {
@@ -142,13 +154,12 @@ class PlaybackEngine {
                 delay(action.delayAfterMs)
                 done.complete(Unit)
             }
-            ActionType.SOLVE_CAPTCHA -> {
-                PuzzleCaptchaAction.execute(service, action) { done.complete(Unit) }
+            else -> {
+                done.complete(Unit)
             }
         }
 
-        val timeout = if (action.actionType == ActionType.SOLVE_CAPTCHA) 15_000L else 5_000L
-        withTimeoutOrNull(timeout) { done.await() }
+        withTimeoutOrNull(5_000L) { done.await() }
     }
 
     private fun describeAction(action: RecordedAction): String {

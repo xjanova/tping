@@ -6,6 +6,7 @@ import android.os.Build
 import android.util.Log
 import com.xjanova.tping.service.TpingAccessibilityService
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.withTimeoutOrNull
 
 object PuzzleScreenCapture {
 
@@ -61,7 +62,10 @@ object PuzzleScreenCapture {
             deferred.complete(null)
         }
 
-        return deferred.await()
+        // Timeout to prevent infinite hang if callback is never invoked
+        return withTimeoutOrNull(5000L) { deferred.await() }.also {
+            if (it == null) Log.w(TAG, "Screenshot timed out after 5s")
+        }
     }
 
     /**

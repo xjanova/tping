@@ -10,9 +10,9 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -482,7 +482,7 @@ fun PlaySelectDialog(
     val profileKeys = firstSelectedProfile?.fieldKeys ?: emptyList()
 
     Card(
-        modifier = Modifier.width(290.dp).padding(8.dp),
+        modifier = Modifier.width(290.dp).heightIn(max = 400.dp).padding(8.dp),
         shape = RoundedCornerShape(16.dp),
         colors = CardDefaults.cardColors(containerColor = Color(0xF5222222)),
         elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
@@ -498,6 +498,13 @@ fun PlaySelectDialog(
             Text("เลือกขั้นตอนและข้อมูลที่จะใช้", color = Color(0xFF999999), fontSize = 11.sp)
 
             Spacer(modifier = Modifier.height(8.dp))
+
+            // ---- Scrollable content area ----
+            Column(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .verticalScroll(rememberScrollState())
+            ) {
 
             // Smart playback tip
             Row(
@@ -525,8 +532,8 @@ fun PlaySelectDialog(
                 Text("ยังไม่มี Workflow", color = Color(0xFF666666), fontSize = 12.sp,
                     modifier = Modifier.padding(vertical = 8.dp))
             } else {
-                LazyColumn(modifier = Modifier.heightIn(max = 130.dp)) {
-                    items(workflows) { wf ->
+                Column {
+                    workflows.forEach { wf ->
                         val isSelected = selectedWorkflowId == wf.id
                         Row(
                             modifier = Modifier
@@ -613,8 +620,8 @@ fun PlaySelectDialog(
                     Text("ยังไม่มีชุดข้อมูล - สร้างในแอพ Tping → จัดการข้อมูล", color = Color(0xFF888888), fontSize = 11.sp,
                         modifier = Modifier.padding(vertical = 4.dp))
                 } else {
-                    LazyColumn(modifier = Modifier.heightIn(max = 100.dp)) {
-                        items(profiles) { profile ->
+                    Column {
+                        profiles.forEach { profile ->
                             val isSelected = profile.id in selectedProfileIds
                             val matchCount = requiredKeys.count { profile.fieldKeys.contains(it) }
                             val matchColor = when {
@@ -700,8 +707,8 @@ fun PlaySelectDialog(
                 Spacer(modifier = Modifier.height(8.dp))
                 Text("ชุดข้อมูล (ไม่บังคับ)", color = Color(0xFFBBBBBB), fontSize = 12.sp, fontWeight = FontWeight.Medium)
                 Spacer(modifier = Modifier.height(4.dp))
-                LazyColumn(modifier = Modifier.heightIn(max = 80.dp)) {
-                    items(profiles) { profile ->
+                Column {
+                    profiles.forEach { profile ->
                         val isSelected = profile.id in selectedProfileIds
                         Row(
                             modifier = Modifier
@@ -788,7 +795,11 @@ fun PlaySelectDialog(
                 Spacer(modifier = Modifier.height(8.dp))
             }
 
-            // Action buttons
+            } // ---- End scrollable content area ----
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Action buttons (pinned at bottom)
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 TextButton(onClick = onDismiss) {
                     Text("ยกเลิก", color = Color(0xFF999999))
