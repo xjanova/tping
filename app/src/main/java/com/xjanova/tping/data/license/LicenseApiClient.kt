@@ -10,7 +10,7 @@ import java.util.concurrent.TimeUnit
 
 /**
  * HTTP client for xmanstudio license API.
- * Uses the generic product license API: /api/v1/product/{slug}/*
+ * Uses the generic product license API: /api/v1/product/{slug}/...
  */
 object LicenseApiClient {
 
