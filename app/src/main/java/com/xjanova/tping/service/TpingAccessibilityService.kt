@@ -308,10 +308,12 @@ class TpingAccessibilityService : AccessibilityService() {
     }
 
     fun inputTextAtNode(action: RecordedAction, text: String, callback: () -> Unit) {
-        // Game mode: click at coordinates to focus field, wait, then set text
+        // Game mode: dismiss keyboard first, then click at coordinates to focus field, then set text
         if (action.isGameMode) {
-            clickAtCoordinates(action) {
-                setTextWithRetry(text, 0, callback)
+            dismissKeyboard {
+                clickAtCoordinates(action) {
+                    setTextWithRetry(text, 0, callback)
+                }
             }
             return
         }
@@ -439,6 +441,14 @@ class TpingAccessibilityService : AccessibilityService() {
     fun performBack(callback: () -> Unit) {
         performGlobalAction(GLOBAL_ACTION_BACK)
         callback()
+    }
+
+    /** Dismiss any visible keyboard via BACK action, then callback after animation delay */
+    fun dismissKeyboard(callback: () -> Unit) {
+        performGlobalAction(GLOBAL_ACTION_BACK)
+        android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+            callback()
+        }, 300)
     }
 
     fun getRecorder(): ActionRecorder = recorder

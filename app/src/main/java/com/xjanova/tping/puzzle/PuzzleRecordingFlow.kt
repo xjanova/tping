@@ -8,8 +8,7 @@ enum class PuzzleRecordingStep {
     IDLE,
     SELECT_PUZZLE_TOP_LEFT,
     SELECT_PUZZLE_BOTTOM_RIGHT,
-    SELECT_SLIDER_TOP_LEFT,
-    SELECT_SLIDER_BOTTOM_RIGHT,
+    SELECT_SLIDER_BUTTON,
     DONE
 }
 
@@ -19,10 +18,8 @@ data class PuzzleRecordingState(
     val puzzleTop: Int = 0,
     val puzzleRight: Int = 0,
     val puzzleBottom: Int = 0,
-    val sliderLeft: Int = 0,
-    val sliderTop: Int = 0,
-    val sliderRight: Int = 0,
-    val sliderBottom: Int = 0
+    val sliderButtonX: Int = 0,
+    val sliderButtonY: Int = 0
 )
 
 object PuzzleRecordingFlow {
@@ -33,8 +30,7 @@ object PuzzleRecordingFlow {
         return when (step) {
             PuzzleRecordingStep.SELECT_PUZZLE_TOP_LEFT -> "มุมซ้ายบน ภาพ Puzzle"
             PuzzleRecordingStep.SELECT_PUZZLE_BOTTOM_RIGHT -> "มุมขวาล่าง ภาพ Puzzle"
-            PuzzleRecordingStep.SELECT_SLIDER_TOP_LEFT -> "มุมซ้ายบน แถบเลื่อน"
-            PuzzleRecordingStep.SELECT_SLIDER_BOTTOM_RIGHT -> "มุมขวาล่าง แถบเลื่อน"
+            PuzzleRecordingStep.SELECT_SLIDER_BUTTON -> "กดที่ปุ่มสไลด์"
             else -> ""
         }
     }
@@ -51,16 +47,19 @@ object PuzzleRecordingFlow {
             puzzleLeft = state.puzzleLeft,
             puzzleTop = state.puzzleTop,
             puzzleRight = state.puzzleRight,
-            puzzleBottom = state.puzzleBottom
+            puzzleBottom = state.puzzleBottom,
+            sliderButtonX = state.sliderButtonX,
+            sliderButtonY = state.sliderButtonY
         )
         return RecordedAction(
             stepOrder = stepOrder,
             actionType = ActionType.SOLVE_CAPTCHA,
             inputText = gson.toJson(config),
-            boundsLeft = state.sliderLeft,
-            boundsTop = state.sliderTop,
-            boundsRight = state.sliderRight,
-            boundsBottom = state.sliderBottom,
+            // Slider data is now in PuzzleConfig; bounds not used for new recordings
+            boundsLeft = 0,
+            boundsTop = 0,
+            boundsRight = 0,
+            boundsBottom = 0,
             delayAfterMs = delayAfterMs,
             screenWidth = screenWidth,
             screenHeight = screenHeight,

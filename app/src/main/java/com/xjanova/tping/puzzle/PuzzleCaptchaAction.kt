@@ -18,6 +18,10 @@ object PuzzleCaptchaAction {
      * Execute the full CAPTCHA solve sequence:
      * 1. Parse config → 2. Screenshot → 3. Crop → 4. Analyze → 5. Swipe → 6. Verify/Retry
      *
+     * Supports two slider modes:
+     * - New (3-step): sliderButtonX/Y in PuzzleConfig — direct pixel drag from button position
+     * - Legacy (4-step): slider bar bounds in RecordedAction.bounds* — ratio-based calculation
+     *
      * @param statusCallback optional callback to report progress to the UI
      */
     suspend fun execute(
@@ -54,7 +58,7 @@ object PuzzleCaptchaAction {
             return
         }
 
-        // Calculate scale factors
+        // Calculate scale factors for different screen resolutions
         val metrics = service.resources.displayMetrics
         val scaleX = if (action.screenWidth > 0)
             metrics.widthPixels.toFloat() / action.screenWidth else 1f
@@ -68,20 +72,29 @@ object PuzzleCaptchaAction {
         val scaledPuzzleRight = (config.puzzleRight * scaleX).toInt()
         val scaledPuzzleBottom = (config.puzzleBottom * scaleY).toInt()
 
-        // Scale slider bar bounds
-        val sliderLeft = action.boundsLeft * scaleX
-        val sliderRight = action.boundsRight * scaleX
-        val sliderCenterY = (action.boundsTop + action.boundsBottom) / 2f * scaleY
+        // Determine slider mode: new (button point) vs legacy (bar bounds)
+        val useNewSlider = config.sliderButtonX > 0 && config.sliderButtonY > 0
+        val scaledSliderButtonX = config.sliderButtonX * scaleX
+        val scaledSliderButtonY = config.sliderButtonY * scaleY
+
+        // Legacy slider bar bounds (from old 4-step recordings)
+        val legacySliderLeft = action.boundsLeft * scaleX
+        val legacySliderRight = action.boundsRight * scaleX
+        val legacySliderCenterY = (action.boundsTop + action.boundsBottom) / 2f * scaleY
 
         Log.d(TAG, "Scaled puzzle=(${scaledPuzzleLeft},${scaledPuzzleTop})-(${scaledPuzzleRight},${scaledPuzzleBottom})")
-        Log.d(TAG, "Slider: left=$sliderLeft, right=$sliderRight, centerY=$sliderCenterY")
+        if (useNewSlider) {
+            Log.d(TAG, "Slider button: ($scaledSliderButtonX, $scaledSliderButtonY)")
+        } else {
+            Log.d(TAG, "Legacy slider: left=$legacySliderLeft, right=$legacySliderRight, centerY=$legacySliderCenterY")
+        }
 
         // Validate bounds
         if (scaledPuzzleRight <= scaledPuzzleLeft || scaledPuzzleBottom <= scaledPuzzleTop) {
             status("❌ พื้นที่ Puzzle ไม่ถูกต้อง")
             return
         }
-        if (sliderRight <= sliderLeft) {
+        if (!useNewSlider && legacySliderRight <= legacySliderLeft) {
             status("❌ พื้นที่ Slider ไม่ถูกต้อง")
             return
         }
@@ -129,26 +142,39 @@ object PuzzleCaptchaAction {
             status("ครั้งที่ $attempt: พบที่ ${gapPercent}% → เลื่อน...")
             Log.d(TAG, "Gap at X=$gapOffsetX ($gapPercent% of $puzzleWidth)")
 
-            // Calculate swipe distance
-            val sliderWidth = (sliderRight - sliderLeft)
-            val swipeDistance = calculateSwipeDistance(
-                gapOffsetX, puzzleWidth, sliderWidth, config.sliderPaddingPx.toFloat()
-            )
+            // Calculate swipe coordinates based on slider mode
+            val startX: Float
+            val startY: Float
+            val endX: Float
 
-            // Add jitter on retries
-            val jitter = if (attempt > 1) ((-10..10).random()).toFloat() else 0f
+            if (useNewSlider) {
+                // New method: direct pixel mapping from button position
+                // gapOffsetX is in cropped-bitmap pixels = current-screen pixels
+                // (because puzzle region was cropped from screenshot at current resolution)
+                startX = scaledSliderButtonX
+                startY = scaledSliderButtonY
+                val jitter = if (attempt > 1) ((-8..8).random()).toFloat() else 0f
+                endX = startX + gapOffsetX + jitter
+                Log.d(TAG, "New swipe: button($startX,$startY) + gap=$gapOffsetX + jitter=$jitter → endX=$endX")
+            } else {
+                // Legacy method: ratio-based calculation from slider bar bounds
+                val sliderWidth = (legacySliderRight - legacySliderLeft)
+                val swipeDistance = calculateSwipeDistance(
+                    gapOffsetX, puzzleWidth, sliderWidth, config.sliderPaddingPx.toFloat()
+                )
+                val jitter = if (attempt > 1) ((-10..10).random()).toFloat() else 0f
+                startX = legacySliderLeft + config.sliderPaddingPx
+                startY = legacySliderCenterY
+                endX = (startX + swipeDistance + jitter)
+                    .coerceIn(legacySliderLeft + config.sliderPaddingPx, legacySliderRight - config.sliderPaddingPx)
+                Log.d(TAG, "Legacy swipe: $startX -> $endX, Y=$startY, dist=$swipeDistance, jitter=$jitter")
+            }
 
-            val startX = sliderLeft + config.sliderPaddingPx
-            val endX = (startX + swipeDistance + jitter)
-                .coerceIn(sliderLeft + config.sliderPaddingPx, sliderRight - config.sliderPaddingPx)
-
-            Log.d(TAG, "Swipe: $startX -> $endX, Y=$sliderCenterY, dist=$swipeDistance, jitter=$jitter")
-
-            // Execute swipe
+            // Execute swipe gesture (press-hold-drag-release)
             val swipeDone = CompletableDeferred<Unit>()
             service.swipeGesture(
-                startX, sliderCenterY,
-                endX, sliderCenterY,
+                startX, startY,
+                endX, startY,
                 config.swipeDurationMs
             ) { swipeDone.complete(Unit) }
 
@@ -191,6 +217,7 @@ object PuzzleCaptchaAction {
         status("❌ แก้ไม่สำเร็จ หลัง ${config.maxRetries} ครั้ง")
     }
 
+    /** Legacy ratio-based swipe distance calculation (for old 4-step recordings) */
     fun calculateSwipeDistance(
         gapOffsetX: Int,
         puzzleWidth: Int,
