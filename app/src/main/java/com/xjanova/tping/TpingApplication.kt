@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import com.xjanova.tping.data.cloud.CloudAuthManager
 import com.xjanova.tping.data.database.TpingDatabase
 
 class TpingApplication : Application() {
@@ -13,6 +14,7 @@ class TpingApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        CloudAuthManager.initialize(this)
         createNotificationChannel()
     }
 

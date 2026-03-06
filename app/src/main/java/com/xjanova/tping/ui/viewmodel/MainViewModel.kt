@@ -17,8 +17,8 @@ import kotlinx.coroutines.launch
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val db = (application as TpingApplication).database
-    private val profileDao = db.dataProfileDao()
-    private val workflowDao = db.workflowDao()
+    val profileDao = db.dataProfileDao()
+    val workflowDao = db.workflowDao()
     private val gson = Gson()
     val playbackEngine = PlaybackEngine()
 

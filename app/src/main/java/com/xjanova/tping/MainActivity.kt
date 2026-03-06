@@ -18,6 +18,8 @@ import androidx.navigation.compose.rememberNavController
 import com.xjanova.tping.data.license.LicenseManager
 import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.ui.screens.DataProfileScreen
+import com.xjanova.tping.ui.screens.CloudScreen
+import com.xjanova.tping.ui.screens.ExportImportScreen
 import com.xjanova.tping.ui.screens.HomeScreen
 import com.xjanova.tping.ui.screens.PlayScreen
 import com.xjanova.tping.ui.screens.WorkflowScreen
@@ -66,7 +68,9 @@ fun TpingApp() {
                 viewModel = viewModel,
                 onNavigateToData = { navController.navigate("data") { launchSingleTop = true } },
                 onNavigateToWorkflows = { navController.navigate("workflows") { launchSingleTop = true } },
-                onNavigateToPlay = { navController.navigate("play") { launchSingleTop = true } }
+                onNavigateToPlay = { navController.navigate("play") { launchSingleTop = true } },
+                onNavigateToExport = { navController.navigate("export") { launchSingleTop = true } },
+                onNavigateToCloud = { navController.navigate("cloud") { launchSingleTop = true } }
             )
         }
         composable("data") {
@@ -84,6 +88,17 @@ fun TpingApp() {
         composable("play") {
             PlayScreen(
                 viewModel = viewModel,
+                onBack = { navController.popBackStack() }
+            )
+        }
+        composable("export") {
+            ExportImportScreen(
+                viewModel = viewModel,
+                onBack = { navController.popBackStack() }
+            )
+        }
+        composable("cloud") {
+            CloudScreen(
                 onBack = { navController.popBackStack() }
             )
         }

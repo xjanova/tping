@@ -48,7 +48,9 @@ fun HomeScreen(
     viewModel: MainViewModel,
     onNavigateToData: () -> Unit,
     onNavigateToWorkflows: () -> Unit,
-    onNavigateToPlay: () -> Unit
+    onNavigateToPlay: () -> Unit,
+    onNavigateToExport: () -> Unit = {},
+    onNavigateToCloud: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -545,6 +547,26 @@ fun HomeScreen(
                     subtitle = "เลือก Workflow + ข้อมูล แล้วกรอกอัตโนมัติ",
                     gradientColors = listOf(Color(0xFF22C55E), Color(0xFF10B981)),
                     onClick = onNavigateToPlay
+                )
+            }
+
+            item {
+                MainActionCard(
+                    icon = Icons.Default.SwapHoriz,
+                    title = "Export / Import",
+                    subtitle = "สำรองหรือนำเข้า Workflow + ข้อมูล",
+                    gradientColors = listOf(Color(0xFFEC4899), Color(0xFFF43F5E)),
+                    onClick = onNavigateToExport
+                )
+            }
+
+            item {
+                MainActionCard(
+                    icon = Icons.Default.Cloud,
+                    title = "Cloud Sync",
+                    subtitle = "ซิงค์ข้อมูลผ่าน Xman Studio Cloud",
+                    gradientColors = listOf(Color(0xFF06B6D4), Color(0xFF3B82F6)),
+                    onClick = onNavigateToCloud
                 )
             }
 
