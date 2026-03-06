@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalMaterial3Api::class)
+
 package com.xjanova.tping.ui.screens
 
 import android.content.Intent
@@ -30,7 +32,6 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CloudScreen(
     onBack: () -> Unit
@@ -486,7 +487,7 @@ private fun CloudDashboard(
 
         // Divider
         item {
-            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+            Divider(modifier = Modifier.padding(vertical = 4.dp))
         }
 
         // Open dashboard
@@ -520,7 +521,6 @@ private fun CloudDashboard(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SyncActionCard(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
