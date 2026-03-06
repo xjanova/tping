@@ -16,36 +16,43 @@ object PuzzleCaptchaAction {
 
     /**
      * Execute the full CAPTCHA solve sequence:
-     * 1. Parse config → 2. Screenshot → 3. Crop → 4. Analyze → 5. Swipe → 6. Retry
+     * 1. Parse config → 2. Screenshot → 3. Crop → 4. Analyze → 5. Swipe → 6. Verify/Retry
+     *
+     * @param statusCallback optional callback to report progress to the UI
      */
     suspend fun execute(
         service: TpingAccessibilityService,
-        action: RecordedAction
+        action: RecordedAction,
+        statusCallback: ((String) -> Unit)? = null
     ) {
-        Log.d(TAG, "=== SOLVE_CAPTCHA START ===")
+        fun status(msg: String) {
+            Log.d(TAG, msg)
+            statusCallback?.invoke(msg)
+        }
+
+        status("เริ่มแก้ Captcha...")
         Log.d(TAG, "inputText=${action.inputText}")
         Log.d(TAG, "bounds=L${action.boundsLeft} T${action.boundsTop} R${action.boundsRight} B${action.boundsBottom}")
-        Log.d(TAG, "screen=${action.screenWidth}x${action.screenHeight}, gameMode=${action.isGameMode}")
+        Log.d(TAG, "screen=${action.screenWidth}x${action.screenHeight}")
 
         val config: PuzzleConfig = try {
             gson.fromJson(action.inputText, PuzzleConfig::class.java)
         } catch (e: Exception) {
+            status("❌ Config ผิดพลาด")
             Log.e(TAG, "Failed to parse PuzzleConfig: ${e.message}")
             return
         }
-        Log.d(TAG, "Config parsed: puzzle=(${config.puzzleLeft},${config.puzzleTop})-(${config.puzzleRight},${config.puzzleBottom})")
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            Log.w(TAG, "SOLVE_CAPTCHA requires API 30+ (current: ${Build.VERSION.SDK_INT}), skipping")
+            status("❌ ต้อง Android 11+")
             return
         }
 
-        Log.d(TAG, "Initializing OpenCV...")
+        status("โหลด OpenCV...")
         if (!PuzzleSolver.ensureOpenCV()) {
-            Log.e(TAG, "OpenCV not available, skipping")
+            status("❌ OpenCV โหลดไม่ได้")
             return
         }
-        Log.d(TAG, "OpenCV OK")
 
         // Calculate scale factors
         val metrics = service.resources.displayMetrics
@@ -71,28 +78,27 @@ object PuzzleCaptchaAction {
 
         // Validate bounds
         if (scaledPuzzleRight <= scaledPuzzleLeft || scaledPuzzleBottom <= scaledPuzzleTop) {
-            Log.e(TAG, "Invalid puzzle bounds after scaling")
+            status("❌ พื้นที่ Puzzle ไม่ถูกต้อง")
             return
         }
         if (sliderRight <= sliderLeft) {
-            Log.e(TAG, "Invalid slider bounds after scaling")
+            status("❌ พื้นที่ Slider ไม่ถูกต้อง")
             return
         }
 
         for (attempt in 1..config.maxRetries) {
-            Log.d(TAG, "--- Attempt $attempt/${config.maxRetries} ---")
+            status("ครั้งที่ $attempt/${config.maxRetries}: จับภาพ...")
 
-            // Wait for CAPTCHA to render (longer on retries to let new puzzle load)
+            // Wait for CAPTCHA to render
             delay(if (attempt == 1) 800 else config.retryDelayMs)
 
             // Capture screenshot
-            Log.d(TAG, "Capturing screenshot...")
             val screenshot = PuzzleScreenCapture.captureScreen()
             if (screenshot == null) {
-                Log.w(TAG, "Screenshot capture FAILED on attempt $attempt")
+                status("⚠ จับภาพไม่ได้ (ครั้งที่ $attempt)")
                 continue
             }
-            Log.d(TAG, "Screenshot OK: ${screenshot.width}x${screenshot.height}")
+            Log.d(TAG, "Screenshot: ${screenshot.width}x${screenshot.height}")
 
             // Crop puzzle region
             val puzzleBitmap = PuzzleScreenCapture.cropRegion(
@@ -103,22 +109,25 @@ object PuzzleCaptchaAction {
             screenshot.recycle()
 
             if (puzzleBitmap == null) {
-                Log.w(TAG, "Crop FAILED on attempt $attempt")
+                status("⚠ ครอปภาพไม่ได้")
                 continue
             }
-            Log.d(TAG, "Crop OK: ${puzzleBitmap.width}x${puzzleBitmap.height}")
+            Log.d(TAG, "Crop: ${puzzleBitmap.width}x${puzzleBitmap.height}")
 
             // Analyze with OpenCV
-            Log.d(TAG, "Analyzing with method=${config.analyzeMethod}...")
+            status("ครั้งที่ $attempt: วิเคราะห์...")
             val gapOffsetX = PuzzleSolver.findGapOffset(puzzleBitmap, config.analyzeMethod)
             val puzzleWidth = puzzleBitmap.width
             puzzleBitmap.recycle()
 
             if (gapOffsetX < 0) {
-                Log.w(TAG, "Gap detection FAILED on attempt $attempt")
+                status("⚠ หาช่องว่างไม่พบ (ครั้งที่ $attempt)")
                 continue
             }
-            Log.d(TAG, "Gap found at X=$gapOffsetX (puzzleWidth=$puzzleWidth)")
+
+            val gapPercent = (gapOffsetX * 100 / puzzleWidth)
+            status("ครั้งที่ $attempt: พบที่ ${gapPercent}% → เลื่อน...")
+            Log.d(TAG, "Gap at X=$gapOffsetX ($gapPercent% of $puzzleWidth)")
 
             // Calculate swipe distance
             val sliderWidth = (sliderRight - sliderLeft)
@@ -126,17 +135,16 @@ object PuzzleCaptchaAction {
                 gapOffsetX, puzzleWidth, sliderWidth, config.sliderPaddingPx.toFloat()
             )
 
-            // Add jitter on retries to avoid exact same position
+            // Add jitter on retries
             val jitter = if (attempt > 1) ((-10..10).random()).toFloat() else 0f
 
             val startX = sliderLeft + config.sliderPaddingPx
             val endX = (startX + swipeDistance + jitter)
                 .coerceIn(sliderLeft + config.sliderPaddingPx, sliderRight - config.sliderPaddingPx)
 
-            Log.d(TAG, "Swipe: startX=$startX -> endX=$endX, centerY=$sliderCenterY, " +
-                    "distance=$swipeDistance, jitter=$jitter, duration=${config.swipeDurationMs}ms")
+            Log.d(TAG, "Swipe: $startX -> $endX, Y=$sliderCenterY, dist=$swipeDistance, jitter=$jitter")
 
-            // Execute swipe with human-like duration
+            // Execute swipe
             val swipeDone = CompletableDeferred<Unit>()
             service.swipeGesture(
                 startX, sliderCenterY,
@@ -146,16 +154,16 @@ object PuzzleCaptchaAction {
 
             val swipeResult = withTimeoutOrNull(5000) { swipeDone.await() }
             if (swipeResult == null) {
-                Log.w(TAG, "Swipe timed out on attempt $attempt")
+                status("⚠ เลื่อนไม่สำเร็จ (timeout)")
                 continue
             }
-            Log.d(TAG, "Swipe completed on attempt $attempt")
+
+            status("ครั้งที่ $attempt: ตรวจสอบผล...")
 
             // Wait for CAPTCHA server to verify
             delay(1500)
 
-            // Check if CAPTCHA is still visible (puzzle region still on screen)
-            // Take another screenshot and check if the puzzle area changed significantly
+            // Verify: check if CAPTCHA is still showing
             val verifyScreenshot = PuzzleScreenCapture.captureScreen()
             if (verifyScreenshot != null) {
                 val verifyBitmap = PuzzleScreenCapture.cropRegion(
@@ -166,30 +174,28 @@ object PuzzleCaptchaAction {
                 verifyScreenshot.recycle()
 
                 if (verifyBitmap != null) {
-                    // If we can still crop the same region and it looks similar,
-                    // the CAPTCHA might still be showing (failed attempt)
                     val verifyGap = PuzzleSolver.findGapOffset(verifyBitmap, config.analyzeMethod)
                     verifyBitmap.recycle()
 
                     if (verifyGap >= 0 && attempt < config.maxRetries) {
-                        Log.d(TAG, "CAPTCHA still visible (gap at $verifyGap), retrying...")
+                        status("⚠ ยังไม่ผ่าน ลองใหม่...")
                         continue
                     }
                 }
             }
 
-            Log.d(TAG, "=== SOLVE_CAPTCHA DONE (attempt $attempt) ===")
+            status("✓ แก้ Captcha สำเร็จ")
             return
         }
 
-        Log.w(TAG, "=== SOLVE_CAPTCHA FAILED after ${config.maxRetries} attempts ===")
+        status("❌ แก้ไม่สำเร็จ หลัง ${config.maxRetries} ครั้ง")
     }
 
     fun calculateSwipeDistance(
         gapOffsetX: Int,
         puzzleWidth: Int,
         sliderWidth: Float,
-        sliderPaddingPx: Float = 20f
+        sliderPaddingPx: Float = 30f
     ): Float {
         if (puzzleWidth <= 0) return 0f
         val effectiveSliderWidth = sliderWidth - (2 * sliderPaddingPx)

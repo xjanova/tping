@@ -136,13 +136,28 @@ class PlaybackEngine {
     ) {
         // SOLVE_CAPTCHA is a suspend function — wrap entire call in timeout
         if (action.actionType == ActionType.SOLVE_CAPTCHA) {
+            _state.value = _state.value.copy(currentActionDesc = _state.value.currentActionDesc + " ⏳")
             withTimeoutOrNull(30_000L) {
                 try {
-                    PuzzleCaptchaAction.execute(service, action)
+                    PuzzleCaptchaAction.execute(service, action) { status ->
+                        val step = _state.value.currentStep
+                        val total = _state.value.totalSteps
+                        _state.value = _state.value.copy(
+                            currentActionDesc = "[$step/$total] Captcha: $status"
+                        )
+                    }
                 } catch (e: Exception) {
                     Log.e(TAG, "SOLVE_CAPTCHA error: ${e.message}")
+                    _state.value = _state.value.copy(
+                        currentActionDesc = _state.value.currentActionDesc.replace("⏳", "❌ ${e.message?.take(30)}")
+                    )
                 }
-            } ?: Log.w(TAG, "SOLVE_CAPTCHA timed out after 30s")
+            } ?: run {
+                Log.w(TAG, "SOLVE_CAPTCHA timed out after 30s")
+                _state.value = _state.value.copy(
+                    currentActionDesc = _state.value.currentActionDesc.replace("⏳", "⏰ หมดเวลา")
+                )
+            }
             return
         }
 
@@ -177,6 +192,30 @@ class PlaybackEngine {
         }
 
         withTimeoutOrNull(5_000L) { done.await() }
+
+        // Post-input verification for INPUT_TEXT
+        if (action.actionType == ActionType.INPUT_TEXT && textToInput.isNotEmpty()) {
+            verifyInputText(service, textToInput)
+        }
+    }
+
+    /** Verify the text was set correctly by checking the focused input node */
+    private fun verifyInputText(service: TpingAccessibilityService, expectedText: String) {
+        try {
+            val root = service.rootInActiveWindow ?: return
+            val focused = root.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT)
+            if (focused != null) {
+                val actualText = focused.text?.toString() ?: ""
+                if (actualText != expectedText) {
+                    Log.w(TAG, "INPUT verify: mismatch! expected='${expectedText.take(20)}' actual='${actualText.take(20)}'")
+                } else {
+                    Log.d(TAG, "INPUT verify: OK '${expectedText.take(20)}'")
+                }
+                try { focused.recycle() } catch (_: Exception) {}
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "INPUT verify exception: ${e.message}")
+        }
     }
 
     private fun describeAction(action: RecordedAction): String {

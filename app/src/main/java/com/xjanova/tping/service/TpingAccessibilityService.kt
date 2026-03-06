@@ -339,22 +339,48 @@ class TpingAccessibilityService : AccessibilityService() {
         }
     }
 
-    /** Set text on a specific node: focus → clear → set text */
+    /** Set text on a specific node: focus → clear → wait → set text → verify */
     private fun setTextOnNode(node: AccessibilityNodeInfo, text: String) {
         node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-        val clearArgs = Bundle().apply {
-            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+
+        // Select all existing text first, then replace — more reliable than clear + set
+        val selectAll = Bundle().apply {
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_START_INT, 0)
+            putInt(AccessibilityNodeInfo.ACTION_ARGUMENT_SELECTION_END_INT, Int.MAX_VALUE)
         }
-        node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
+        node.performAction(AccessibilityNodeInfo.ACTION_SET_SELECTION, selectAll)
+
+        // Set text (replaces selection)
         val args = Bundle().apply {
             putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
         }
         node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+
+        // Verify text was set correctly
+        node.refresh()
+        val actualText = node.text?.toString() ?: ""
+        if (actualText != text) {
+            Log.w(TAG, "setTextOnNode: mismatch! expected='${text.take(20)}' actual='${actualText.take(20)}', retrying...")
+            // Retry: clear completely then set
+            val clearArgs = Bundle().apply {
+                putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, "")
+            }
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, clearArgs)
+            node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+
+            node.refresh()
+            val finalText = node.text?.toString() ?: ""
+            if (finalText != text) {
+                Log.e(TAG, "setTextOnNode: STILL mismatch after retry! expected='${text.take(20)}' actual='${finalText.take(20)}'")
+            } else {
+                Log.d(TAG, "setTextOnNode: retry succeeded")
+            }
+        }
     }
 
     /** After clicking coordinates, retry findFocus up to 3 times with increasing delay */
     private fun setTextWithRetry(text: String, attempt: Int, callback: () -> Unit) {
-        val delays = longArrayOf(600, 400, 500) // total wait: up to ~1500ms
+        val delays = longArrayOf(800, 600, 800) // longer initial delay for focus to settle
         if (attempt >= delays.size) {
             Log.w(TAG, "inputText: findFocus failed after ${delays.size} retries for text='${text.take(20)}'")
             callback()
@@ -365,9 +391,11 @@ class TpingAccessibilityService : AccessibilityService() {
                 val freshRoot = rootInActiveWindow
                 val focused = freshRoot?.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
                 if (focused != null) {
+                    Log.d(TAG, "inputText: found focus node class=${focused.className} " +
+                            "text='${focused.text?.toString()?.take(20) ?: "null"}' on attempt ${attempt + 1}")
                     setTextOnNode(focused, text)
                     safeRecycle(focused)
-                    Log.d(TAG, "inputText: success on attempt ${attempt + 1} for text='${text.take(20)}'")
+                    Log.d(TAG, "inputText: set text='${text.take(20)}' on attempt ${attempt + 1}")
                     callback()
                 } else {
                     Log.d(TAG, "inputText: findFocus null on attempt ${attempt + 1}, retrying...")
