@@ -494,7 +494,7 @@ private fun CloudDashboard(
         item {
             OutlinedButton(
                 onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://xmanstudio.com/my-account/tping-workflows"))
+                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://xman4289.com/my-account/tping-workflows"))
                     context.startActivity(intent)
                 },
                 modifier = Modifier.fillMaxWidth(),

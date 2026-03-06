@@ -6,16 +6,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -54,7 +49,6 @@ class MainActivity : ComponentActivity() {
 fun TpingApp() {
     val navController = rememberNavController()
     val viewModel: MainViewModel = viewModel()
-    val licenseState by LicenseManager.state.collectAsState()
 
     // Initialize license on first composition
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -63,28 +57,10 @@ fun TpingApp() {
         LicenseManager.initialize(context)
     }
 
-    // Show loading while checking license with server
-    if (licenseState.status == LicenseStatus.CHECKING) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color(0xFF1A1A2E)),
-            contentAlignment = Alignment.Center
-        ) {
-            CircularProgressIndicator(color = Color(0xFF8B5CF6))
-        }
-        return
-    }
-
-    // Determine start destination based on license state
-    val startDest = when (licenseState.status) {
-        LicenseStatus.EXPIRED, LicenseStatus.NONE -> "license_gate"
-        else -> "home"
-    }
-
+    // Always start at license_gate — it handles loading/redirect internally
     NavHost(
         navController = navController,
-        startDestination = startDest,
+        startDestination = "license_gate",
         enterTransition = { slideInHorizontally(tween(300)) { it } + fadeIn(tween(300)) },
         exitTransition = { slideOutHorizontally(tween(300)) { -it / 3 } + fadeOut(tween(200)) },
         popEnterTransition = { slideInHorizontally(tween(300)) { -it / 3 } + fadeIn(tween(300)) },

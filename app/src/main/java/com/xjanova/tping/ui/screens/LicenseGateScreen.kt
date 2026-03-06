@@ -47,6 +47,27 @@ fun LicenseGateScreen(
         }
     }
 
+    // Show loading while checking license with server
+    if (licenseState.status == LicenseStatus.CHECKING) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF1A1A2E)),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                CircularProgressIndicator(color = Color(0xFF8B5CF6))
+                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    "กำลังตรวจสอบสถานะ...",
+                    color = Color.White.copy(alpha = 0.6f),
+                    fontSize = 14.sp
+                )
+            }
+        }
+        return
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()

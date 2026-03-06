@@ -14,7 +14,7 @@ import java.util.concurrent.TimeUnit
  */
 object LicenseApiClient {
 
-    private const val BASE_URL = "https://xmanstudio.com/api/v1/product/tping"
+    private const val BASE_URL = "https://xman4289.com/api/v1/product/tping"
     private val JSON_TYPE = "application/json; charset=utf-8".toMediaType()
     private val gson = Gson()
 

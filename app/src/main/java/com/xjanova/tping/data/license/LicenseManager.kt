@@ -2,6 +2,7 @@ package com.xjanova.tping.data.license
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
 import com.xjanova.tping.BuildConfig
@@ -17,6 +18,7 @@ import kotlinx.coroutines.withContext
  */
 object LicenseManager {
 
+    private const val TAG = "LicenseManager"
     private const val PREFS_NAME = "tping_license"
     private const val KEY_LICENSE_KEY = "license_key"
     private const val KEY_LICENSE_TYPE = "license_type"
@@ -24,9 +26,10 @@ object LicenseManager {
     private const val KEY_LICENSE_EXPIRES_AT = "license_expires_at"
     private const val KEY_DEVICE_REGISTERED = "device_registered"
     private const val KEY_DEVICE_ID = "device_id"
+    private const val KEY_MACHINE_ID = "machine_id"
 
     // Purchase URL
-    private const val PURCHASE_URL = "https://xmanstudio.com/product/tping"
+    private const val PURCHASE_URL = "https://xman4289.com/product/tping"
 
     private val _state = MutableStateFlow(LicenseState())
     val state: StateFlow<LicenseState> = _state
@@ -35,36 +38,67 @@ object LicenseManager {
     private var appContext: Context? = null
 
     /**
+     * Get machine ID for server API calls.
+     * Uses hardware hash (SHA-256, 64 chars) to satisfy server min:32 requirement.
+     * ANDROID_ID alone is only 16 chars which fails server validation.
+     */
+    private fun getMachineId(context: Context): String {
+        return DeviceManager.getHardwareHash(context)
+    }
+
+    /**
      * Initialize on app start. Must be called from Application.onCreate() or MainActivity.
      */
     suspend fun initialize(context: Context) {
-        appContext = context.applicationContext
-        prefs = getPrefs(context)
+        try {
+            appContext = context.applicationContext
+            prefs = getPrefs(context)
 
-        val deviceId = DeviceManager.getDeviceId(context)
-        prefs?.edit()?.putString(KEY_DEVICE_ID, deviceId)?.apply()
+            val displayId = DeviceManager.getDeviceId(context)
+            val machineId = getMachineId(context)
+            prefs?.edit()
+                ?.putString(KEY_DEVICE_ID, displayId)
+                ?.putString(KEY_MACHINE_ID, machineId)
+                ?.apply()
 
-        // Set loading state
-        _state.value = LicenseState(status = LicenseStatus.CHECKING, deviceId = deviceId, isLoading = true)
+            // Set loading state
+            _state.value = LicenseState(
+                status = LicenseStatus.CHECKING,
+                deviceId = displayId,
+                isLoading = true
+            )
 
-        val licenseKey = prefs?.getString(KEY_LICENSE_KEY, "") ?: ""
+            val licenseKey = prefs?.getString(KEY_LICENSE_KEY, "") ?: ""
 
-        if (licenseKey.isNotEmpty()) {
-            // Has license key — validate with server (paid license)
-            validatePaidLicense(context, licenseKey, deviceId)
-        } else {
-            // No license key — check demo/trial from server
-            checkOrStartDemo(context, deviceId)
+            if (licenseKey.isNotEmpty()) {
+                // Has license key — validate with server (paid license)
+                validatePaidLicense(context, licenseKey, machineId, displayId)
+            } else {
+                // No license key — check demo/trial from server
+                checkOrStartDemo(context, machineId, displayId)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "initialize failed", e)
+            _state.value = LicenseState(
+                status = LicenseStatus.NONE,
+                isLoading = false,
+                errorMessage = "เกิดข้อผิดพลาดในการเริ่มต้น: ${e.localizedMessage}"
+            )
         }
     }
 
     /**
      * Validate paid license (with offline cached fallback).
      */
-    private suspend fun validatePaidLicense(context: Context, licenseKey: String, deviceId: String) {
+    private suspend fun validatePaidLicense(
+        context: Context,
+        licenseKey: String,
+        machineId: String,
+        displayId: String
+    ) {
         try {
             val result = withContext(Dispatchers.IO) {
-                LicenseApiClient.validateLicense(licenseKey, deviceId)
+                LicenseApiClient.validateLicense(licenseKey, machineId)
             }
             if (result.success) {
                 // is_valid is at root level, other fields inside "data"
@@ -88,7 +122,7 @@ object LicenseManager {
                         licenseType = type,
                         expiresAt = expiresAt,
                         remainingDays = daysRemaining,
-                        deviceId = deviceId,
+                        deviceId = displayId,
                         isLoading = false
                     )
                 } else {
@@ -96,18 +130,19 @@ object LicenseManager {
                     _state.value = LicenseState(
                         status = LicenseStatus.EXPIRED,
                         licenseType = type,
-                        deviceId = deviceId,
+                        deviceId = displayId,
                         isLoading = false,
                         errorMessage = result.message.ifEmpty { "License หมดอายุ" }
                     )
                 }
             } else {
                 // Server returned error — use cached state (paid license only)
-                useCachedState(deviceId)
+                useCachedState(displayId)
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "validatePaidLicense failed", e)
             // Network error — use cached state (paid license only)
-            useCachedState(deviceId)
+            useCachedState(displayId)
         }
     }
 
@@ -115,17 +150,22 @@ object LicenseManager {
      * Check demo/trial status from server. If device is new, start demo.
      * No offline fallback — must connect to server.
      */
-    private suspend fun checkOrStartDemo(context: Context, deviceId: String) {
+    private suspend fun checkOrStartDemo(
+        context: Context,
+        machineId: String,
+        displayId: String
+    ) {
         try {
             val checkResult = withContext(Dispatchers.IO) {
-                LicenseApiClient.checkDemo(deviceId)
+                LicenseApiClient.checkDemo(machineId)
             }
 
             if (!checkResult.success) {
+                Log.w(TAG, "checkDemo failed: ${checkResult.statusCode} ${checkResult.message}")
                 // Server error — block usage (no offline trial)
                 _state.value = LicenseState(
                     status = LicenseStatus.NONE,
-                    deviceId = deviceId,
+                    deviceId = displayId,
                     isLoading = false,
                     errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อตรวจสอบสถานะ"
                 )
@@ -155,26 +195,27 @@ object LicenseManager {
                     expiresAt = expiresAt,
                     remainingDays = daysRemaining,
                     remainingHours = hoursRemaining,
-                    deviceId = deviceId,
+                    deviceId = displayId,
                     isLoading = false
                 )
             } else if (!hasUsedDemo && canStartDemo) {
                 // First time — start demo on server
-                startDemoOnServer(context, deviceId)
+                startDemoOnServer(context, machineId, displayId)
             } else {
                 // Trial expired or used up — show gate
                 _state.value = LicenseState(
                     status = LicenseStatus.EXPIRED,
                     licenseType = "trial",
-                    deviceId = deviceId,
+                    deviceId = displayId,
                     isLoading = false
                 )
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "checkOrStartDemo failed", e)
             // Network error — block usage (no offline trial)
             _state.value = LicenseState(
                 status = LicenseStatus.NONE,
-                deviceId = deviceId,
+                deviceId = displayId,
                 isLoading = false,
                 errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อตรวจสอบสถานะ"
             )
@@ -184,7 +225,11 @@ object LicenseManager {
     /**
      * Start demo/trial on server for new device.
      */
-    private suspend fun startDemoOnServer(context: Context, deviceId: String) {
+    private suspend fun startDemoOnServer(
+        context: Context,
+        machineId: String,
+        displayId: String
+    ) {
         try {
             // Register device first
             withContext(Dispatchers.IO) {
@@ -194,7 +239,7 @@ object LicenseManager {
                 val hardwareHash = DeviceManager.getHardwareHash(context)
 
                 LicenseApiClient.registerDevice(
-                    machineId = deviceId,
+                    machineId = machineId,
                     machineName = deviceName,
                     osVersion = osVersion,
                     appVersion = appVersion,
@@ -204,10 +249,8 @@ object LicenseManager {
 
             // Start demo
             val demoResult = withContext(Dispatchers.IO) {
-                val hardwareHash = DeviceManager.getHardwareHash(context)
                 LicenseApiClient.startDemo(
-                    machineId = deviceId,
-                    hardwareHash = hardwareHash
+                    machineId = machineId
                 )
             }
 
@@ -226,23 +269,25 @@ object LicenseManager {
                     expiresAt = expiresAt,
                     remainingDays = daysRemaining,
                     remainingHours = hoursRemaining,
-                    deviceId = deviceId,
+                    deviceId = displayId,
                     isLoading = false
                 )
             } else {
+                Log.w(TAG, "startDemo rejected: ${demoResult.message}")
                 // Server rejected demo (abuse, blocked, etc.)
                 _state.value = LicenseState(
                     status = LicenseStatus.EXPIRED,
                     licenseType = "trial",
-                    deviceId = deviceId,
+                    deviceId = displayId,
                     isLoading = false,
                     errorMessage = demoResult.message.ifEmpty { "ไม่สามารถเริ่มทดลองใช้ได้" }
                 )
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e(TAG, "startDemoOnServer failed", e)
             _state.value = LicenseState(
                 status = LicenseStatus.NONE,
-                deviceId = deviceId,
+                deviceId = displayId,
                 isLoading = false,
                 errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อเริ่มทดลองใช้"
             )
@@ -253,14 +298,15 @@ object LicenseManager {
      * Activate a license key.
      */
     suspend fun activateKey(context: Context, key: String): Result<String> {
-        val deviceId = DeviceManager.getDeviceId(context)
+        val machineId = getMachineId(context)
+        val displayId = DeviceManager.getDeviceId(context)
         val hardwareHash = DeviceManager.getHardwareHash(context)
 
         _state.value = _state.value.copy(isLoading = true)
 
         return try {
             val result = withContext(Dispatchers.IO) {
-                LicenseApiClient.activateLicense(key, deviceId, hardwareHash)
+                LicenseApiClient.activateLicense(key, machineId, hardwareHash)
             }
             if (result.success) {
                 val data = result.data.getAsJsonObject("data") ?: result.data
@@ -281,7 +327,7 @@ object LicenseManager {
                     licenseType = type,
                     expiresAt = expiresAt,
                     remainingDays = daysRemaining,
-                    deviceId = deviceId,
+                    deviceId = displayId,
                     isLoading = false
                 )
                 Result.success(getLicenseTypeDisplay(type))
@@ -290,6 +336,7 @@ object LicenseManager {
                 Result.failure(Exception(result.message.ifEmpty { "ไม่สามารถเปิดใช้งานคีย์ได้" }))
             }
         } catch (e: Exception) {
+            Log.e(TAG, "activateKey failed", e)
             _state.value = _state.value.copy(isLoading = false, errorMessage = e.localizedMessage ?: "เกิดข้อผิดพลาด")
             Result.failure(e)
         }
@@ -334,7 +381,7 @@ object LicenseManager {
      * Use cached state — only for paid licenses (offline fallback).
      * Trial/demo users must connect to server.
      */
-    private fun useCachedState(deviceId: String) {
+    private fun useCachedState(displayId: String) {
         val cachedStatus = prefs?.getString(KEY_LICENSE_STATUS, "") ?: ""
         val cachedType = prefs?.getString(KEY_LICENSE_TYPE, "") ?: ""
         val cachedExpiry = prefs?.getLong(KEY_LICENSE_EXPIRES_AT, 0L) ?: 0L
@@ -349,14 +396,14 @@ object LicenseManager {
                 licenseType = cachedType,
                 expiresAt = cachedExpiry,
                 remainingDays = days,
-                deviceId = deviceId,
+                deviceId = displayId,
                 isLoading = false
             )
         } else {
             // No valid cached paid license — need connection
             _state.value = LicenseState(
                 status = LicenseStatus.NONE,
-                deviceId = deviceId,
+                deviceId = displayId,
                 isLoading = false,
                 errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อตรวจสอบสถานะ"
             )
@@ -388,7 +435,8 @@ object LicenseManager {
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
             )
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.w(TAG, "EncryptedSharedPreferences failed, using fallback", e)
             // Fallback to regular SharedPreferences if encryption fails
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         }

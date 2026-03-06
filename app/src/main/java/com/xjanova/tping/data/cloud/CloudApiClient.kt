@@ -20,7 +20,7 @@ data class ApiResult(
  */
 object CloudApiClient {
 
-    private const val BASE_URL = "https://xmanstudio.com/api/v1"
+    private const val BASE_URL = "https://xman4289.com/api/v1"
     private const val PRODUCT_URL = "$BASE_URL/product/tping"
     private val JSON_TYPE = "application/json; charset=utf-8".toMediaType()
     private val gson = Gson()
