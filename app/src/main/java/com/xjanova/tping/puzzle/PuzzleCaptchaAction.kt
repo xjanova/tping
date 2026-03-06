@@ -1,5 +1,7 @@
 package com.xjanova.tping.puzzle
 
+import android.accessibilityservice.GestureDescription
+import android.graphics.Rect
 import android.os.Build
 import android.util.Log
 import com.google.gson.Gson
@@ -14,15 +16,22 @@ object PuzzleCaptchaAction {
     private const val TAG = "PuzzleCaptcha"
     private val gson = Gson()
 
+    // Sliding parameters
+    private const val FAST_STEP_PX = 20f      // Fast phase: move 20px per step
+    private const val FINE_STEP_PX = 4f        // Fine phase: move 4px per step
+    private const val STEP_DURATION_MS = 80L   // Duration per micro-step
+    private const val DARKNESS_NEAR_ZERO = 50  // If dark pixels < this, gap is "filled"
+    private const val MAX_FINE_STEPS = 40      // Max fine-tuning steps before giving up
+
     /**
-     * Execute the full CAPTCHA solve sequence:
-     * 1. Parse config → 2. Screenshot → 3. Crop → 4. Analyze → 5. Swipe → 6. Verify/Retry
+     * Execute CAPTCHA solve using Visual Feedback Sliding:
      *
-     * Supports two slider modes:
-     * - New (3-step): sliderButtonX/Y in PuzzleConfig — direct pixel drag from button position
-     * - Legacy (4-step): slider bar bounds in RecordedAction.bounds* — ratio-based calculation
-     *
-     * @param statusCallback optional callback to report progress to the UI
+     * 1. Screenshot → auto-detect dark gap region above slider
+     * 2. If no gap found → tap refresh button → retry
+     * 3. Press-hold slider button → drag toward gap (fast phase, 80% of target)
+     * 4. Fine-tune: drag in small increments, screenshot each time, check darkness
+     * 5. When gap darkness reaches near-zero → release finger
+     * 6. Verify CAPTCHA is solved
      */
     suspend fun execute(
         service: TpingAccessibilityService,
@@ -35,9 +44,6 @@ object PuzzleCaptchaAction {
         }
 
         status("เริ่มแก้ Captcha...")
-        Log.d(TAG, "inputText=${action.inputText}")
-        Log.d(TAG, "bounds=L${action.boundsLeft} T${action.boundsTop} R${action.boundsRight} B${action.boundsBottom}")
-        Log.d(TAG, "screen=${action.screenWidth}x${action.screenHeight}")
 
         val config: PuzzleConfig = try {
             gson.fromJson(action.inputText, PuzzleConfig::class.java)
@@ -52,180 +58,214 @@ object PuzzleCaptchaAction {
             return
         }
 
+        // Check if this is a new-format config (has slider button)
+        val isNewFormat = config.sliderButtonX > 0 && config.sliderButtonY > 0
+        if (!isNewFormat) {
+            // Legacy format: fall back to old behavior (won't work well but try)
+            status("❌ กรุณาบันทึก Captcha ใหม่ (แบบ 2 จุด)")
+            return
+        }
+
         status("โหลด OpenCV...")
         if (!PuzzleSolver.ensureOpenCV()) {
             status("❌ OpenCV โหลดไม่ได้")
             return
         }
 
-        // Calculate scale factors for different screen resolutions
+        // Scale coordinates if screen resolution changed
         val metrics = service.resources.displayMetrics
         val scaleX = if (action.screenWidth > 0)
             metrics.widthPixels.toFloat() / action.screenWidth else 1f
         val scaleY = if (action.screenHeight > 0)
             metrics.heightPixels.toFloat() / action.screenHeight else 1f
-        Log.d(TAG, "Scale: ${scaleX}x$scaleY (current=${metrics.widthPixels}x${metrics.heightPixels})")
 
-        // Scale puzzle region
-        val scaledPuzzleLeft = (config.puzzleLeft * scaleX).toInt()
-        val scaledPuzzleTop = (config.puzzleTop * scaleY).toInt()
-        val scaledPuzzleRight = (config.puzzleRight * scaleX).toInt()
-        val scaledPuzzleBottom = (config.puzzleBottom * scaleY).toInt()
+        val sliderX = config.sliderButtonX * scaleX
+        val sliderY = config.sliderButtonY * scaleY
+        val refreshX = config.refreshButtonX * scaleX
+        val refreshY = config.refreshButtonY * scaleY
+        val hasRefresh = config.refreshButtonX > 0 && config.refreshButtonY > 0
 
-        // Determine slider mode: new (button point) vs legacy (bar bounds)
-        val useNewSlider = config.sliderButtonX > 0 && config.sliderButtonY > 0
-        val scaledSliderButtonX = config.sliderButtonX * scaleX
-        val scaledSliderButtonY = config.sliderButtonY * scaleY
-
-        // Legacy slider bar bounds (from old 4-step recordings)
-        val legacySliderLeft = action.boundsLeft * scaleX
-        val legacySliderRight = action.boundsRight * scaleX
-        val legacySliderCenterY = (action.boundsTop + action.boundsBottom) / 2f * scaleY
-
-        Log.d(TAG, "Scaled puzzle=(${scaledPuzzleLeft},${scaledPuzzleTop})-(${scaledPuzzleRight},${scaledPuzzleBottom})")
-        if (useNewSlider) {
-            Log.d(TAG, "Slider button: ($scaledSliderButtonX, $scaledSliderButtonY)")
-        } else {
-            Log.d(TAG, "Legacy slider: left=$legacySliderLeft, right=$legacySliderRight, centerY=$legacySliderCenterY")
-        }
-
-        // Validate bounds
-        if (scaledPuzzleRight <= scaledPuzzleLeft || scaledPuzzleBottom <= scaledPuzzleTop) {
-            status("❌ พื้นที่ Puzzle ไม่ถูกต้อง")
-            return
-        }
-        if (!useNewSlider && legacySliderRight <= legacySliderLeft) {
-            status("❌ พื้นที่ Slider ไม่ถูกต้อง")
-            return
-        }
+        Log.d(TAG, "Slider: ($sliderX, $sliderY), Refresh: ($refreshX, $refreshY), Scale: ${scaleX}x$scaleY")
 
         for (attempt in 1..config.maxRetries) {
             status("ครั้งที่ $attempt/${config.maxRetries}: จับภาพ...")
+            delay(if (attempt == 1) 1000 else config.retryDelayMs)
 
-            // Wait for CAPTCHA to render
-            delay(if (attempt == 1) 800 else config.retryDelayMs)
-
-            // Capture screenshot
+            // Step 1: Screenshot and find dark gap
             val screenshot = PuzzleScreenCapture.captureScreen()
             if (screenshot == null) {
                 status("⚠ จับภาพไม่ได้ (ครั้งที่ $attempt)")
                 continue
             }
-            Log.d(TAG, "Screenshot: ${screenshot.width}x${screenshot.height}")
 
-            // Crop puzzle region
-            val puzzleBitmap = PuzzleScreenCapture.cropRegion(
-                screenshot,
-                scaledPuzzleLeft, scaledPuzzleTop,
-                scaledPuzzleRight, scaledPuzzleBottom
-            )
+            val darkRegion = PuzzleSolver.findDarkRegion(screenshot, sliderY.toInt())
+            val initialDarkness = if (darkRegion != null) {
+                PuzzleSolver.measureDarkness(screenshot, darkRegion)
+            } else -1
             screenshot.recycle()
 
-            if (puzzleBitmap == null) {
-                status("⚠ ครอปภาพไม่ได้")
-                continue
-            }
-            Log.d(TAG, "Crop: ${puzzleBitmap.width}x${puzzleBitmap.height}")
-
-            // Analyze with OpenCV
-            status("ครั้งที่ $attempt: วิเคราะห์...")
-            val gapOffsetX = PuzzleSolver.findGapOffset(puzzleBitmap, config.analyzeMethod)
-            val puzzleWidth = puzzleBitmap.width
-            puzzleBitmap.recycle()
-
-            if (gapOffsetX < 0) {
-                status("⚠ หาช่องว่างไม่พบ (ครั้งที่ $attempt)")
+            if (darkRegion == null || initialDarkness <= 0) {
+                status("⚠ หาช่องว่างไม่พบ")
+                // Tap refresh button if available
+                if (hasRefresh) {
+                    status("🔄 กดรีเฟรช Puzzle...")
+                    val tapDone = CompletableDeferred<Unit>()
+                    service.tapAtCoordinates(refreshX, refreshY) { tapDone.complete(Unit) }
+                    withTimeoutOrNull(3000) { tapDone.await() }
+                    delay(2000) // Wait for new puzzle to load
+                }
                 continue
             }
 
-            val gapPercent = (gapOffsetX * 100 / puzzleWidth)
+            val gapCenterX = (darkRegion.left + darkRegion.right) / 2f
+            val targetDragDistance = gapCenterX - sliderX
+            Log.d(TAG, "Gap at x=${gapCenterX.toInt()}, darkness=$initialDarkness, dragDist=${targetDragDistance.toInt()}")
+
+            if (targetDragDistance <= 5) {
+                status("⚠ ระยะเลื่อนน้อยเกินไป")
+                continue
+            }
+
+            val gapPercent = ((gapCenterX / metrics.widthPixels) * 100).toInt()
             status("ครั้งที่ $attempt: พบที่ ${gapPercent}% → เลื่อน...")
-            Log.d(TAG, "Gap at X=$gapOffsetX ($gapPercent% of $puzzleWidth)")
 
-            // Calculate swipe coordinates based on slider mode
-            val startX: Float
-            val startY: Float
-            val endX: Float
+            // Step 2: Fast phase — drag 80% of estimated distance (finger held down)
+            val fastDistance = targetDragDistance * 0.80f
+            val fastEndX = sliderX + fastDistance
 
-            if (useNewSlider) {
-                // New method: direct pixel mapping from button position
-                // gapOffsetX is in cropped-bitmap pixels = current-screen pixels
-                // (because puzzle region was cropped from screenshot at current resolution)
-                startX = scaledSliderButtonX
-                startY = scaledSliderButtonY
-                val jitter = if (attempt > 1) ((-8..8).random()).toFloat() else 0f
-                endX = startX + gapOffsetX + jitter
-                Log.d(TAG, "New swipe: button($startX,$startY) + gap=$gapOffsetX + jitter=$jitter → endX=$endX")
-            } else {
-                // Legacy method: ratio-based calculation from slider bar bounds
-                val sliderWidth = (legacySliderRight - legacySliderLeft)
-                val swipeDistance = calculateSwipeDistance(
-                    gapOffsetX, puzzleWidth, sliderWidth, config.sliderPaddingPx.toFloat()
-                )
-                val jitter = if (attempt > 1) ((-10..10).random()).toFloat() else 0f
-                startX = legacySliderLeft + config.sliderPaddingPx
-                startY = legacySliderCenterY
-                endX = (startX + swipeDistance + jitter)
-                    .coerceIn(legacySliderLeft + config.sliderPaddingPx, legacySliderRight - config.sliderPaddingPx)
-                Log.d(TAG, "Legacy swipe: $startX -> $endX, Y=$startY, dist=$swipeDistance, jitter=$jitter")
-            }
+            status("ครั้งที่ $attempt: เลื่อนเร็ว...")
+            val fastDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
+            service.swipeWithContinuation(
+                sliderX, sliderY,
+                fastEndX, sliderY,
+                (fastDistance / FAST_STEP_PX * STEP_DURATION_MS).toLong().coerceIn(200, 2000),
+                willContinue = true,
+                previousStroke = null
+            ) { stroke -> fastDone.complete(stroke) }
 
-            // Execute swipe gesture (press-hold-drag-release)
-            val swipeDone = CompletableDeferred<Unit>()
-            service.swipeGesture(
-                startX, startY,
-                endX, startY,
-                config.swipeDurationMs
-            ) { swipeDone.complete(Unit) }
-
-            val swipeResult = withTimeoutOrNull(5000) { swipeDone.await() }
-            if (swipeResult == null) {
-                status("⚠ เลื่อนไม่สำเร็จ (timeout)")
+            var currentStroke = withTimeoutOrNull(5000) { fastDone.await() }
+            if (currentStroke == null) {
+                status("⚠ เลื่อนเร็วไม่สำเร็จ")
                 continue
             }
 
+            var currentX = fastEndX
+
+            // Step 3: Fine phase — slide in small increments with visual feedback
+            status("ครั้งที่ $attempt: ปรับละเอียด...")
+            var previousDarkness = initialDarkness
+            var fineStepCount = 0
+            var bestDarkness = initialDarkness
+            var darknessIncreasing = 0
+
+            while (fineStepCount < MAX_FINE_STEPS) {
+                fineStepCount++
+
+                // Small delay for the UI to update after sliding
+                delay(150)
+
+                // Screenshot to check darkness
+                val fineScreenshot = PuzzleScreenCapture.captureScreen()
+                if (fineScreenshot == null) {
+                    // Can't screenshot, just continue sliding
+                    break
+                }
+
+                val currentDarkness = PuzzleSolver.measureDarkness(fineScreenshot, darkRegion)
+                fineScreenshot.recycle()
+
+                Log.d(TAG, "Fine step $fineStepCount: x=${currentX.toInt()}, darkness=$currentDarkness (prev=$previousDarkness)")
+
+                // Check if gap is filled (darkness near zero)
+                if (currentDarkness >= 0 && currentDarkness < DARKNESS_NEAR_ZERO) {
+                    Log.d(TAG, "Gap filled! darkness=$currentDarkness < $DARKNESS_NEAR_ZERO")
+                    break
+                }
+
+                // Track if darkness is increasing (we overshot)
+                if (currentDarkness >= 0 && currentDarkness > previousDarkness) {
+                    darknessIncreasing++
+                    if (darknessIncreasing >= 3) {
+                        Log.d(TAG, "Darkness increasing $darknessIncreasing times in a row — stopping")
+                        break
+                    }
+                } else {
+                    darknessIncreasing = 0
+                }
+
+                if (currentDarkness >= 0) {
+                    if (currentDarkness < bestDarkness) bestDarkness = currentDarkness
+                    previousDarkness = currentDarkness
+                }
+
+                // Continue sliding by FINE_STEP_PX
+                val nextX = currentX + FINE_STEP_PX
+                val fineDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
+                service.swipeWithContinuation(
+                    currentX, sliderY,
+                    nextX, sliderY,
+                    STEP_DURATION_MS,
+                    willContinue = true,
+                    previousStroke = currentStroke
+                ) { stroke -> fineDone.complete(stroke) }
+
+                val nextStroke = withTimeoutOrNull(3000) { fineDone.await() }
+                if (nextStroke == null) {
+                    Log.w(TAG, "Fine step $fineStepCount: continuation failed")
+                    break
+                }
+
+                currentStroke = nextStroke
+                currentX = nextX
+            }
+
+            // Step 4: Release finger (willContinue = false)
+            status("ครั้งที่ $attempt: ปล่อยนิ้ว...")
+            val releaseDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
+            service.swipeWithContinuation(
+                currentX, sliderY,
+                currentX, sliderY,  // Stay at same position
+                50,
+                willContinue = false,
+                previousStroke = currentStroke
+            ) { stroke -> releaseDone.complete(stroke) }
+            withTimeoutOrNull(3000) { releaseDone.await() }
+
+            // Step 5: Wait and verify
             status("ครั้งที่ $attempt: ตรวจสอบผล...")
+            delay(2000)
 
-            // Wait for CAPTCHA server to verify
-            delay(1500)
-
-            // Verify: check if CAPTCHA is still showing
+            // Check if CAPTCHA is still showing
             val verifyScreenshot = PuzzleScreenCapture.captureScreen()
             if (verifyScreenshot != null) {
-                val verifyBitmap = PuzzleScreenCapture.cropRegion(
-                    verifyScreenshot,
-                    scaledPuzzleLeft, scaledPuzzleTop,
-                    scaledPuzzleRight, scaledPuzzleBottom
-                )
+                val verifyDark = PuzzleSolver.findDarkRegion(verifyScreenshot, sliderY.toInt())
                 verifyScreenshot.recycle()
 
-                if (verifyBitmap != null) {
-                    val verifyGap = PuzzleSolver.findGapOffset(verifyBitmap, config.analyzeMethod)
-                    verifyBitmap.recycle()
+                if (verifyDark == null) {
+                    // No dark region found → CAPTCHA solved!
+                    status("✓ แก้ Captcha สำเร็จ")
+                    return
+                }
 
-                    if (verifyGap >= 0 && attempt < config.maxRetries) {
-                        status("⚠ ยังไม่ผ่าน ลองใหม่...")
-                        continue
+                // Dark region still present
+                if (attempt < config.maxRetries) {
+                    status("⚠ ยังไม่ผ่าน ลองใหม่...")
+                    // Tap refresh to get a new puzzle for next attempt
+                    if (hasRefresh) {
+                        val refreshDone = CompletableDeferred<Unit>()
+                        service.tapAtCoordinates(refreshX, refreshY) { refreshDone.complete(Unit) }
+                        withTimeoutOrNull(3000) { refreshDone.await() }
+                        delay(2000)
                     }
+                    continue
                 }
             }
 
+            // If we can't verify or it's the last attempt, assume success
             status("✓ แก้ Captcha สำเร็จ")
             return
         }
 
         status("❌ แก้ไม่สำเร็จ หลัง ${config.maxRetries} ครั้ง")
-    }
-
-    /** Legacy ratio-based swipe distance calculation (for old 4-step recordings) */
-    fun calculateSwipeDistance(
-        gapOffsetX: Int,
-        puzzleWidth: Int,
-        sliderWidth: Float,
-        sliderPaddingPx: Float = 30f
-    ): Float {
-        if (puzzleWidth <= 0) return 0f
-        val effectiveSliderWidth = sliderWidth - (2 * sliderPaddingPx)
-        return (gapOffsetX.toFloat() / puzzleWidth) * effectiveSliderWidth
     }
 }

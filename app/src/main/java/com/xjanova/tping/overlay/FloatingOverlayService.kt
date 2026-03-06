@@ -561,38 +561,28 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     // ====== Puzzle CAPTCHA Recording ======
 
     private fun startPuzzleCrosshairFlow() {
-        puzzleRecordingState = PuzzleRecordingState(step = PuzzleRecordingStep.SELECT_PUZZLE_TOP_LEFT)
+        puzzleRecordingState = PuzzleRecordingState(step = PuzzleRecordingStep.SELECT_SLIDER_BUTTON)
         _overlayState.value = _overlayState.value.copy(
-            statusText = "เลือกมุมซ้ายบนของภาพ Puzzle"
+            statusText = "กดที่ปุ่มสไลด์"
         )
         showCrosshair(ActionType.CLICK, "puzzle")
     }
 
     private fun onPuzzleCrosshairConfirm(x: Int, y: Int) {
         when (puzzleRecordingState.step) {
-            PuzzleRecordingStep.SELECT_PUZZLE_TOP_LEFT -> {
-                puzzleRecordingState = puzzleRecordingState.copy(
-                    puzzleLeft = x, puzzleTop = y,
-                    step = PuzzleRecordingStep.SELECT_PUZZLE_BOTTOM_RIGHT
-                )
-                _overlayState.value = _overlayState.value.copy(
-                    statusText = "เลือกมุมขวาล่างของภาพ Puzzle"
-                )
-                showCrosshair(ActionType.CLICK, "puzzle")
-            }
-            PuzzleRecordingStep.SELECT_PUZZLE_BOTTOM_RIGHT -> {
-                puzzleRecordingState = puzzleRecordingState.copy(
-                    puzzleRight = x, puzzleBottom = y,
-                    step = PuzzleRecordingStep.SELECT_SLIDER_BUTTON
-                )
-                _overlayState.value = _overlayState.value.copy(
-                    statusText = "กดที่ปุ่มสไลด์"
-                )
-                showCrosshair(ActionType.CLICK, "puzzle")
-            }
             PuzzleRecordingStep.SELECT_SLIDER_BUTTON -> {
                 puzzleRecordingState = puzzleRecordingState.copy(
                     sliderButtonX = x, sliderButtonY = y,
+                    step = PuzzleRecordingStep.SELECT_REFRESH_BUTTON
+                )
+                _overlayState.value = _overlayState.value.copy(
+                    statusText = "กดที่ปุ่มรีเฟรช Puzzle"
+                )
+                showCrosshair(ActionType.CLICK, "puzzle")
+            }
+            PuzzleRecordingStep.SELECT_REFRESH_BUTTON -> {
+                puzzleRecordingState = puzzleRecordingState.copy(
+                    refreshButtonX = x, refreshButtonY = y,
                     step = PuzzleRecordingStep.DONE
                 )
                 addPuzzleCaptchaAction()

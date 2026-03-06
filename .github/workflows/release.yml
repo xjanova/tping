@@ -3,8 +3,6 @@ name: Build & Release APK
 on:
   push:
     branches: [ main ]
-    tags:
-      - 'v*'
   workflow_dispatch:
 
 permissions:
@@ -42,19 +40,13 @@ jobs:
             -storepass android -keypass android \
             -dname "CN=Xman Studio, OU=Dev, O=Xman Studio, L=Bangkok, S=BKK, C=TH"
 
-      - name: Set version from release count
+      - name: Read version from build.gradle.kts
         run: |
-          # Find the highest existing build number and add 1
-          MAX_BUILD=$(git tag --list 'v*-build.*' | grep -oP 'build\.\K[0-9]+' | sort -n | tail -1)
-          MAX_BUILD=${MAX_BUILD:-0}
-          BUILD_NUM=$((MAX_BUILD + 1))
-          BASE_VERSION=$(grep 'versionName' app/build.gradle.kts | head -1 | grep -oP '"\K[^"]+')
-          echo "VERSION=${BASE_VERSION}" >> $GITHUB_ENV
-          echo "BUILD_NUM=${BUILD_NUM}" >> $GITHUB_ENV
-          echo "FULL_VERSION=${BASE_VERSION}-build.${BUILD_NUM}" >> $GITHUB_ENV
-          echo "📦 Release #${BUILD_NUM} (${BASE_VERSION}) [prev max: #${MAX_BUILD}]"
-          # Update versionCode to build number for unique installs
-          sed -i "s/versionCode = 1/versionCode = ${BUILD_NUM}/" app/build.gradle.kts
+          VERSION=$(grep 'versionStr' app/build.gradle.kts | head -1 | grep -oP '"\K[^"]+')
+          VERSION_CODE=$(grep 'versionCode' app/build.gradle.kts | head -1 | grep -oP '[0-9]+' | tail -1)
+          echo "VERSION=${VERSION}" >> $GITHUB_ENV
+          echo "VERSION_CODE=${VERSION_CODE}" >> $GITHUB_ENV
+          echo "📦 Version: v${VERSION} (versionCode: ${VERSION_CODE})"
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug
@@ -66,7 +58,6 @@ jobs:
         run: |
           mkdir -p release-output
           cp app/build/outputs/apk/debug/app-debug.apk release-output/Tping-v${{ env.VERSION }}-debug.apk
-          # Release APK is now signed (not unsigned)
           if [ -f app/build/outputs/apk/release/app-release.apk ]; then
             cp app/build/outputs/apk/release/app-release.apk release-output/Tping-v${{ env.VERSION }}-release.apk
           else
@@ -86,35 +77,28 @@ jobs:
           path: release-output/Tping-*-release.apk
 
       - name: Create GitHub Release
-        if: startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ env.FULL_VERSION }}
-          name: "Tping v${{ env.VERSION }} (Build #${{ env.BUILD_NUM }})"
+          tag_name: v${{ env.VERSION }}
+          name: "Tping v${{ env.VERSION }}"
+          make_latest: true
           body: |
-            ## Tping Auto Typing App
+            ## Tping v${{ env.VERSION }}
             **by Xman Studio**
 
-            Version: `${{ env.VERSION }}` | Build: `#${{ env.BUILD_NUM }}` | versionCode: `${{ env.BUILD_NUM }}`
+            Version: `${{ env.VERSION }}` | versionCode: `${{ env.VERSION_CODE }}`
 
             ### Downloads
-            - **Release APK** - ติดตั้งได้เลย (signed) สำหรับใช้งานจริง
-            - **Debug APK** - สำหรับทดสอบ/นักพัฒนา
+            - **Release APK** — ติดตั้งได้เลย (signed) สำหรับใช้งานจริง
+            - **Debug APK** — สำหรับทดสอบ/นักพัฒนา
 
             ### Features
             - บันทึกขั้นตอนการกรอกข้อมูล (Learning Mode)
             - เล่นซ้ำอัตโนมัติ (Auto Playback) พร้อมวนลูป
-            - จัดเก็บข้อมูลหลายชุด + ผูกกับช่องกรอก (Tag Data)
-            - หน้าต่างลอย Control Center (บันทึก + เล่น + เลือก Workflow)
-            - ระบุตำแหน่ง 3 ชั้น (Resource ID -> Text -> Coordinates)
-            - รองรับ: Click, Long Click, Text Input, Scroll, Back
-            - Target App Binding + Auto Launch
-
-            ### Install
-            1. ดาวน์โหลด Release APK
-            2. เปิดไฟล์ติดตั้ง (อนุญาตจากแหล่งที่ไม่รู้จัก)
-            3. เปิด Accessibility Service ในตั้งค่า
-            4. เปิด Overlay Permission
+            - จัดเก็บข้อมูลหลายชุด + หมวดหมู่ + สุ่มข้อมูล
+            - แก้ Captcha Puzzle อัตโนมัติ (Visual Feedback Sliding)
+            - หน้าต่างลอย Control Center
+            - โหมดเกม (กดพิกัดจอ)
           draft: false
           prerelease: false
           files: |

@@ -12,8 +12,13 @@ android {
         applicationId = "com.xjanova.tping"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+
+        // === Semantic Versioning (source of truth) ===
+        // Change this string to bump version. CI reads it for GitHub releases.
+        val versionStr = "1.1.0"
+        val parts = versionStr.split(".")
+        versionCode = parts[0].toInt() * 10000 + parts[1].toInt() * 100 + parts[2].toInt()
+        versionName = versionStr
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {

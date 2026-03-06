@@ -453,8 +453,9 @@ class TpingAccessibilityService : AccessibilityService() {
 
     fun getRecorder(): ActionRecorder = recorder
 
-    // ====== Swipe Gesture (for slide puzzle CAPTCHA) ======
+    // ====== Gesture APIs (for slide puzzle CAPTCHA) ======
 
+    /** Simple one-shot swipe from start to end */
     fun swipeGesture(
         startX: Float, startY: Float,
         endX: Float, endY: Float,
@@ -467,6 +468,63 @@ class TpingAccessibilityService : AccessibilityService() {
         }
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
+            .build()
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(g: GestureDescription?) { callback() }
+            override fun onCancelled(g: GestureDescription?) { callback() }
+        }, null)
+    }
+
+    /**
+     * Swipe with continuation support — finger stays held down between increments.
+     * Used for visual-feedback sliding (CAPTCHA puzzle solver).
+     *
+     * @param startX Start X of this segment
+     * @param startY Start Y
+     * @param endX End X of this segment
+     * @param endY End Y
+     * @param durationMs Duration of this segment
+     * @param willContinue If true, finger stays pressed after this segment
+     * @param previousStroke Previous StrokeDescription to chain from (null for first segment)
+     * @param callback Returns the StrokeDescription for chaining (null on failure)
+     */
+    fun swipeWithContinuation(
+        startX: Float, startY: Float,
+        endX: Float, endY: Float,
+        durationMs: Long,
+        willContinue: Boolean,
+        previousStroke: GestureDescription.StrokeDescription? = null,
+        callback: (GestureDescription.StrokeDescription?) -> Unit
+    ) {
+        val path = Path().apply {
+            moveTo(startX, startY)
+            lineTo(endX, endY)
+        }
+
+        val stroke = if (previousStroke != null) {
+            previousStroke.continueStroke(path, 0, durationMs, willContinue)
+        } else {
+            GestureDescription.StrokeDescription(path, 0, durationMs, willContinue)
+        }
+
+        val gesture = GestureDescription.Builder()
+            .addStroke(stroke)
+            .build()
+
+        dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(g: GestureDescription?) { callback(stroke) }
+            override fun onCancelled(g: GestureDescription?) {
+                Log.w(TAG, "swipeWithContinuation cancelled")
+                callback(null)
+            }
+        }, null)
+    }
+
+    /** Tap at specific screen coordinates (for pressing refresh button etc.) */
+    fun tapAtCoordinates(x: Float, y: Float, callback: () -> Unit) {
+        val path = Path().apply { moveTo(x, y) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, 100))
             .build()
         dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(g: GestureDescription?) { callback() }
