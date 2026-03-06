@@ -49,15 +49,11 @@ object LicenseApiClient {
      */
     fun startDemo(
         machineId: String,
-        machineName: String,
-        osVersion: String,
-        appVersion: String
+        hardwareHash: String = ""
     ): ApiResult {
         val body = JsonObject().apply {
             addProperty("machine_id", machineId)
-            addProperty("machine_name", machineName)
-            addProperty("os_version", osVersion)
-            addProperty("app_version", appVersion)
+            if (hardwareHash.isNotEmpty()) addProperty("hardware_hash", hardwareHash)
         }
         return post("$BASE_URL/demo", body)
     }
@@ -78,12 +74,12 @@ object LicenseApiClient {
     fun activateLicense(
         licenseKey: String,
         machineId: String,
-        machineName: String
+        machineFingerprint: String
     ): ApiResult {
         val body = JsonObject().apply {
             addProperty("license_key", licenseKey)
             addProperty("machine_id", machineId)
-            addProperty("machine_name", machineName)
+            addProperty("machine_fingerprint", machineFingerprint)
         }
         return post("$BASE_URL/activate", body)
     }

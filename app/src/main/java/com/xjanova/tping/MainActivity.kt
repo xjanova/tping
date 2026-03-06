@@ -6,21 +6,28 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.xjanova.tping.data.license.LicenseManager
+import com.xjanova.tping.data.license.LicenseStatus
 import com.xjanova.tping.overlay.FloatingOverlayService
-import com.xjanova.tping.ui.screens.DataProfileScreen
 import com.xjanova.tping.ui.screens.CloudScreen
+import com.xjanova.tping.ui.screens.DataProfileScreen
 import com.xjanova.tping.ui.screens.ExportImportScreen
 import com.xjanova.tping.ui.screens.HomeScreen
+import com.xjanova.tping.ui.screens.LicenseGateScreen
 import com.xjanova.tping.ui.screens.PlayScreen
 import com.xjanova.tping.ui.screens.WorkflowScreen
 import com.xjanova.tping.ui.theme.TpingTheme
@@ -47,6 +54,7 @@ class MainActivity : ComponentActivity() {
 fun TpingApp() {
     val navController = rememberNavController()
     val viewModel: MainViewModel = viewModel()
+    val licenseState by LicenseManager.state.collectAsState()
 
     // Initialize license on first composition
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -55,14 +63,42 @@ fun TpingApp() {
         LicenseManager.initialize(context)
     }
 
+    // Show loading while checking license with server
+    if (licenseState.status == LicenseStatus.CHECKING) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFF1A1A2E)),
+            contentAlignment = Alignment.Center
+        ) {
+            CircularProgressIndicator(color = Color(0xFF8B5CF6))
+        }
+        return
+    }
+
+    // Determine start destination based on license state
+    val startDest = when (licenseState.status) {
+        LicenseStatus.EXPIRED, LicenseStatus.NONE -> "license_gate"
+        else -> "home"
+    }
+
     NavHost(
         navController = navController,
-        startDestination = "home",
+        startDestination = startDest,
         enterTransition = { slideInHorizontally(tween(300)) { it } + fadeIn(tween(300)) },
         exitTransition = { slideOutHorizontally(tween(300)) { -it / 3 } + fadeOut(tween(200)) },
         popEnterTransition = { slideInHorizontally(tween(300)) { -it / 3 } + fadeIn(tween(300)) },
         popExitTransition = { slideOutHorizontally(tween(300)) { it } + fadeOut(tween(200)) }
     ) {
+        composable("license_gate") {
+            LicenseGateScreen(
+                onLicenseActivated = {
+                    navController.navigate("home") {
+                        popUpTo("license_gate") { inclusive = true }
+                    }
+                }
+            )
+        }
         composable("home") {
             HomeScreen(
                 viewModel = viewModel,
