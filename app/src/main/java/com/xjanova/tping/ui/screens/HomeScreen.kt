@@ -554,14 +554,9 @@ fun HomeScreen(
                 )
             }
 
+            // ===== Quick Play — select + play directly on HomeScreen =====
             item {
-                MainActionCard(
-                    icon = Icons.Default.PlayArrow,
-                    title = "เล่นอัตโนมัติ",
-                    subtitle = "เลือก Workflow + ข้อมูล แล้วกรอกอัตโนมัติ",
-                    gradientColors = listOf(Color(0xFF22C55E), Color(0xFF10B981)),
-                    onClick = onNavigateToPlay
-                )
+                QuickPlaySection(viewModel = viewModel)
             }
 
             item {
@@ -841,6 +836,386 @@ fun PermissionRow(label: String, enabled: Boolean, onClick: () -> Unit) {
         }
         if (!enabled) {
             TextButton(onClick = onClick) { Text("เปิด", fontSize = 12.sp) }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun QuickPlaySection(
+    viewModel: MainViewModel
+) {
+    val context = LocalContext.current
+    val workflows by viewModel.workflows.collectAsState()
+    val profiles by viewModel.dataProfiles.collectAsState()
+    val selectedWorkflowId by viewModel.selectedWorkflowId.collectAsState()
+    val selectedProfileId by viewModel.selectedProfileId.collectAsState()
+    val loopCount by viewModel.loopCount.collectAsState()
+    val playbackState by viewModel.playbackEngine.state.collectAsState()
+    val launchStatus by viewModel.launchStatus.collectAsState()
+
+    val selectedWorkflow = workflows.find { it.id == selectedWorkflowId }
+    val selectedProfile = profiles.find { it.id == selectedProfileId }
+    val requiredDataKeys = remember(selectedWorkflowId, workflows) {
+        selectedWorkflow?.let { viewModel.getDataKeysFromWorkflow(it) } ?: emptyList()
+    }
+
+    var showWorkflowMenu by remember { mutableStateOf(false) }
+    var showProfileMenu by remember { mutableStateOf(false) }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            // Header
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(Brush.linearGradient(listOf(Color(0xFF22C55E), Color(0xFF10B981)))),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(Icons.Default.PlayArrow, null, tint = Color.White, modifier = Modifier.size(24.dp))
+                }
+                Spacer(modifier = Modifier.width(12.dp))
+                Column {
+                    Text("เล่นอัตโนมัติ", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text(
+                        "เลือกแล้วกดเล่นได้เลย",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                }
+            }
+
+            if (workflows.isEmpty()) {
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    "ยังไม่มี Workflow — ไปบันทึกขั้นตอนก่อน",
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
+                return@Column
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // === Workflow Selector ===
+            Text(
+                "Workflow",
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Box {
+                OutlinedCard(
+                    onClick = { showWorkflowMenu = true },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.AccountTree, null, tint = Color(0xFF22C55E), modifier = Modifier.size(18.dp))
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                selectedWorkflow?.name ?: "แตะเพื่อเลือก...",
+                                fontSize = 14.sp,
+                                fontWeight = if (selectedWorkflow != null) FontWeight.Medium else FontWeight.Normal,
+                                color = if (selectedWorkflow != null) MaterialTheme.colorScheme.onSurface
+                                else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                            )
+                            if (selectedWorkflow != null) {
+                                val appName = viewModel.resolveAppName(selectedWorkflow)
+                                if (appName.isNotEmpty()) {
+                                    Text(appName, fontSize = 11.sp, color = Color(0xFF3B82F6))
+                                }
+                            }
+                        }
+                        Icon(
+                            Icons.Default.ArrowDropDown, null,
+                            modifier = Modifier.size(20.dp),
+                            tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                        )
+                    }
+                }
+                DropdownMenu(
+                    expanded = showWorkflowMenu,
+                    onDismissRequest = { showWorkflowMenu = false }
+                ) {
+                    workflows.forEach { wf ->
+                        val appName = viewModel.resolveAppName(wf)
+                        val isSelected = selectedWorkflowId == wf.id
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(wf.name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                                    if (appName.isNotEmpty()) {
+                                        Text(appName, fontSize = 11.sp, color = Color(0xFF3B82F6))
+                                    }
+                                }
+                            },
+                            onClick = {
+                                viewModel.selectWorkflow(wf.id)
+                                showWorkflowMenu = false
+                            },
+                            trailingIcon = {
+                                if (isSelected) Icon(Icons.Default.Check, null, tint = Color(0xFF22C55E), modifier = Modifier.size(18.dp))
+                            }
+                        )
+                    }
+                }
+            }
+
+            // === Profile Selector (only if workflow needs data) ===
+            if (requiredDataKeys.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Text(
+                    "ชุดข้อมูล",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                if (profiles.isEmpty()) {
+                    Text(
+                        "ยังไม่มีชุดข้อมูล — ไปสร้างที่ \"จัดการข้อมูล\"",
+                        fontSize = 12.sp,
+                        color = Color(0xFFF59E0B)
+                    )
+                } else {
+                    Box {
+                        OutlinedCard(
+                            onClick = { showProfileMenu = true },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Default.Person, null, tint = Color(0xFF3B82F6), modifier = Modifier.size(18.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    selectedProfile?.name ?: "แตะเพื่อเลือก...",
+                                    fontSize = 14.sp,
+                                    fontWeight = if (selectedProfile != null) FontWeight.Medium else FontWeight.Normal,
+                                    color = if (selectedProfile != null) MaterialTheme.colorScheme.onSurface
+                                    else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                    modifier = Modifier.weight(1f)
+                                )
+                                Icon(
+                                    Icons.Default.ArrowDropDown, null,
+                                    modifier = Modifier.size(20.dp),
+                                    tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                                )
+                            }
+                        }
+                        DropdownMenu(
+                            expanded = showProfileMenu,
+                            onDismissRequest = { showProfileMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        "ไม่ใช้ข้อมูล",
+                                        fontSize = 13.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                    )
+                                },
+                                onClick = {
+                                    viewModel.selectProfile(null)
+                                    showProfileMenu = false
+                                }
+                            )
+                            profiles.forEach { p ->
+                                val fields = viewModel.getFieldsFromProfile(p)
+                                val matchCount = requiredDataKeys.count { key -> fields.any { it.key == key } }
+                                val isSelected = selectedProfileId == p.id
+                                val matchColor = when {
+                                    matchCount == requiredDataKeys.size -> Color(0xFF22C55E)
+                                    matchCount > 0 -> Color(0xFFF59E0B)
+                                    else -> Color(0xFFEF4444)
+                                }
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Text(p.name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                                                Text(
+                                                    "${fields.size} ฟิลด์",
+                                                    fontSize = 11.sp,
+                                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                                )
+                                            }
+                                            Text(
+                                                "$matchCount/${requiredDataKeys.size}",
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = matchColor
+                                            )
+                                        }
+                                    },
+                                    onClick = {
+                                        viewModel.selectProfile(p.id)
+                                        showProfileMenu = false
+                                    },
+                                    trailingIcon = {
+                                        if (isSelected) Icon(Icons.Default.Check, null, tint = Color(0xFF3B82F6), modifier = Modifier.size(18.dp))
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // === Loop Count ===
+            Spacer(modifier = Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Text("จำนวนรอบ", fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = { viewModel.setLoopCount(loopCount - 1) },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(Icons.Default.Remove, "Decrease", modifier = Modifier.size(18.dp))
+                    }
+                    Text(
+                        "$loopCount",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 16.sp,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+                    IconButton(
+                        onClick = { viewModel.setLoopCount(loopCount + 1) },
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(Icons.Default.Add, "Increase", modifier = Modifier.size(18.dp))
+                    }
+                }
+            }
+
+            // === Launch Status ===
+            if (launchStatus.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                        color = Color(0xFFF59E0B)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(launchStatus, fontSize = 13.sp, color = Color(0xFFF59E0B))
+                }
+            }
+
+            // === Playback Progress ===
+            if (playbackState.isPlaying) {
+                Spacer(modifier = Modifier.height(10.dp))
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = Color(0xFF22C55E).copy(alpha = 0.1f)
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            if (playbackState.isPaused) "⏸ หยุดชั่วคราว" else "▶ กำลังเล่น",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Text(playbackState.currentActionDesc, fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        LinearProgressIndicator(
+                            progress = playbackState.progress,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            "ขั้น ${playbackState.currentStep}/${playbackState.totalSteps} | รอบ ${playbackState.currentLoop}/${playbackState.totalLoops}",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                }
+            }
+
+            // === Play / Pause / Stop Controls ===
+            Spacer(modifier = Modifier.height(12.dp))
+            if (!playbackState.isPlaying) {
+                Button(
+                    onClick = {
+                        if (TpingAccessibilityService.instance == null) {
+                            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                        } else {
+                            val intent = Intent(context, FloatingOverlayService::class.java)
+                            intent.putExtra("mode", "playing")
+                            context.startForegroundService(intent)
+                            viewModel.startPlayback()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = selectedWorkflowId != null,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22C55E)),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(vertical = 14.dp)
+                ) {
+                    Icon(Icons.Default.PlayArrow, "Play")
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("เริ่มเล่น", fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    if (playbackState.isPaused) {
+                        Button(
+                            onClick = { viewModel.resumePlayback() },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF22C55E)),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(Icons.Default.PlayArrow, "Resume")
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("ต่อ")
+                        }
+                    } else {
+                        Button(
+                            onClick = { viewModel.pausePlayback() },
+                            modifier = Modifier.weight(1f),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFF59E0B)),
+                            shape = RoundedCornerShape(8.dp)
+                        ) {
+                            Icon(Icons.Default.Pause, "Pause")
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Text("พัก")
+                        }
+                    }
+                    Button(
+                        onClick = { viewModel.stopPlayback() },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFEF4444)),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Icon(Icons.Default.Stop, "Stop")
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("หยุด")
+                    }
+                }
+            }
         }
     }
 }

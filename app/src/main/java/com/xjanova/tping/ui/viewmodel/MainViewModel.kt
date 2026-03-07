@@ -1,6 +1,7 @@
 package com.xjanova.tping.ui.viewmodel
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.gson.Gson
@@ -41,12 +42,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _loopCount = MutableStateFlow(1)
     val loopCount: StateFlow<Int> = _loopCount
 
+    // Persist selections across app restarts
+    private val prefs = application.getSharedPreferences("tping_quick_play", Context.MODE_PRIVATE)
+
+    init {
+        val savedWf = prefs.getLong("selected_workflow_id", -1L)
+        if (savedWf > 0) _selectedWorkflowId.value = savedWf
+        val savedPf = prefs.getLong("selected_profile_id", -1L)
+        if (savedPf > 0) _selectedProfileId.value = savedPf
+        val savedLoop = prefs.getInt("loop_count", 1)
+        _loopCount.value = savedLoop.coerceIn(1, 999)
+    }
+
     // Launch status
     private val _launchStatus = MutableStateFlow("")
     val launchStatus: StateFlow<String> = _launchStatus
 
     fun setLoopCount(count: Int) {
-        _loopCount.value = count.coerceIn(1, 999)
+        val c = count.coerceIn(1, 999)
+        _loopCount.value = c
+        prefs.edit().putInt("loop_count", c).apply()
     }
 
     // ====== Data Profile Operations ======
@@ -111,12 +126,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun selectProfile(id: Long) {
+    fun selectProfile(id: Long?) {
         _selectedProfileId.value = id
+        if (id != null) prefs.edit().putLong("selected_profile_id", id).apply()
+        else prefs.edit().remove("selected_profile_id").apply()
     }
 
     fun selectWorkflow(id: Long) {
         _selectedWorkflowId.value = id
+        prefs.edit().putLong("selected_workflow_id", id).apply()
     }
 
     // ====== Playback with Auto-Launch ======
