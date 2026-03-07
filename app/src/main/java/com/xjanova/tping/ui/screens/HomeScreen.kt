@@ -200,21 +200,14 @@ fun HomeScreen(
                                 )
                             }
                         }
-                        if (licenseState.status == LicenseStatus.EXPIRED || licenseState.status == LicenseStatus.NONE) {
-                            TextButton(
-                                onClick = {
-                                    val intent = android.content.Intent(
-                                        android.content.Intent.ACTION_VIEW,
-                                        Uri.parse(LicenseManager.getPurchaseUrl())
-                                    )
-                                    context.startActivity(intent)
-                                }
-                            ) {
-                                Text("ซื้อคีย์", fontSize = 12.sp, color = licColor, fontWeight = FontWeight.Bold)
+                        // Show buy/upgrade button for ALL non-lifetime users
+                        val isLifetime = licenseState.status == LicenseStatus.ACTIVE && licenseState.licenseType == "lifetime"
+                        val isChecking = licenseState.status == LicenseStatus.CHECKING
+                        if (!isLifetime && !isChecking) {
+                            val buyLabel = when (licenseState.status) {
+                                LicenseStatus.EXPIRED, LicenseStatus.NONE -> "ซื้อคีย์"
+                                else -> "อัพเกรด"
                             }
-                        }
-                        // Near-expiry: renew button when < 7 days remaining
-                        if (LicenseManager.isNearExpiry()) {
                             TextButton(
                                 onClick = {
                                     val intent = android.content.Intent(
@@ -224,7 +217,7 @@ fun HomeScreen(
                                     context.startActivity(intent)
                                 }
                             ) {
-                                Text("ต่ออายุ", fontSize = 12.sp, color = Color(0xFFF59E0B), fontWeight = FontWeight.Bold)
+                                Text(buyLabel, fontSize = 12.sp, color = licColor, fontWeight = FontWeight.Bold)
                             }
                         }
                     }
@@ -698,11 +691,11 @@ fun HomeScreen(
                                 title = "4. วิธีเล่นอัตโนมัติ",
                                 color = Color(0xFF22C55E)
                             ) {
-                                GuideStep("เลือก Workflow", "เลือกขั้นตอนที่บันทึกไว้")
-                                GuideStep("เลือกข้อมูล", "เลือกชุดข้อมูลที่จะกรอก (ถ้ามี)")
-                                GuideStep("ตั้งจำนวนรอบ", "กรอกซ้ำกี่รอบ (1-999)")
-                                GuideStep("กดเล่น", "แอพเป้าหมายจะเปิดอัตโนมัติ แล้วทำทุกขั้นตอนให้")
-                                GuideStep("ควบคุม", "พัก/ต่อ/หยุดได้ทุกเวลาจาก Overlay")
+                                GuideStep("เลือก Workflow", "กดเลือกจาก Dropdown บนหน้าหลัก")
+                                GuideStep("เลือกข้อมูล", "ถ้า Workflow มี Tag ข้อมูล จะมี Dropdown ชุดข้อมูลให้เลือก")
+                                GuideStep("ตั้งจำนวนรอบ", "กด +/- เพื่อตั้งจำนวนรอบ (1-999)")
+                                GuideStep("กดเล่น ▶", "กดปุ่มเล่นได้เลย แอพเป้าหมายเปิดอัตโนมัติ")
+                                GuideStep("ควบคุม", "พัก/ต่อ/หยุดได้จากปุ่มบนหน้าหลัก หรือจาก Overlay")
                             }
 
                             // ===== Section 5: Game Support =====
