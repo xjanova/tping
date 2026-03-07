@@ -36,14 +36,11 @@ android {
                 keyAlias = System.getenv("KEY_ALIAS") ?: ""
                 keyPassword = System.getenv("KEY_PASSWORD") ?: ""
             } else {
-                // Fallback: use default debug keystore for local builds
-                val debugKs = File(System.getProperty("user.home"), ".android/debug.keystore")
-                if (debugKs.exists()) {
-                    storeFile = debugKs
-                    storePassword = "android"
-                    keyAlias = "androiddebugkey"
-                    keyPassword = "android"
-                }
+                // Fallback: use debug keystore so APK is always signed & installable
+                storeFile = File(System.getProperty("user.home"), ".android/debug.keystore")
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
             }
         }
     }
