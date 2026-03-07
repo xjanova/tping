@@ -11,7 +11,6 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -142,15 +141,15 @@ fun HomeScreen(
         val crashPrefs = context.getSharedPreferences("crash_log", android.content.Context.MODE_PRIVATE)
         var lastCrash by remember { mutableStateOf(crashPrefs.getString("last_crash", null)) }
 
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp),
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // === Crash Report (shown once after crash) ===
-            item(key = "crash_report") {
                 if (lastCrash != null) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
@@ -193,11 +192,9 @@ fun HomeScreen(
                         }
                     }
                 }
-            }
 
             // === License Status Card ===
-            item(key = "license") {
-                val licColor = when (licenseState.status) {
+            val licColor = when (licenseState.status) {
                     LicenseStatus.ACTIVE -> Color(0xFF22C55E)
                     LicenseStatus.TRIAL -> Color(0xFF3B82F6)
                     LicenseStatus.EXPIRED -> Color(0xFFEF4444)
@@ -330,11 +327,9 @@ fun HomeScreen(
                         }
                     }
                 }
-            }
 
             // === Permission Status ===
-            item(key = "permissions") {
-                val allGranted = isAccessibilityEnabled && hasOverlayPermission && hasNotificationPermission
+            val allGranted = isAccessibilityEnabled && hasOverlayPermission && hasNotificationPermission
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -428,11 +423,9 @@ fun HomeScreen(
                         }
                     }
                 }
-            }
 
             // ===== Accessibility Shortcut Setup =====
-            item(key = "accessibility_shortcut") {
-                if (isAccessibilityEnabled && hasOverlayPermission) {
+            if (isAccessibilityEnabled && hasOverlayPermission) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
@@ -502,11 +495,9 @@ fun HomeScreen(
                         }
                     }
                 }
-            }
 
             // ===== Start Overlay Button =====
-            item(key = "overlay_button") {
-                val overlayReady = isAccessibilityEnabled && hasOverlayPermission
+            val overlayReady = isAccessibilityEnabled && hasOverlayPermission
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
@@ -573,11 +564,9 @@ fun HomeScreen(
                     }
                 }
             }
-            }
 
             // === Main Actions ===
-            item(key = "main_actions") {
-                Text(
+            Text(
                 "เมนูหลัก",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
@@ -600,14 +589,9 @@ fun HomeScreen(
                 onClick = onNavigateToWorkflows
             )
 
-            }
-
             // ===== Quick Play — select + play directly on HomeScreen =====
-            item(key = "quick_play") {
-                QuickPlaySection(viewModel = viewModel)
-            }
+            QuickPlaySection(viewModel = viewModel)
 
-            item(key = "bottom_section") {
             MainActionCard(
                 icon = Icons.Default.SwapHoriz,
                 title = "Export / Import",
@@ -785,7 +769,6 @@ fun HomeScreen(
                 modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                 textAlign = TextAlign.Center
             )
-            }
         }
     }
 }
