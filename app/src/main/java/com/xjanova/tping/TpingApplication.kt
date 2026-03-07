@@ -16,10 +16,18 @@ class TpingApplication : Application() {
         super.onCreate()
         instance = this
 
-        // Global crash handler for debugging
+        // Global crash handler — save stack trace to prefs for display on next launch
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
             Log.e("TpingApp", "UNCAUGHT EXCEPTION in ${thread.name}", throwable)
+            try {
+                val prefs = getSharedPreferences("crash_log", MODE_PRIVATE)
+                val trace = throwable.stackTraceToString().take(3000)
+                prefs.edit()
+                    .putString("last_crash", trace)
+                    .putLong("crash_time", System.currentTimeMillis())
+                    .commit() // commit() not apply() — must write before process dies
+            } catch (_: Exception) { }
             defaultHandler?.uncaughtException(thread, throwable)
         }
 

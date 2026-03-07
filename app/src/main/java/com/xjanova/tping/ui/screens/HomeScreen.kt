@@ -138,6 +138,10 @@ fun HomeScreen(
     ) { padding ->
         val licenseState by LicenseManager.state.collectAsState()
 
+        // Check for saved crash from previous session
+        val crashPrefs = context.getSharedPreferences("crash_log", android.content.Context.MODE_PRIVATE)
+        var lastCrash by remember { mutableStateOf(crashPrefs.getString("last_crash", null)) }
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -145,6 +149,52 @@ fun HomeScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // === Crash Report (shown once after crash) ===
+            if (lastCrash != null) {
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFFEF4444).copy(alpha = 0.1f))
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.BugReport, null, tint = Color(0xFFEF4444), modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("พบข้อผิดพลาดครั้งก่อน", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFFEF4444))
+                                Spacer(modifier = Modifier.weight(1f))
+                                TextButton(onClick = {
+                                    crashPrefs.edit().remove("last_crash").apply()
+                                    lastCrash = null
+                                }) {
+                                    Text("ปิด", fontSize = 12.sp)
+                                }
+                            }
+                            Text(
+                                lastCrash ?: "",
+                                fontSize = 9.sp,
+                                lineHeight = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(max = 200.dp)
+                                    .verticalScroll(rememberScrollState())
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            TextButton(onClick = {
+                                val clip = android.content.ClipData.newPlainText("crash", lastCrash)
+                                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                cm.setPrimaryClip(clip)
+                            }) {
+                                Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(14.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("คัดลอก", fontSize = 11.sp)
+                            }
+                        }
+                    }
+                }
+            }
+
             // === License Status Card ===
             item {
                 val licColor = when (licenseState.status) {
