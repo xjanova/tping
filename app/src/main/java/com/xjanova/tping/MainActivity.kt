@@ -53,8 +53,12 @@ fun TpingApp() {
     // Initialize license on first composition
     val context = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(Unit) {
-        FloatingOverlayService.playbackEngine = viewModel.playbackEngine
-        LicenseManager.initialize(context)
+        try {
+            FloatingOverlayService.playbackEngine = viewModel.playbackEngine
+            LicenseManager.initialize(context)
+        } catch (e: Exception) {
+            android.util.Log.e("TpingApp", "Initialization failed", e)
+        }
     }
 
     // Always start at license_gate — it handles loading/redirect internally

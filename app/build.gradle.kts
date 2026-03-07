@@ -15,7 +15,7 @@ android {
 
         // === Semantic Versioning (source of truth) ===
         // Change this string to bump version. CI reads it for GitHub releases.
-        val versionStr = "1.2.0"
+        val versionStr = "1.2.1"
         val parts = versionStr.split(".")
         versionCode = parts[0].toInt() * 10000 + parts[1].toInt() * 100 + parts[2].toInt()
         versionName = versionStr
@@ -36,11 +36,14 @@ android {
                 keyAlias = System.getenv("KEY_ALIAS") ?: ""
                 keyPassword = System.getenv("KEY_PASSWORD") ?: ""
             } else {
-                // Fallback: use debug keystore so APK is always signed & installable
-                storeFile = File(System.getProperty("user.home"), ".android/debug.keystore")
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
+                // Fallback: use default debug keystore for local builds
+                val debugKs = File(System.getProperty("user.home"), ".android/debug.keystore")
+                if (debugKs.exists()) {
+                    storeFile = debugKs
+                    storePassword = "android"
+                    keyAlias = "androiddebugkey"
+                    keyPassword = "android"
+                }
             }
         }
     }

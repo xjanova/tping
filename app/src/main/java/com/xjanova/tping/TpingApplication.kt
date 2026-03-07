@@ -4,6 +4,7 @@ import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.os.Build
+import android.util.Log
 import com.xjanova.tping.data.cloud.CloudAuthManager
 import com.xjanova.tping.data.database.TpingDatabase
 
@@ -14,8 +15,25 @@ class TpingApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
-        CloudAuthManager.initialize(this)
-        createNotificationChannel()
+
+        // Global crash handler for debugging
+        val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            Log.e("TpingApp", "UNCAUGHT EXCEPTION in ${thread.name}", throwable)
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
+
+        try {
+            CloudAuthManager.initialize(this)
+        } catch (e: Exception) {
+            Log.e("TpingApp", "CloudAuthManager.initialize failed", e)
+        }
+
+        try {
+            createNotificationChannel()
+        } catch (e: Exception) {
+            Log.e("TpingApp", "createNotificationChannel failed", e)
+        }
     }
 
     private fun createNotificationChannel() {

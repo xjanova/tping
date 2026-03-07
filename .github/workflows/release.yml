@@ -30,15 +30,30 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
+      - name: Restore signing keystore from cache
+        id: restore-keystore
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.android/release.keystore
+          key: signing-keystore-v1
+
       - name: Generate signing keystore
+        if: steps.restore-keystore.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/.android
           keytool -genkeypair -v \
-            -keystore ~/.android/debug.keystore \
-            -alias androiddebugkey \
+            -keystore ~/.android/release.keystore \
+            -alias tping-release \
             -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass android -keypass android \
+            -storepass xmanstudio2024 -keypass xmanstudio2024 \
             -dname "CN=Xman Studio, OU=Dev, O=Xman Studio, L=Bangkok, S=BKK, C=TH"
+
+      - name: Save signing keystore to cache
+        if: steps.restore-keystore.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.android/release.keystore
+          key: signing-keystore-v1
 
       - name: Read version from build.gradle.kts
         run: |
@@ -50,9 +65,19 @@ jobs:
 
       - name: Build Debug APK
         run: ./gradlew assembleDebug
+        env:
+          KEYSTORE_FILE: ${{ runner.home }}/.android/release.keystore
+          KEYSTORE_PASSWORD: xmanstudio2024
+          KEY_ALIAS: tping-release
+          KEY_PASSWORD: xmanstudio2024
 
       - name: Build Release APK
         run: ./gradlew assembleRelease
+        env:
+          KEYSTORE_FILE: ${{ runner.home }}/.android/release.keystore
+          KEYSTORE_PASSWORD: xmanstudio2024
+          KEY_ALIAS: tping-release
+          KEY_PASSWORD: xmanstudio2024
 
       - name: Rename APKs
         run: |
