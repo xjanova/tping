@@ -1,7 +1,6 @@
 package com.xjanova.tping.puzzle
 
 import android.accessibilityservice.GestureDescription
-import android.graphics.Rect
 import android.os.Build
 import android.util.Log
 import com.google.gson.Gson
@@ -17,23 +16,33 @@ object PuzzleCaptchaAction {
     private val gson = Gson()
 
     // Sliding parameters
-    private const val FAST_STEP_PX = 20f      // Fast phase: move 20px per step
-    private const val FINE_STEP_PX = 3f        // Fine phase: move 3px per step (was 4)
-    private const val STEP_DURATION_MS = 80L   // Duration per micro-step
-    private const val DARKNESS_NEAR_ZERO = 50  // If dark pixels < this, gap is "filled"
-    private const val MAX_FINE_STEPS = 60      // Max fine-tuning steps (was 40)
-    private const val FAST_PHASE_RATIO = 0.70f // Fast phase covers 70% of target (was 80%)
+    private const val FAST_STEP_PX = 20f        // Fast phase: move 20px per step
+    private const val FINE_STEP_PX = 3f          // Normal fine phase: 3px per step
+    private const val ULTRA_FINE_STEP_PX = 1f    // Ultra-fine: 1px per step (when close to target)
+    private const val STEP_DURATION_MS = 80L     // Duration per micro-step
+    private const val DARKNESS_NEAR_ZERO = 50    // If dark pixels < this, gap is "filled"
+    private const val MAX_FINE_STEPS = 80        // Max fine-tuning steps total
+    private const val FAST_PHASE_RATIO = 0.65f   // Fast phase covers 65% of target (conservative)
+
+    // Edge thresholds for stop decisions
+    private const val EDGE_FILLED_RATIO = 0.30f      // Edge < 30% of initial = definitely filled
+    private const val EDGE_APPROACHING_RATIO = 0.60f  // Edge < 60% = approaching — switch to ultra-fine
+    private const val EDGE_GOOD_ENOUGH_RATIO = 0.45f  // Edge < 45% = good enough to release
+    private const val RISING_STEPS_TO_STOP = 2        // Release after edge rises 2 consecutive steps
 
     /**
-     * Execute CAPTCHA solve using Visual Feedback Sliding with min-tracking:
+     * Execute CAPTCHA solve using Forward-Only Predictive Stopping:
      *
      * 1. Screenshot → auto-detect gap region above slider
      * 2. If no gap found → tap refresh button → retry
-     * 3. Press-hold slider button → drag toward gap (fast phase, 70% of target)
-     * 4. Fine-tune: drag in 3px increments, screenshot each time, track edge strength
-     * 5. Track the position with MINIMUM edge strength (= best fit)
-     * 6. If overshoot detected (edge rising 5+ steps after min) → backtrack to best position
-     * 7. Release finger at best position
+     * 3. Press-hold slider button → drag toward gap (fast phase, 65% of target)
+     * 4. Fine-tune forward only (3px steps), screenshot each time, track edge strength
+     * 5. When approaching target (edge < 60%), switch to ultra-fine (1px steps)
+     * 6. Stop and release IMMEDIATELY when:
+     *    a) Edge drops below 30% of initial (perfect match)
+     *    b) Darkness near zero (classic filled)
+     *    c) Edge was good (<45%) and starts rising for 2+ steps (just passed optimal)
+     * 7. NO BACKTRACKING — puzzle resets on wrong release, so must be accurate first pass
      * 8. Verify CAPTCHA is solved
      */
     suspend fun execute(
@@ -133,7 +142,7 @@ object PuzzleCaptchaAction {
             val gapPercent = ((gapCenterX / metrics.widthPixels) * 100).toInt()
             status("ครั้งที่ $attempt: พบที่ ${gapPercent}% → เลื่อน...")
 
-            // Step 2: Fast phase — drag 70% of estimated distance (conservative)
+            // Step 2: Fast phase — drag 65% of estimated distance (conservative)
             val fastDistance = targetDragDistance * FAST_PHASE_RATIO
             val fastEndX = sliderX + fastDistance
 
@@ -155,23 +164,24 @@ object PuzzleCaptchaAction {
 
             var currentX = fastEndX
 
-            // Step 3: Fine phase with MIN-TRACKING
-            // Slide forward in small steps, track the position where edge strength is lowest
-            // (= puzzle piece best aligns with gap). If we overshoot, backtrack to that position.
+            // Step 3: Forward-only fine phase with PREDICTIVE STOPPING
+            // - Start with 3px steps
+            // - When edge drops below 60% of initial → switch to 1px steps (ultra-fine)
+            // - Stop and release immediately when optimal position detected
+            // - NO BACKTRACKING — puzzle changes on wrong release
             status("ครั้งที่ $attempt: ปรับละเอียด...")
 
             var fineStepCount = 0
-            var minEdgeStrength = if (initialEdgeStrength > 0) initialEdgeStrength else Int.MAX_VALUE
-            var minEdgeX = currentX           // X position where edge was lowest
-            var stepsAfterMin = 0             // Steps since we saw the minimum
-            var confirmedOvershoot = false     // True if we confirmed we passed the best position
-            var definitelyFilled = false       // True if edge dropped below 30% (perfect match)
+            var bestEdgeStrength = if (initialEdgeStrength > 0) initialEdgeStrength else Int.MAX_VALUE
+            var consecutiveRising = 0       // Count of consecutive edge-rising steps
+            var inUltraFineMode = false     // True when using 1px steps
+            var shouldRelease = false       // Set true when we should release NOW
 
-            while (fineStepCount < MAX_FINE_STEPS) {
+            while (fineStepCount < MAX_FINE_STEPS && !shouldRelease) {
                 fineStepCount++
 
-                // Small delay for the UI to update after sliding
-                delay(120)
+                // Delay for UI update after sliding
+                delay(if (inUltraFineMode) 100 else 120)
 
                 // Screenshot to measure fit quality
                 val fineScreenshot = PuzzleScreenCapture.captureScreen()
@@ -181,62 +191,83 @@ object PuzzleCaptchaAction {
                 val currentDarkness = PuzzleSolver.measureDarkness(fineScreenshot, darkRegion)
                 fineScreenshot.recycle()
 
+                val stepSize = if (inUltraFineMode) "1px" else "3px"
                 Log.d(
                     TAG,
-                    "Fine step $fineStepCount: x=${currentX.toInt()}, edge=$currentEdge/$initialEdgeStrength" +
-                        " (min=$minEdgeStrength@${minEdgeX.toInt()}), darkness=$currentDarkness, afterMin=$stepsAfterMin"
+                    "Fine step $fineStepCount ($stepSize): x=${currentX.toInt()}, " +
+                        "edge=$currentEdge/$initialEdgeStrength (best=$bestEdgeStrength), " +
+                        "darkness=$currentDarkness, rising=$consecutiveRising"
                 )
 
                 // === Check 1: Definite fill — edge dropped below 30% of initial ===
                 if (currentEdge >= 0 && initialEdgeStrength > 0 &&
-                    currentEdge < initialEdgeStrength * 0.30
+                    currentEdge < initialEdgeStrength * EDGE_FILLED_RATIO
                 ) {
-                    Log.d(TAG, "Gap definitely filled! edge=$currentEdge < ${(initialEdgeStrength * 0.30).toInt()}")
-                    definitelyFilled = true
+                    Log.d(TAG, "✓ Gap definitely filled! edge=$currentEdge < ${(initialEdgeStrength * EDGE_FILLED_RATIO).toInt()}")
+                    shouldRelease = true
                     break
                 }
 
                 // === Check 2: Darkness near zero (classic dark gaps) ===
                 if (currentDarkness >= 0 && currentDarkness < DARKNESS_NEAR_ZERO) {
-                    Log.d(TAG, "Gap filled! darkness=$currentDarkness < $DARKNESS_NEAR_ZERO")
-                    definitelyFilled = true
+                    Log.d(TAG, "✓ Gap filled! darkness=$currentDarkness < $DARKNESS_NEAR_ZERO")
+                    shouldRelease = true
                     break
                 }
 
-                // === Track minimum edge position ===
+                // === Track edge trend ===
                 if (currentEdge >= 0) {
-                    if (currentEdge < minEdgeStrength) {
-                        // New minimum found
-                        minEdgeStrength = currentEdge
-                        minEdgeX = currentX
-                        stepsAfterMin = 0
+                    if (currentEdge < bestEdgeStrength) {
+                        // Still improving — new best
+                        bestEdgeStrength = currentEdge
+                        consecutiveRising = 0
                     } else {
-                        stepsAfterMin++
+                        // Edge increased = moving past optimal
+                        consecutiveRising++
+                    }
+
+                    // === Check 3: Edge was good and now rising → release NOW ===
+                    // We already passed the best position, but since we can't go back,
+                    // release immediately if:
+                    // - Best edge was reasonably good (< 45% of initial)
+                    // - Edge has been rising for 2+ steps
+                    if (consecutiveRising >= RISING_STEPS_TO_STOP &&
+                        initialEdgeStrength > 0 &&
+                        bestEdgeStrength < initialEdgeStrength * EDGE_GOOD_ENOUGH_RATIO
+                    ) {
+                        Log.d(
+                            TAG,
+                            "✓ Releasing: edge rising $consecutiveRising steps, " +
+                                "best=$bestEdgeStrength (${(bestEdgeStrength * 100.0 / initialEdgeStrength).toInt()}% of initial)"
+                        )
+                        shouldRelease = true
+                        break
+                    }
+
+                    // === Check 4: Edge approaching target — switch to ultra-fine ===
+                    if (!inUltraFineMode && initialEdgeStrength > 0 &&
+                        currentEdge < initialEdgeStrength * EDGE_APPROACHING_RATIO
+                    ) {
+                        Log.d(TAG, "→ Approaching target, switching to ultra-fine (1px) steps")
+                        inUltraFineMode = true
+                    }
+
+                    // === Check 5: Safety — edge rising a lot (5+ steps), even if best wasn't great ===
+                    // This catches cases where initial measurement was noisy
+                    if (consecutiveRising >= 5) {
+                        Log.d(
+                            TAG,
+                            "⚠ Edge rising $consecutiveRising steps — releasing at current position " +
+                                "(best=$bestEdgeStrength, current=$currentEdge)"
+                        )
+                        shouldRelease = true
+                        break
                     }
                 }
 
-                // === Check 3: Overshoot — 5+ steps past minimum with edge significantly higher ===
-                if (stepsAfterMin >= 5 && initialEdgeStrength > 0 &&
-                    minEdgeStrength < initialEdgeStrength * 0.75
-                ) {
-                    Log.d(
-                        TAG,
-                        "Overshoot confirmed: minEdge=$minEdgeStrength at x=${minEdgeX.toInt()}, " +
-                            "now at x=${currentX.toInt()} ($stepsAfterMin steps past min)"
-                    )
-                    confirmedOvershoot = true
-                    break
-                }
-
-                // === Check 4: Way past target — safety stop ===
-                if (stepsAfterMin >= 10) {
-                    Log.d(TAG, "10 steps past minimum — safety stop")
-                    confirmedOvershoot = minEdgeStrength < initialEdgeStrength * 0.85
-                    break
-                }
-
-                // Continue sliding forward by FINE_STEP_PX
-                val nextX = currentX + FINE_STEP_PX
+                // Continue sliding forward
+                val stepPx = if (inUltraFineMode) ULTRA_FINE_STEP_PX else FINE_STEP_PX
+                val nextX = currentX + stepPx
                 val fineDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
                 service.swipeWithContinuation(
                     currentX, sliderY,
@@ -256,32 +287,8 @@ object PuzzleCaptchaAction {
                 currentX = nextX
             }
 
-            // Step 3b: BACKTRACK to minimum edge position if we overshot
-            if (confirmedOvershoot && !definitelyFilled && minEdgeX < currentX) {
-                val backDistance = currentX - minEdgeX
-                Log.d(TAG, "Backtracking ${backDistance.toInt()}px to best position x=${minEdgeX.toInt()}")
-                status("ครั้งที่ $attempt: ย้อนกลับ ${backDistance.toInt()}px...")
-
-                val backDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
-                service.swipeWithContinuation(
-                    currentX, sliderY,
-                    minEdgeX, sliderY,
-                    (backDistance / FINE_STEP_PX * STEP_DURATION_MS).toLong().coerceIn(50, 1500),
-                    willContinue = true,
-                    previousStroke = currentStroke
-                ) { stroke -> backDone.complete(stroke) }
-
-                val backStroke = withTimeoutOrNull(3000) { backDone.await() }
-                if (backStroke != null) {
-                    currentStroke = backStroke
-                    currentX = minEdgeX
-                    Log.d(TAG, "Backtracked to x=${currentX.toInt()}")
-                } else {
-                    Log.w(TAG, "Backtrack failed, releasing at current position")
-                }
-            }
-
-            // Step 4: Release finger (willContinue = false)
+            // Step 4: Release finger at current position (willContinue = false)
+            // NO BACKTRACKING — release exactly where we are
             status("ครั้งที่ $attempt: ปล่อยนิ้ว...")
             val releaseDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
             service.swipeWithContinuation(
