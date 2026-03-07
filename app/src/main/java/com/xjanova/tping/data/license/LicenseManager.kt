@@ -28,8 +28,8 @@ object LicenseManager {
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_MACHINE_ID = "machine_id"
 
-    // Purchase URL
-    private const val PURCHASE_URL = "https://xman4289.com/product/tping"
+    // Purchase URL (base for plan-specific URLs)
+    private const val PURCHASE_BASE_URL = "https://xman4289.com/tping/buy"
 
     private val _state = MutableStateFlow(LicenseState())
     val state: StateFlow<LicenseState> = _state
@@ -361,7 +361,13 @@ object LicenseManager {
         return s.status == LicenseStatus.ACTIVE && s.remainingDays in 1..7
     }
 
-    fun getPurchaseUrl(): String = PURCHASE_URL
+    fun getPurchaseUrl(plan: String = ""): String {
+        return if (plan.isNotEmpty()) {
+            "$PURCHASE_BASE_URL?plan=$plan"
+        } else {
+            PURCHASE_BASE_URL
+        }
+    }
 
     fun getLicenseTypeDisplay(type: String = _state.value.licenseType): String {
         return when (type) {

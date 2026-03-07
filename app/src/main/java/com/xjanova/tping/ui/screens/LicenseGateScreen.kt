@@ -200,7 +200,11 @@ fun LicenseGateScreen(
                     isSelected = selectedPlan == "monthly",
                     isPopular = false,
                     accentColor = Color(0xFF3B82F6),
-                    onSelect = { selectedPlan = "monthly" }
+                    onSelect = { selectedPlan = "monthly" },
+                    onBuy = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(LicenseManager.getPurchaseUrl("monthly")))
+                        context.startActivity(intent)
+                    }
                 )
             }
 
@@ -221,7 +225,11 @@ fun LicenseGateScreen(
                     isPopular = true,
                     savingText = "ประหยัด 48%",
                     accentColor = Color(0xFF8B5CF6),
-                    onSelect = { selectedPlan = "yearly" }
+                    onSelect = { selectedPlan = "yearly" },
+                    onBuy = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(LicenseManager.getPurchaseUrl("yearly")))
+                        context.startActivity(intent)
+                    }
                 )
             }
 
@@ -242,15 +250,19 @@ fun LicenseGateScreen(
                     isSelected = selectedPlan == "lifetime",
                     isPopular = false,
                     accentColor = Color(0xFF22C55E),
-                    onSelect = { selectedPlan = "lifetime" }
+                    onSelect = { selectedPlan = "lifetime" },
+                    onBuy = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(LicenseManager.getPurchaseUrl("lifetime")))
+                        context.startActivity(intent)
+                    }
                 )
             }
 
-            // Buy button
+            // Buy button (for selected plan)
             item {
                 Button(
                     onClick = {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(LicenseManager.getPurchaseUrl()))
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(LicenseManager.getPurchaseUrl(selectedPlan)))
                         context.startActivity(intent)
                     },
                     modifier = Modifier
@@ -415,7 +427,8 @@ private fun PricingCard(
     isPopular: Boolean,
     savingText: String? = null,
     accentColor: Color,
-    onSelect: () -> Unit
+    onSelect: () -> Unit,
+    onBuy: () -> Unit = {}
 ) {
     val borderColor = if (isSelected) accentColor else Color.White.copy(alpha = 0.15f)
     val bgColor = if (isSelected) accentColor.copy(alpha = 0.12f) else Color.White.copy(alpha = 0.05f)
@@ -527,6 +540,25 @@ private fun PricingCard(
                             color = Color.White.copy(alpha = 0.8f)
                         )
                     }
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+                Button(
+                    onClick = onBuy,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(40.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = accentColor
+                    ),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.ShoppingCart, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        "ซื้อแพ็คเกจนี้",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp
+                    )
                 }
             }
         }
