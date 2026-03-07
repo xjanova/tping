@@ -92,9 +92,13 @@ fun HomeScreen(
             // Auto-launch overlay after returning from settings
             if (waitingForPermission && isAccessibilityEnabled && hasOverlayPermission) {
                 waitingForPermission = false
-                val intent = Intent(context, FloatingOverlayService::class.java)
-                intent.putExtra("mode", "idle")
-                context.startForegroundService(intent)
+                try {
+                    val intent = Intent(context, FloatingOverlayService::class.java)
+                    intent.putExtra("mode", "idle")
+                    context.startForegroundService(intent)
+                } catch (_: Exception) {
+                    // ForegroundServiceStartNotAllowedException on Android 12+
+                }
             }
         }
     }
@@ -141,9 +145,9 @@ fun HomeScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            // === License Status Card ===
             item {
-            // License Status Card
-            val licColor = when (licenseState.status) {
+                val licColor = when (licenseState.status) {
                     LicenseStatus.ACTIVE -> Color(0xFF22C55E)
                     LicenseStatus.TRIAL -> Color(0xFF3B82F6)
                     LicenseStatus.EXPIRED -> Color(0xFFEF4444)
@@ -276,9 +280,11 @@ fun HomeScreen(
                         }
                     }
                 }
+            }
 
-            // Permission Status
-            val allGranted = isAccessibilityEnabled && hasOverlayPermission && hasNotificationPermission
+            // === Permission Status ===
+            item {
+                val allGranted = isAccessibilityEnabled && hasOverlayPermission && hasNotificationPermission
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -372,9 +378,11 @@ fun HomeScreen(
                         }
                     }
                 }
+            }
 
             // ===== Accessibility Shortcut Setup =====
             if (isAccessibilityEnabled && hasOverlayPermission) {
+                item {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
@@ -443,10 +451,12 @@ fun HomeScreen(
                             }
                         }
                     }
+                }
             }
 
             // ===== Start Overlay Button =====
-            val overlayReady = isAccessibilityEnabled && hasOverlayPermission
+            item {
+                val overlayReady = isAccessibilityEnabled && hasOverlayPermission
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
@@ -470,9 +480,11 @@ fun HomeScreen(
                                 waitingForPermission = true
                                 PermissionHelper.openOverlaySettings(context)
                             } else {
-                                val intent = Intent(context, FloatingOverlayService::class.java)
-                                intent.putExtra("mode", "idle")
-                                context.startForegroundService(intent)
+                                try {
+                                    val intent = Intent(context, FloatingOverlayService::class.java)
+                                    intent.putExtra("mode", "idle")
+                                    context.startForegroundService(intent)
+                                } catch (_: Exception) { }
                             }
                         }
                         .padding(vertical = 20.dp),
@@ -511,9 +523,11 @@ fun HomeScreen(
                     }
                 }
             }
+            }
 
-            // Main Actions
-            Text(
+            // === Main Actions ===
+            item {
+                Text(
                 "เมนูหลัก",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
@@ -1171,9 +1185,11 @@ fun QuickPlaySection(
                         if (TpingAccessibilityService.instance == null) {
                             context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
                         } else {
-                            val intent = Intent(context, FloatingOverlayService::class.java)
-                            intent.putExtra("mode", "playing")
-                            context.startForegroundService(intent)
+                            try {
+                                val intent = Intent(context, FloatingOverlayService::class.java)
+                                intent.putExtra("mode", "playing")
+                                context.startForegroundService(intent)
+                            } catch (_: Exception) { }
                             viewModel.startPlayback()
                         }
                     },
