@@ -99,6 +99,8 @@ jobs:
             - แก้ Captcha Puzzle อัตโนมัติ (Visual Feedback Sliding)
             - หน้าต่างลอย Control Center
             - โหมดเกม (กดพิกัดจอ)
+            - Export/Import Workflow + Cloud Sync
+            - หน้าเลือกแพ็กเกจราคาพร้อมลิงก์ซื้อ License
           draft: false
           prerelease: false
           files: |
