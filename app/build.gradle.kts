@@ -15,7 +15,7 @@ android {
 
         // === Semantic Versioning (source of truth) ===
         // Change this string to bump version. CI reads it for GitHub releases.
-        val versionStr = "1.2.13"
+        val versionStr = "1.2.14"
         val parts = versionStr.split(".")
         versionCode = parts[0].toInt() * 10000 + parts[1].toInt() * 100 + parts[2].toInt()
         versionName = versionStr
@@ -62,7 +62,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.8.2")
 
     // Compose
-    implementation(platform("androidx.compose:compose-bom:2024.01.00"))
+    implementation(platform("androidx.compose:compose-bom:2024.04.01"))
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
