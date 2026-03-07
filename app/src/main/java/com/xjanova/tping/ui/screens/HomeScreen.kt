@@ -151,7 +151,7 @@ fun HomeScreen(
         ) {
             // === Crash Report (shown once after crash) ===
             if (lastCrash != null) {
-                item {
+                item(key = "crash_report") {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
@@ -196,7 +196,7 @@ fun HomeScreen(
             }
 
             // === License Status Card ===
-            item {
+            item(key = "license") {
                 val licColor = when (licenseState.status) {
                     LicenseStatus.ACTIVE -> Color(0xFF22C55E)
                     LicenseStatus.TRIAL -> Color(0xFF3B82F6)
@@ -333,7 +333,7 @@ fun HomeScreen(
             }
 
             // === Permission Status ===
-            item {
+            item(key = "permissions") {
                 val allGranted = isAccessibilityEnabled && hasOverlayPermission && hasNotificationPermission
                 Card(
                     modifier = Modifier.fillMaxWidth(),
@@ -432,7 +432,7 @@ fun HomeScreen(
 
             // ===== Accessibility Shortcut Setup =====
             if (isAccessibilityEnabled && hasOverlayPermission) {
-                item {
+                item(key = "accessibility_shortcut") {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
@@ -505,7 +505,7 @@ fun HomeScreen(
             }
 
             // ===== Start Overlay Button =====
-            item {
+            item(key = "overlay_button") {
                 val overlayReady = isAccessibilityEnabled && hasOverlayPermission
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -576,7 +576,7 @@ fun HomeScreen(
             }
 
             // === Main Actions ===
-            item {
+            item(key = "main_actions") {
                 Text(
                 "เมนูหลัก",
                 style = MaterialTheme.typography.titleLarge,
@@ -603,11 +603,11 @@ fun HomeScreen(
             }
 
             // ===== Quick Play — select + play directly on HomeScreen =====
-            item {
+            item(key = "quick_play") {
                 QuickPlaySection(viewModel = viewModel)
             }
 
-            item {
+            item(key = "bottom_section") {
             MainActionCard(
                 icon = Icons.Default.SwapHoriz,
                 title = "Export / Import",
