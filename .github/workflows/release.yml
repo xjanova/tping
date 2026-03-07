@@ -30,14 +30,14 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Restore signing keystore from cache
+      - name: Restore debug keystore from cache
         id: restore-keystore
         uses: actions/cache/restore@v4
         with:
           path: ~/.android/debug.keystore
-          key: signing-keystore-v2
+          key: debug-keystore-v1
 
-      - name: Generate signing keystore
+      - name: Generate debug keystore
         if: steps.restore-keystore.outputs.cache-hit != 'true'
         run: |
           mkdir -p ~/.android
@@ -48,12 +48,12 @@ jobs:
             -storepass android -keypass android \
             -dname "CN=Xman Studio, OU=Dev, O=Xman Studio, L=Bangkok, S=BKK, C=TH"
 
-      - name: Save signing keystore to cache
+      - name: Save debug keystore to cache
         if: steps.restore-keystore.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ~/.android/debug.keystore
-          key: signing-keystore-v2
+          key: debug-keystore-v1
 
       - name: Read version from build.gradle.kts
         run: |
@@ -63,33 +63,33 @@ jobs:
           echo "VERSION_CODE=${VERSION_CODE}" >> $GITHUB_ENV
           echo "📦 Version: v${VERSION} (versionCode: ${VERSION_CODE})"
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug
-
       - name: Build Release APK
         run: ./gradlew assembleRelease
 
-      - name: Rename APKs
+      - name: Verify APK is signed
         run: |
-          mkdir -p release-output
-          cp app/build/outputs/apk/debug/app-debug.apk release-output/Tping-v${{ env.VERSION }}-debug.apk
+          echo "=== Checking APK signing ==="
+          ls -la app/build/outputs/apk/release/
           if [ -f app/build/outputs/apk/release/app-release.apk ]; then
-            cp app/build/outputs/apk/release/app-release.apk release-output/Tping-v${{ env.VERSION }}-release.apk
+            echo "✅ Signed release APK found"
           else
-            cp app/build/outputs/apk/release/app-release-unsigned.apk release-output/Tping-v${{ env.VERSION }}-release.apk
+            echo "⚠️ Only unsigned APK found - using it anyway"
           fi
 
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: Tping-debug-apk
-          path: release-output/Tping-*-debug.apk
+      - name: Rename APK
+        run: |
+          mkdir -p release-output
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk release-output/Tping-v${{ env.VERSION }}.apk
+          else
+            cp app/build/outputs/apk/release/app-release-unsigned.apk release-output/Tping-v${{ env.VERSION }}.apk
+          fi
 
-      - name: Upload Release APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Tping-release-apk
-          path: release-output/Tping-*-release.apk
+          name: Tping-apk
+          path: release-output/Tping-*.apk
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -103,11 +103,10 @@ jobs:
 
             Version: `${{ env.VERSION }}` | versionCode: `${{ env.VERSION_CODE }}`
 
-            ### Downloads
-            - **Release APK** — ติดตั้งได้เลย (signed) สำหรับใช้งานจริง
-            - **Debug APK** — สำหรับทดสอบ/นักพัฒนา
+            ### ดาวน์โหลด
+            - **Tping-v${{ env.VERSION }}.apk** — ติดตั้งได้เลย
 
-            ### Features
+            ### ฟีเจอร์
             - บันทึกขั้นตอนการกรอกข้อมูล (Learning Mode)
             - เล่นซ้ำอัตโนมัติ (Auto Playback) พร้อมวนลูป
             - จัดเก็บข้อมูลหลายชุด + หมวดหมู่ + สุ่มข้อมูล

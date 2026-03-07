@@ -1,13 +1,13 @@
 package com.xjanova.tping.data.license
 
 data class LicenseState(
-    val status: LicenseStatus = LicenseStatus.CHECKING,
-    val licenseType: String = "",
+    val status: LicenseStatus = LicenseStatus.TRIAL,
+    val licenseType: String = "trial",
     val expiresAt: Long = 0,
-    val remainingDays: Int = 0,
-    val remainingHours: Int = 0,
+    val remainingDays: Int = 1,
+    val remainingHours: Int = 24,
     val deviceId: String = "",
-    val isLoading: Boolean = true,
+    val isLoading: Boolean = false,
     val errorMessage: String = ""
 )
 

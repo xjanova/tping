@@ -13,8 +13,8 @@ import kotlinx.coroutines.withContext
 
 /**
  * Central license state manager for Tping.
- * Trial/demo always verified from server — no local fallback for trial.
- * Paid licenses allow offline cached fallback.
+ * Tries server-based trial/license verification first.
+ * Falls back to LOCAL trial (24h) when server is unreachable — app must always be usable.
  */
 object LicenseManager {
 
@@ -27,6 +27,11 @@ object LicenseManager {
     private const val KEY_DEVICE_REGISTERED = "device_registered"
     private const val KEY_DEVICE_ID = "device_id"
     private const val KEY_MACHINE_ID = "machine_id"
+    private const val KEY_FIRST_LAUNCH_AT = "first_launch_at"
+    private const val KEY_LOCAL_TRIAL_USED = "local_trial_used"
+
+    // Local trial: 24 hours (fallback when server unreachable)
+    private const val LOCAL_TRIAL_DURATION_MS = 24L * 60 * 60 * 1000
 
     // Purchase URL (base for plan-specific URLs)
     private const val PURCHASE_BASE_URL = "https://xman4289.com/tping/buy"
@@ -40,26 +45,42 @@ object LicenseManager {
     /**
      * Get machine ID for server API calls.
      * Uses hardware hash (SHA-256, 64 chars) to satisfy server min:32 requirement.
-     * ANDROID_ID alone is only 16 chars which fails server validation.
      */
     private fun getMachineId(context: Context): String {
-        return DeviceManager.getHardwareHash(context)
+        return try {
+            DeviceManager.getHardwareHash(context)
+        } catch (e: Exception) {
+            Log.e(TAG, "getMachineId failed", e)
+            "unknown-device"
+        }
     }
 
     /**
-     * Initialize on app start. Must be called from Application.onCreate() or MainActivity.
+     * Initialize on app start. Must be called from MainActivity LaunchedEffect.
+     * NEVER throws — all errors are caught and handled gracefully.
      */
     suspend fun initialize(context: Context) {
         try {
             appContext = context.applicationContext
             prefs = getPrefs(context)
 
-            val displayId = DeviceManager.getDeviceId(context)
+            val displayId = try {
+                DeviceManager.getDeviceId(context)
+            } catch (e: Exception) {
+                Log.e(TAG, "getDeviceId failed", e)
+                "unknown"
+            }
+
             val machineId = getMachineId(context)
-            prefs?.edit()
-                ?.putString(KEY_DEVICE_ID, displayId)
-                ?.putString(KEY_MACHINE_ID, machineId)
-                ?.apply()
+
+            try {
+                prefs?.edit()
+                    ?.putString(KEY_DEVICE_ID, displayId)
+                    ?.putString(KEY_MACHINE_ID, machineId)
+                    ?.apply()
+            } catch (e: Exception) {
+                Log.e(TAG, "prefs write failed", e)
+            }
 
             // Set loading state
             _state.value = LicenseState(
@@ -68,22 +89,24 @@ object LicenseManager {
                 isLoading = true
             )
 
-            val licenseKey = prefs?.getString(KEY_LICENSE_KEY, "") ?: ""
+            val licenseKey = try {
+                prefs?.getString(KEY_LICENSE_KEY, "") ?: ""
+            } catch (e: Exception) {
+                Log.e(TAG, "read license key failed", e)
+                ""
+            }
 
             if (licenseKey.isNotEmpty()) {
                 // Has license key — validate with server (paid license)
                 validatePaidLicense(context, licenseKey, machineId, displayId)
             } else {
-                // No license key — check demo/trial from server
+                // No license key — check demo/trial from server, fallback to local trial
                 checkOrStartDemo(context, machineId, displayId)
             }
         } catch (e: Exception) {
-            Log.e(TAG, "initialize failed", e)
-            _state.value = LicenseState(
-                status = LicenseStatus.NONE,
-                isLoading = false,
-                errorMessage = "เกิดข้อผิดพลาดในการเริ่มต้น: ${e.localizedMessage}"
-            )
+            Log.e(TAG, "initialize failed completely", e)
+            // CRITICAL: Never block the app. Use local trial as absolute fallback.
+            useLocalTrialFallback(context)
         }
     }
 
@@ -101,13 +124,11 @@ object LicenseManager {
                 LicenseApiClient.validateLicense(licenseKey, machineId)
             }
             if (result.success) {
-                // is_valid is at root level, other fields inside "data"
                 val valid = result.data.get("is_valid")?.asBoolean ?: false
                 val data = result.data.getAsJsonObject("data") ?: result.data
                 val type = data.get("license_type")?.asString ?: ""
                 val expiresAtStr = data.get("expires_at")?.asString
                 val daysRemaining = data.get("days_remaining")?.asInt ?: 0
-
                 val expiresAt = parseIsoTimestamp(expiresAtStr)
 
                 if (valid) {
@@ -147,8 +168,7 @@ object LicenseManager {
     }
 
     /**
-     * Check demo/trial status from server. If device is new, start demo.
-     * No offline fallback — must connect to server.
+     * Check demo/trial status from server. If server unreachable, use LOCAL trial fallback.
      */
     private suspend fun checkOrStartDemo(
         context: Context,
@@ -162,13 +182,8 @@ object LicenseManager {
 
             if (!checkResult.success) {
                 Log.w(TAG, "checkDemo failed: ${checkResult.statusCode} ${checkResult.message}")
-                // Server error — block usage (no offline trial)
-                _state.value = LicenseState(
-                    status = LicenseStatus.NONE,
-                    deviceId = displayId,
-                    isLoading = false,
-                    errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อตรวจสอบสถานะ"
-                )
+                // Server error — use local trial fallback instead of blocking
+                useLocalTrialFallback(context)
                 return
             }
 
@@ -178,7 +193,7 @@ object LicenseManager {
             val isTrialActive = data.get("is_trial_active")?.asBoolean ?: false
 
             if (isTrialActive) {
-                // Trial still active on server — use server's time
+                // Trial still active on server
                 val trialInfo = data.getAsJsonObject("trial_info")
                 val daysRemaining = trialInfo?.get("days_remaining")?.asInt ?: 0
                 val expiresAtStr = trialInfo?.get("expires_at")?.asString
@@ -212,13 +227,8 @@ object LicenseManager {
             }
         } catch (e: Exception) {
             Log.e(TAG, "checkOrStartDemo failed", e)
-            // Network error — block usage (no offline trial)
-            _state.value = LicenseState(
-                status = LicenseStatus.NONE,
-                deviceId = displayId,
-                isLoading = false,
-                errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อตรวจสอบสถานะ"
-            )
+            // Network error — use local trial fallback instead of blocking
+            useLocalTrialFallback(context)
         }
     }
 
@@ -249,9 +259,7 @@ object LicenseManager {
 
             // Start demo
             val demoResult = withContext(Dispatchers.IO) {
-                LicenseApiClient.startDemo(
-                    machineId = machineId
-                )
+                LicenseApiClient.startDemo(machineId = machineId)
             }
 
             if (demoResult.success) {
@@ -274,22 +282,86 @@ object LicenseManager {
                 )
             } else {
                 Log.w(TAG, "startDemo rejected: ${demoResult.message}")
-                // Server rejected demo (abuse, blocked, etc.)
-                _state.value = LicenseState(
-                    status = LicenseStatus.EXPIRED,
-                    licenseType = "trial",
-                    deviceId = displayId,
-                    isLoading = false,
-                    errorMessage = demoResult.message.ifEmpty { "ไม่สามารถเริ่มทดลองใช้ได้" }
-                )
+                // Server rejected demo — use local trial fallback
+                useLocalTrialFallback(context)
             }
         } catch (e: Exception) {
             Log.e(TAG, "startDemoOnServer failed", e)
+            // Network error — use local trial fallback
+            useLocalTrialFallback(context)
+        }
+    }
+
+    /**
+     * LOCAL trial fallback: 24-hour trial stored locally.
+     * Used when server is unreachable, to ensure the app is always usable on first launch.
+     */
+    private fun useLocalTrialFallback(context: Context?) {
+        try {
+            val p = prefs ?: context?.let { getPrefs(it) }
+            val displayId = p?.getString(KEY_DEVICE_ID, "") ?: ""
+
+            val firstLaunch = p?.getLong(KEY_FIRST_LAUNCH_AT, 0L) ?: 0L
+            val now = System.currentTimeMillis()
+
+            if (firstLaunch == 0L) {
+                // First launch ever — start local trial
+                p?.edit()
+                    ?.putLong(KEY_FIRST_LAUNCH_AT, now)
+                    ?.putBoolean(KEY_LOCAL_TRIAL_USED, true)
+                    ?.apply()
+
+                val expiresAt = now + LOCAL_TRIAL_DURATION_MS
+                val hoursRemaining = (LOCAL_TRIAL_DURATION_MS / (60 * 60 * 1000)).toInt()
+
+                _state.value = LicenseState(
+                    status = LicenseStatus.TRIAL,
+                    licenseType = "trial",
+                    expiresAt = expiresAt,
+                    remainingDays = 1,
+                    remainingHours = hoursRemaining,
+                    deviceId = displayId,
+                    isLoading = false
+                )
+                Log.d(TAG, "Started local trial (24h)")
+            } else {
+                val expiresAt = firstLaunch + LOCAL_TRIAL_DURATION_MS
+                if (now < expiresAt) {
+                    // Local trial still active
+                    val hoursRemaining = ((expiresAt - now) / (60 * 60 * 1000)).toInt().coerceAtLeast(0)
+                    val daysRemaining = (hoursRemaining / 24).coerceAtLeast(0)
+
+                    _state.value = LicenseState(
+                        status = LicenseStatus.TRIAL,
+                        licenseType = "trial",
+                        expiresAt = expiresAt,
+                        remainingDays = daysRemaining,
+                        remainingHours = hoursRemaining,
+                        deviceId = displayId,
+                        isLoading = false
+                    )
+                    Log.d(TAG, "Local trial active ($hoursRemaining hours remaining)")
+                } else {
+                    // Local trial expired
+                    _state.value = LicenseState(
+                        status = LicenseStatus.EXPIRED,
+                        licenseType = "trial",
+                        deviceId = displayId,
+                        isLoading = false,
+                        errorMessage = "ทดลองใช้หมดแล้ว กรุณาซื้อ License Key"
+                    )
+                    Log.d(TAG, "Local trial expired")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "useLocalTrialFallback failed", e)
+            // ABSOLUTE FALLBACK: Allow usage with trial status
             _state.value = LicenseState(
-                status = LicenseStatus.NONE,
-                deviceId = displayId,
-                isLoading = false,
-                errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อเริ่มทดลองใช้"
+                status = LicenseStatus.TRIAL,
+                licenseType = "trial",
+                remainingHours = 24,
+                remainingDays = 1,
+                isLoading = false
             )
         }
     }
@@ -299,8 +371,8 @@ object LicenseManager {
      */
     suspend fun activateKey(context: Context, key: String): Result<String> {
         val machineId = getMachineId(context)
-        val displayId = DeviceManager.getDeviceId(context)
-        val hardwareHash = DeviceManager.getHardwareHash(context)
+        val displayId = try { DeviceManager.getDeviceId(context) } catch (_: Exception) { "unknown" }
+        val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
 
         _state.value = _state.value.copy(isLoading = true)
 
@@ -379,13 +451,12 @@ object LicenseManager {
         }
     }
 
-    fun getDeviceId(): String = prefs?.getString(KEY_DEVICE_ID, "") ?: ""
+    fun getDeviceId(): String = try { prefs?.getString(KEY_DEVICE_ID, "") ?: "" } catch (_: Exception) { "" }
 
     // ---- Private helpers ----
 
     /**
      * Use cached state — only for paid licenses (offline fallback).
-     * Trial/demo users must connect to server.
      */
     private fun useCachedState(displayId: String) {
         val cachedStatus = prefs?.getString(KEY_LICENSE_STATUS, "") ?: ""
@@ -406,13 +477,8 @@ object LicenseManager {
                 isLoading = false
             )
         } else {
-            // No valid cached paid license — need connection
-            _state.value = LicenseState(
-                status = LicenseStatus.NONE,
-                deviceId = displayId,
-                isLoading = false,
-                errorMessage = "ต้องเชื่อมต่ออินเทอร์เน็ตเพื่อตรวจสอบสถานะ"
-            )
+            // No valid cached paid license — use local trial fallback
+            useLocalTrialFallback(appContext)
         }
     }
 

@@ -15,7 +15,7 @@ android {
 
         // === Semantic Versioning (source of truth) ===
         // Change this string to bump version. CI reads it for GitHub releases.
-        val versionStr = "1.2.1"
+        val versionStr = "1.2.2"
         val parts = versionStr.split(".")
         versionCode = parts[0].toInt() * 10000 + parts[1].toInt() * 100 + parts[2].toInt()
         versionName = versionStr
@@ -26,33 +26,11 @@ android {
         }
     }
 
-    signingConfigs {
-        create("release") {
-            // Use environment variables from CI, fallback to debug keystore for local builds
-            val ksFile = System.getenv("KEYSTORE_FILE")
-            if (ksFile != null && File(ksFile).exists()) {
-                storeFile = File(ksFile)
-                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: ""
-                keyAlias = System.getenv("KEY_ALIAS") ?: ""
-                keyPassword = System.getenv("KEY_PASSWORD") ?: ""
-            } else {
-                // Fallback: use debug keystore so APK is always signed & installable
-                storeFile = File(System.getProperty("user.home"), ".android/debug.keystore")
-                storePassword = "android"
-                keyAlias = "androiddebugkey"
-                keyPassword = "android"
-            }
-        }
-    }
-
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
-            proguardFiles(
-                getDefaultProguardFile("proguard-android-optimize.txt"),
-                "proguard-rules.pro"
-            )
+            // Use debug signing so release APK is always signed & installable
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {

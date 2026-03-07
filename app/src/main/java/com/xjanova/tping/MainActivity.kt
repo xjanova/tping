@@ -61,10 +61,10 @@ fun TpingApp() {
         }
     }
 
-    // Always start at license_gate — it handles loading/redirect internally
+    // Start at home — license check runs in background via LaunchedEffect
     NavHost(
         navController = navController,
-        startDestination = "license_gate",
+        startDestination = "home",
         enterTransition = { slideInHorizontally(tween(300)) { it } + fadeIn(tween(300)) },
         exitTransition = { slideOutHorizontally(tween(300)) { -it / 3 } + fadeOut(tween(200)) },
         popEnterTransition = { slideInHorizontally(tween(300)) { -it / 3 } + fadeIn(tween(300)) },
