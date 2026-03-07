@@ -11,8 +11,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -132,16 +133,16 @@ fun HomeScreen(
     ) { padding ->
         val licenseState by LicenseManager.state.collectAsState()
 
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp),
+                .padding(16.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // License Status Card
-            item {
-                val licColor = when (licenseState.status) {
+            val licColor = when (licenseState.status) {
                     LicenseStatus.ACTIVE -> Color(0xFF22C55E)
                     LicenseStatus.TRIAL -> Color(0xFF3B82F6)
                     LicenseStatus.EXPIRED -> Color(0xFFEF4444)
@@ -274,11 +275,9 @@ fun HomeScreen(
                         }
                     }
                 }
-            }
 
             // Permission Status
-            item {
-                val allGranted = isAccessibilityEnabled && hasOverlayPermission && hasNotificationPermission
+            val allGranted = isAccessibilityEnabled && hasOverlayPermission && hasNotificationPermission
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -372,11 +371,9 @@ fun HomeScreen(
                         }
                     }
                 }
-            }
 
             // ===== Accessibility Shortcut Setup =====
             if (isAccessibilityEnabled && hasOverlayPermission) {
-                item {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
@@ -445,135 +442,119 @@ fun HomeScreen(
                             }
                         }
                     }
-                }
             }
 
             // ===== Start Overlay Button =====
-            item {
-                val allGranted = isAccessibilityEnabled && hasOverlayPermission
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(20.dp),
-                    elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
-                    colors = CardDefaults.cardColors(containerColor = Color.Transparent)
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(
-                                Brush.horizontalGradient(
-                                    if (allGranted) listOf(Color(0xFF6750A4), Color(0xFF8B5CF6))
-                                    else listOf(Color(0xFF666666), Color(0xFF888888))
-                                )
+            val overlayReady = isAccessibilityEnabled && hasOverlayPermission
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(20.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
+                colors = CardDefaults.cardColors(containerColor = Color.Transparent)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(
+                            Brush.horizontalGradient(
+                                if (overlayReady) listOf(Color(0xFF6750A4), Color(0xFF8B5CF6))
+                                else listOf(Color(0xFF666666), Color(0xFF888888))
                             )
-                            .clickable {
-                                if (!isAccessibilityEnabled) {
-                                    waitingForPermission = true
-                                    PermissionHelper.openAccessibilitySettings(context)
-                                } else if (!hasOverlayPermission) {
-                                    waitingForPermission = true
-                                    PermissionHelper.openOverlaySettings(context)
-                                } else {
-                                    val intent = Intent(context, FloatingOverlayService::class.java)
-                                    intent.putExtra("mode", "idle")
-                                    context.startForegroundService(intent)
-                                }
+                        )
+                        .clickable {
+                            if (!isAccessibilityEnabled) {
+                                waitingForPermission = true
+                                PermissionHelper.openAccessibilitySettings(context)
+                            } else if (!hasOverlayPermission) {
+                                waitingForPermission = true
+                                PermissionHelper.openOverlaySettings(context)
+                            } else {
+                                val intent = Intent(context, FloatingOverlayService::class.java)
+                                intent.putExtra("mode", "idle")
+                                context.startForegroundService(intent)
                             }
-                            .padding(vertical = 20.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Icon(
-                                Icons.Default.Widgets,
-                                contentDescription = null,
-                                tint = Color.White,
-                                modifier = Modifier.size(40.dp)
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
+                        }
+                        .padding(vertical = 20.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(
+                            Icons.Default.Widgets,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(40.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            if (overlayReady) "เปิดปุ่มลอย" else "ต้องเปิดสิทธิ์ก่อน",
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp
+                        )
+                        Text(
+                            if (overlayReady) "แตะเพื่อเปิด Overlay แล้วสลับไปเกม/แอพได้เลย"
+                            else "กดเพื่อไปเปิด Accessibility + Overlay",
+                            color = Color.White.copy(alpha = 0.8f),
+                            fontSize = 12.sp,
+                            textAlign = TextAlign.Center
+                        )
+                        if (overlayReady) {
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                if (allGranted) "เปิดปุ่มลอย" else "ต้องเปิดสิทธิ์ก่อน",
-                                color = Color.White,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp
-                            )
-                            Text(
-                                if (allGranted) "แตะเพื่อเปิด Overlay แล้วสลับไปเกม/แอพได้เลย"
-                                else "กดเพื่อไปเปิด Accessibility + Overlay",
-                                color = Color.White.copy(alpha = 0.8f),
-                                fontSize = 12.sp,
+                                "หรือใช้ \"ปุ่มการช่วยเหลือพิเศษ\" เปิดได้เลย",
+                                color = Color.White.copy(alpha = 0.6f),
+                                fontSize = 10.sp,
                                 textAlign = TextAlign.Center
                             )
-                            if (allGranted) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(
-                                    "หรือใช้ \"ปุ่มการช่วยเหลือพิเศษ\" เปิดได้เลย",
-                                    color = Color.White.copy(alpha = 0.6f),
-                                    fontSize = 10.sp,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
                         }
                     }
                 }
             }
 
             // Main Actions
-            item {
-                Text(
-                    "เมนูหลัก",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(top = 8.dp)
-                )
-            }
+            Text(
+                "เมนูหลัก",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(top = 8.dp)
+            )
 
-            item {
-                MainActionCard(
-                    icon = Icons.Default.Storage,
-                    title = "จัดการข้อมูล",
-                    subtitle = "เพิ่ม/แก้ไข ชุดข้อมูลที่จะกรอก",
-                    gradientColors = listOf(Color(0xFF3B82F6), Color(0xFF6366F1)),
-                    onClick = onNavigateToData
-                )
-            }
+            MainActionCard(
+                icon = Icons.Default.Storage,
+                title = "จัดการข้อมูล",
+                subtitle = "เพิ่ม/แก้ไข ชุดข้อมูลที่จะกรอก",
+                gradientColors = listOf(Color(0xFF3B82F6), Color(0xFF6366F1)),
+                onClick = onNavigateToData
+            )
 
-            item {
-                MainActionCard(
-                    icon = Icons.Default.FiberManualRecord,
-                    title = "บันทึกขั้นตอน",
-                    subtitle = "เรียนรู้ขั้นตอนการกรอกจากการใช้งานจริง",
-                    gradientColors = listOf(Color(0xFFEF4444), Color(0xFFF97316)),
-                    onClick = onNavigateToWorkflows
-                )
-            }
+            MainActionCard(
+                icon = Icons.Default.FiberManualRecord,
+                title = "บันทึกขั้นตอน",
+                subtitle = "เรียนรู้ขั้นตอนการกรอกจากการใช้งานจริง",
+                gradientColors = listOf(Color(0xFFEF4444), Color(0xFFF97316)),
+                onClick = onNavigateToWorkflows
+            )
 
             // ===== Quick Play — select + play directly on HomeScreen =====
-            item {
-                QuickPlaySection(viewModel = viewModel)
-            }
+            QuickPlaySection(viewModel = viewModel)
 
-            item {
-                MainActionCard(
-                    icon = Icons.Default.SwapHoriz,
-                    title = "Export / Import",
-                    subtitle = "สำรองหรือนำเข้า Workflow + ข้อมูล",
-                    gradientColors = listOf(Color(0xFFEC4899), Color(0xFFF43F5E)),
-                    onClick = onNavigateToExport
-                )
-            }
+            MainActionCard(
+                icon = Icons.Default.SwapHoriz,
+                title = "Export / Import",
+                subtitle = "สำรองหรือนำเข้า Workflow + ข้อมูล",
+                gradientColors = listOf(Color(0xFFEC4899), Color(0xFFF43F5E)),
+                onClick = onNavigateToExport
+            )
 
-            item {
-                MainActionCard(
-                    icon = Icons.Default.Cloud,
-                    title = "Cloud Sync",
-                    subtitle = "ซิงค์ข้อมูลผ่าน Xman Studio Cloud",
-                    gradientColors = listOf(Color(0xFF06B6D4), Color(0xFF3B82F6)),
-                    onClick = onNavigateToCloud
-                )
-            }
+            MainActionCard(
+                icon = Icons.Default.Cloud,
+                title = "Cloud Sync",
+                subtitle = "ซิงค์ข้อมูลผ่าน Xman Studio Cloud",
+                gradientColors = listOf(Color(0xFF06B6D4), Color(0xFF3B82F6)),
+                onClick = onNavigateToCloud
+            )
 
             // Detailed Guide Section
-            item {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -725,18 +706,15 @@ fun HomeScreen(
                         }
                     }
                 }
-            }
 
             // Footer
-            item {
-                Text(
-                    "Tping - ช่วยพิมพ์สำหรับผู้ที่ใช้นิ้วไม่สะดวก | Xman Studio",
-                    fontSize = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    textAlign = TextAlign.Center
-                )
-            }
+            Text(
+                "Tping - ช่วยพิมพ์สำหรับผู้ที่ใช้นิ้วไม่สะดวก | Xman Studio",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                textAlign = TextAlign.Center
+            )
         }
     }
 }
