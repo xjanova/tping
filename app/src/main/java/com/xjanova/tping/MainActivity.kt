@@ -16,7 +16,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.xjanova.tping.data.license.LicenseManager
-import com.xjanova.tping.data.license.LicenseStatus
 import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.ui.screens.CloudScreen
 import com.xjanova.tping.ui.screens.DataProfileScreen
@@ -61,7 +60,21 @@ fun TpingApp() {
         }
     }
 
-    // Start at home — license check runs in background via LaunchedEffect
+    // Observe license state — auto-navigate to gate when expired/none
+    val licenseState by LicenseManager.state.collectAsState()
+
+    LaunchedEffect(licenseState.status, licenseState.isLoading) {
+        if (!licenseState.isLoading && LicenseManager.shouldShowGate()) {
+            val currentRoute = navController.currentBackStackEntry?.destination?.route
+            if (currentRoute != "license_gate") {
+                navController.navigate("license_gate") {
+                    popUpTo("home") { inclusive = true }
+                }
+            }
+        }
+    }
+
+    // Start at home — license check runs in background
     NavHost(
         navController = navController,
         startDestination = "home",

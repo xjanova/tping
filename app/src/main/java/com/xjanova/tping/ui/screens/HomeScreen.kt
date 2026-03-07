@@ -213,6 +213,20 @@ fun HomeScreen(
                                 Text("ซื้อคีย์", fontSize = 12.sp, color = licColor, fontWeight = FontWeight.Bold)
                             }
                         }
+                        // Near-expiry: renew button when < 7 days remaining
+                        if (LicenseManager.isNearExpiry()) {
+                            TextButton(
+                                onClick = {
+                                    val intent = android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        Uri.parse(LicenseManager.getPurchaseUrl())
+                                    )
+                                    context.startActivity(intent)
+                                }
+                            ) {
+                                Text("ต่ออายุ", fontSize = 12.sp, color = Color(0xFFF59E0B), fontWeight = FontWeight.Bold)
+                            }
+                        }
                     }
 
                     // License key input when expired/none
