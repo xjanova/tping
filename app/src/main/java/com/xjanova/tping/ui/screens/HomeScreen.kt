@@ -571,6 +571,7 @@ fun HomeScreen(
                     }
                 }
             }
+            }
 
             // === Main Actions ===
             item(key = "main_actions_header") {
