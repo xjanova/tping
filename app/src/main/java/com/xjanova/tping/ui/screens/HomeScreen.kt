@@ -150,8 +150,8 @@ fun HomeScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // === Crash Report (shown once after crash) ===
-            if (lastCrash != null) {
-                item(key = "crash_report") {
+            item(key = "crash_report") {
+                if (lastCrash != null) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
@@ -431,8 +431,8 @@ fun HomeScreen(
             }
 
             // ===== Accessibility Shortcut Setup =====
-            if (isAccessibilityEnabled && hasOverlayPermission) {
-                item(key = "accessibility_shortcut") {
+            item(key = "accessibility_shortcut") {
+                if (isAccessibilityEnabled && hasOverlayPermission) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
