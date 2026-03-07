@@ -11,6 +11,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -25,7 +26,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -141,15 +142,15 @@ fun HomeScreen(
         val crashPrefs = context.getSharedPreferences("crash_log", android.content.Context.MODE_PRIVATE)
         var lastCrash by remember { mutableStateOf(crashPrefs.getString("last_crash", null)) }
 
-        Column(
+        LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(16.dp)
-                .verticalScroll(rememberScrollState()),
+                .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             // === Crash Report (shown once after crash) ===
+            item(key = "crash_report") {
                 if (lastCrash != null) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
@@ -173,11 +174,9 @@ fun HomeScreen(
                                 lastCrash ?: "",
                                 fontSize = 9.sp,
                                 lineHeight = 12.sp,
+                                maxLines = 30,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .heightIn(max = 200.dp)
-                                    .verticalScroll(rememberScrollState())
+                                modifier = Modifier.fillMaxWidth()
                             )
                             Spacer(modifier = Modifier.height(4.dp))
                             TextButton(onClick = {
@@ -192,9 +191,11 @@ fun HomeScreen(
                         }
                     }
                 }
+            }
 
             // === License Status Card ===
-            val licColor = when (licenseState.status) {
+            item(key = "license_status") {
+                val licColor = when (licenseState.status) {
                     LicenseStatus.ACTIVE -> Color(0xFF22C55E)
                     LicenseStatus.TRIAL -> Color(0xFF3B82F6)
                     LicenseStatus.EXPIRED -> Color(0xFFEF4444)
@@ -327,9 +328,11 @@ fun HomeScreen(
                         }
                     }
                 }
+            }
 
             // === Permission Status ===
-            val allGranted = isAccessibilityEnabled && hasOverlayPermission && hasNotificationPermission
+            item(key = "permission_status") {
+                val allGranted = isAccessibilityEnabled && hasOverlayPermission && hasNotificationPermission
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -423,9 +426,11 @@ fun HomeScreen(
                         }
                     }
                 }
+            }
 
             // ===== Accessibility Shortcut Setup =====
-            if (isAccessibilityEnabled && hasOverlayPermission) {
+            item(key = "accessibility_shortcut") {
+                if (isAccessibilityEnabled && hasOverlayPermission) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(16.dp),
@@ -495,10 +500,12 @@ fun HomeScreen(
                         }
                     }
                 }
+            }
 
             // ===== Start Overlay Button =====
-            val overlayReady = isAccessibilityEnabled && hasOverlayPermission
-            Card(
+            item(key = "overlay_button") {
+                val overlayReady = isAccessibilityEnabled && hasOverlayPermission
+                Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(20.dp),
                 elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
@@ -566,49 +573,62 @@ fun HomeScreen(
             }
 
             // === Main Actions ===
-            Text(
-                "เมนูหลัก",
-                style = MaterialTheme.typography.titleLarge,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.padding(top = 8.dp)
-            )
+            item(key = "main_actions_header") {
+                Text(
+                    "เมนูหลัก",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 8.dp)
+                )
+            }
 
-            MainActionCard(
-                icon = Icons.Default.Storage,
-                title = "จัดการข้อมูล",
-                subtitle = "เพิ่ม/แก้ไข ชุดข้อมูลที่จะกรอก",
-                gradientColors = listOf(Color(0xFF3B82F6), Color(0xFF6366F1)),
-                onClick = onNavigateToData
-            )
+            item(key = "action_data") {
+                MainActionCard(
+                    icon = Icons.Default.Storage,
+                    title = "จัดการข้อมูล",
+                    subtitle = "เพิ่ม/แก้ไข ชุดข้อมูลที่จะกรอก",
+                    gradientColors = listOf(Color(0xFF3B82F6), Color(0xFF6366F1)),
+                    onClick = onNavigateToData
+                )
+            }
 
-            MainActionCard(
-                icon = Icons.Default.FiberManualRecord,
-                title = "บันทึกขั้นตอน",
-                subtitle = "เรียนรู้ขั้นตอนการกรอกจากการใช้งานจริง",
-                gradientColors = listOf(Color(0xFFEF4444), Color(0xFFF97316)),
-                onClick = onNavigateToWorkflows
-            )
+            item(key = "action_record") {
+                MainActionCard(
+                    icon = Icons.Default.FiberManualRecord,
+                    title = "บันทึกขั้นตอน",
+                    subtitle = "เรียนรู้ขั้นตอนการกรอกจากการใช้งานจริง",
+                    gradientColors = listOf(Color(0xFFEF4444), Color(0xFFF97316)),
+                    onClick = onNavigateToWorkflows
+                )
+            }
 
             // ===== Quick Play — select + play directly on HomeScreen =====
-            QuickPlaySection(viewModel = viewModel)
+            item(key = "quick_play") {
+                QuickPlaySection(viewModel = viewModel)
+            }
 
-            MainActionCard(
-                icon = Icons.Default.SwapHoriz,
-                title = "Export / Import",
-                subtitle = "สำรองหรือนำเข้า Workflow + ข้อมูล",
-                gradientColors = listOf(Color(0xFFEC4899), Color(0xFFF43F5E)),
-                onClick = onNavigateToExport
-            )
+            item(key = "action_export") {
+                MainActionCard(
+                    icon = Icons.Default.SwapHoriz,
+                    title = "Export / Import",
+                    subtitle = "สำรองหรือนำเข้า Workflow + ข้อมูล",
+                    gradientColors = listOf(Color(0xFFEC4899), Color(0xFFF43F5E)),
+                    onClick = onNavigateToExport
+                )
+            }
 
-            MainActionCard(
-                icon = Icons.Default.Cloud,
-                title = "Cloud Sync",
-                subtitle = "ซิงค์ข้อมูลผ่าน Xman Studio Cloud",
-                gradientColors = listOf(Color(0xFF06B6D4), Color(0xFF3B82F6)),
-                onClick = onNavigateToCloud
-            )
+            item(key = "action_cloud") {
+                MainActionCard(
+                    icon = Icons.Default.Cloud,
+                    title = "Cloud Sync",
+                    subtitle = "ซิงค์ข้อมูลผ่าน Xman Studio Cloud",
+                    gradientColors = listOf(Color(0xFF06B6D4), Color(0xFF3B82F6)),
+                    onClick = onNavigateToCloud
+                )
+            }
 
             // Detailed Guide Section
+            item(key = "guide") {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(16.dp),
@@ -760,15 +780,18 @@ fun HomeScreen(
                         }
                     }
                 }
+            }
 
             // Footer
-            Text(
-                "Tping - ช่วยพิมพ์สำหรับผู้ที่ใช้นิ้วไม่สะดวก | Xman Studio",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
-                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                textAlign = TextAlign.Center
-            )
+            item(key = "footer") {
+                Text(
+                    "Tping - ช่วยพิมพ์สำหรับผู้ที่ใช้นิ้วไม่สะดวก | Xman Studio",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    textAlign = TextAlign.Center
+                )
+            }
         }
     }
 }
@@ -1197,7 +1220,7 @@ fun QuickPlaySection(
                         Text(playbackState.currentActionDesc, fontSize = 12.sp)
                         Spacer(modifier = Modifier.height(6.dp))
                         LinearProgressIndicator(
-                            progress = playbackState.progress,
+                            progress = { playbackState.progress },
                             modifier = Modifier.fillMaxWidth()
                         )
                         Spacer(modifier = Modifier.height(2.dp))
@@ -1280,7 +1303,6 @@ fun QuickPlaySection(
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainActionCard(
     icon: ImageVector,
@@ -1290,8 +1312,9 @@ fun MainActionCard(
     onClick: () -> Unit
 ) {
     Card(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
         shape = RoundedCornerShape(16.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {

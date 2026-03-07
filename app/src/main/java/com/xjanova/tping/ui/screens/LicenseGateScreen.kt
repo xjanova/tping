@@ -291,7 +291,7 @@ fun LicenseGateScreen(
                         .padding(vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Divider(
+                    HorizontalDivider(
                         modifier = Modifier.weight(1f),
                         color = Color.White.copy(alpha = 0.15f)
                     )
@@ -300,7 +300,7 @@ fun LicenseGateScreen(
                         fontSize = 12.sp,
                         color = Color.White.copy(alpha = 0.4f)
                     )
-                    Divider(
+                    HorizontalDivider(
                         modifier = Modifier.weight(1f),
                         color = Color.White.copy(alpha = 0.15f)
                     )
@@ -520,7 +520,7 @@ private fun PricingCard(
 
             if (isSelected) {
                 Spacer(modifier = Modifier.height(12.dp))
-                Divider(color = Color.White.copy(alpha = 0.1f))
+                HorizontalDivider(color = Color.White.copy(alpha = 0.1f))
                 Spacer(modifier = Modifier.height(8.dp))
                 features.forEach { feature ->
                     Row(
