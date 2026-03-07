@@ -18,20 +18,23 @@ object PuzzleCaptchaAction {
 
     // Sliding parameters
     private const val FAST_STEP_PX = 20f      // Fast phase: move 20px per step
-    private const val FINE_STEP_PX = 4f        // Fine phase: move 4px per step
+    private const val FINE_STEP_PX = 3f        // Fine phase: move 3px per step (was 4)
     private const val STEP_DURATION_MS = 80L   // Duration per micro-step
     private const val DARKNESS_NEAR_ZERO = 50  // If dark pixels < this, gap is "filled"
-    private const val MAX_FINE_STEPS = 40      // Max fine-tuning steps before giving up
+    private const val MAX_FINE_STEPS = 60      // Max fine-tuning steps (was 40)
+    private const val FAST_PHASE_RATIO = 0.70f // Fast phase covers 70% of target (was 80%)
 
     /**
-     * Execute CAPTCHA solve using Visual Feedback Sliding:
+     * Execute CAPTCHA solve using Visual Feedback Sliding with min-tracking:
      *
-     * 1. Screenshot → auto-detect dark gap region above slider
+     * 1. Screenshot → auto-detect gap region above slider
      * 2. If no gap found → tap refresh button → retry
-     * 3. Press-hold slider button → drag toward gap (fast phase, 80% of target)
-     * 4. Fine-tune: drag in small increments, screenshot each time, check darkness
-     * 5. When gap darkness reaches near-zero → release finger
-     * 6. Verify CAPTCHA is solved
+     * 3. Press-hold slider button → drag toward gap (fast phase, 70% of target)
+     * 4. Fine-tune: drag in 3px increments, screenshot each time, track edge strength
+     * 5. Track the position with MINIMUM edge strength (= best fit)
+     * 6. If overshoot detected (edge rising 5+ steps after min) → backtrack to best position
+     * 7. Release finger at best position
+     * 8. Verify CAPTCHA is solved
      */
     suspend fun execute(
         service: TpingAccessibilityService,
@@ -61,7 +64,6 @@ object PuzzleCaptchaAction {
         // Check if this is a new-format config (has slider button)
         val isNewFormat = config.sliderButtonX > 0 && config.sliderButtonY > 0
         if (!isNewFormat) {
-            // Legacy format: fall back to old behavior (won't work well but try)
             status("❌ กรุณาบันทึก Captcha ใหม่ (แบบ 2 จุด)")
             return
         }
@@ -91,7 +93,7 @@ object PuzzleCaptchaAction {
             status("ครั้งที่ $attempt/${config.maxRetries}: จับภาพ...")
             delay(if (attempt == 1) 1000 else config.retryDelayMs)
 
-            // Step 1: Screenshot and find dark gap
+            // Step 1: Screenshot and find gap
             val screenshot = PuzzleScreenCapture.captureScreen()
             if (screenshot == null) {
                 status("⚠ จับภาพไม่ได้ (ครั้งที่ $attempt)")
@@ -109,13 +111,12 @@ object PuzzleCaptchaAction {
 
             if (darkRegion == null) {
                 status("⚠ หาช่องว่างไม่พบ")
-                // Tap refresh button if available
                 if (hasRefresh) {
                     status("🔄 กดรีเฟรช Puzzle...")
                     val tapDone = CompletableDeferred<Unit>()
                     service.tapAtCoordinates(refreshX, refreshY) { tapDone.complete(Unit) }
                     withTimeoutOrNull(3000) { tapDone.await() }
-                    delay(2000) // Wait for new puzzle to load
+                    delay(2000)
                 }
                 continue
             }
@@ -132,8 +133,8 @@ object PuzzleCaptchaAction {
             val gapPercent = ((gapCenterX / metrics.widthPixels) * 100).toInt()
             status("ครั้งที่ $attempt: พบที่ ${gapPercent}% → เลื่อน...")
 
-            // Step 2: Fast phase — drag 80% of estimated distance (finger held down)
-            val fastDistance = targetDragDistance * 0.80f
+            // Step 2: Fast phase — drag 70% of estimated distance (conservative)
+            val fastDistance = targetDragDistance * FAST_PHASE_RATIO
             val fastEndX = sliderX + fastDistance
 
             status("ครั้งที่ $attempt: เลื่อนเร็ว...")
@@ -154,77 +155,87 @@ object PuzzleCaptchaAction {
 
             var currentX = fastEndX
 
-            // Step 3: Fine phase — slide in small increments with visual feedback
+            // Step 3: Fine phase with MIN-TRACKING
+            // Slide forward in small steps, track the position where edge strength is lowest
+            // (= puzzle piece best aligns with gap). If we overshoot, backtrack to that position.
             status("ครั้งที่ $attempt: ปรับละเอียด...")
-            var previousDarkness = initialDarkness
-            var previousEdge = initialEdgeStrength
+
             var fineStepCount = 0
-            var bestDarkness = initialDarkness
-            var darknessIncreasing = 0
-            var edgeIncreasing = 0
+            var minEdgeStrength = if (initialEdgeStrength > 0) initialEdgeStrength else Int.MAX_VALUE
+            var minEdgeX = currentX           // X position where edge was lowest
+            var stepsAfterMin = 0             // Steps since we saw the minimum
+            var confirmedOvershoot = false     // True if we confirmed we passed the best position
+            var definitelyFilled = false       // True if edge dropped below 30% (perfect match)
 
             while (fineStepCount < MAX_FINE_STEPS) {
                 fineStepCount++
 
                 // Small delay for the UI to update after sliding
-                delay(150)
+                delay(120)
 
-                // Screenshot to check darkness
+                // Screenshot to measure fit quality
                 val fineScreenshot = PuzzleScreenCapture.captureScreen()
-                if (fineScreenshot == null) {
-                    // Can't screenshot, just continue sliding
-                    break
-                }
+                if (fineScreenshot == null) break
 
                 val currentEdge = PuzzleSolver.measureEdgeStrength(fineScreenshot, darkRegion)
                 val currentDarkness = PuzzleSolver.measureDarkness(fineScreenshot, darkRegion)
                 fineScreenshot.recycle()
 
-                Log.d(TAG, "Fine step $fineStepCount: x=${currentX.toInt()}, edge=$currentEdge/$initialEdgeStrength, darkness=$currentDarkness")
+                Log.d(
+                    TAG,
+                    "Fine step $fineStepCount: x=${currentX.toInt()}, edge=$currentEdge/$initialEdgeStrength" +
+                        " (min=$minEdgeStrength@${minEdgeX.toInt()}), darkness=$currentDarkness, afterMin=$stepsAfterMin"
+                )
 
-                // Primary: edge strength dropped significantly = gap filled
+                // === Check 1: Definite fill — edge dropped below 30% of initial ===
                 if (currentEdge >= 0 && initialEdgeStrength > 0 &&
-                    currentEdge < initialEdgeStrength * 0.40
+                    currentEdge < initialEdgeStrength * 0.30
                 ) {
-                    Log.d(TAG, "Gap filled! edge=$currentEdge < ${(initialEdgeStrength * 0.40).toInt()} (40% of $initialEdgeStrength)")
+                    Log.d(TAG, "Gap definitely filled! edge=$currentEdge < ${(initialEdgeStrength * 0.30).toInt()}")
+                    definitelyFilled = true
                     break
                 }
 
-                // Secondary: darkness near zero (for classic dark gaps)
+                // === Check 2: Darkness near zero (classic dark gaps) ===
                 if (currentDarkness >= 0 && currentDarkness < DARKNESS_NEAR_ZERO) {
                     Log.d(TAG, "Gap filled! darkness=$currentDarkness < $DARKNESS_NEAR_ZERO")
+                    definitelyFilled = true
                     break
                 }
 
-                // Track if edge strength increasing (overshot — piece past gap)
-                if (currentEdge >= 0 && previousEdge >= 0 && currentEdge > previousEdge * 1.3) {
-                    edgeIncreasing++
-                    if (edgeIncreasing >= 3) {
-                        Log.d(TAG, "Edge increasing $edgeIncreasing times in a row — stopping")
-                        break
+                // === Track minimum edge position ===
+                if (currentEdge >= 0) {
+                    if (currentEdge < minEdgeStrength) {
+                        // New minimum found
+                        minEdgeStrength = currentEdge
+                        minEdgeX = currentX
+                        stepsAfterMin = 0
+                    } else {
+                        stepsAfterMin++
                     }
-                } else {
-                    edgeIncreasing = 0
                 }
 
-                // Also track darkness increase
-                if (currentDarkness >= 0 && currentDarkness > previousDarkness) {
-                    darknessIncreasing++
-                    if (darknessIncreasing >= 3) {
-                        Log.d(TAG, "Darkness increasing $darknessIncreasing times — stopping")
-                        break
-                    }
-                } else {
-                    darknessIncreasing = 0
+                // === Check 3: Overshoot — 5+ steps past minimum with edge significantly higher ===
+                if (stepsAfterMin >= 5 && initialEdgeStrength > 0 &&
+                    minEdgeStrength < initialEdgeStrength * 0.75
+                ) {
+                    Log.d(
+                        TAG,
+                        "Overshoot confirmed: minEdge=$minEdgeStrength at x=${minEdgeX.toInt()}, " +
+                            "now at x=${currentX.toInt()} ($stepsAfterMin steps past min)"
+                    )
+                    confirmedOvershoot = true
+                    break
                 }
 
-                if (currentEdge >= 0) previousEdge = currentEdge
-                if (currentDarkness >= 0) {
-                    if (currentDarkness < bestDarkness) bestDarkness = currentDarkness
-                    previousDarkness = currentDarkness
+                // === Check 4: Way past target — safety stop ===
+                if (stepsAfterMin >= 10) {
+                    Log.d(TAG, "10 steps past minimum — safety stop")
+                    confirmedOvershoot = minEdgeStrength < initialEdgeStrength * 0.85
+                    break
                 }
 
-                // Continue sliding by FINE_STEP_PX
+                // Continue sliding forward by FINE_STEP_PX
                 val nextX = currentX + FINE_STEP_PX
                 val fineDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
                 service.swipeWithContinuation(
@@ -243,6 +254,31 @@ object PuzzleCaptchaAction {
 
                 currentStroke = nextStroke
                 currentX = nextX
+            }
+
+            // Step 3b: BACKTRACK to minimum edge position if we overshot
+            if (confirmedOvershoot && !definitelyFilled && minEdgeX < currentX) {
+                val backDistance = currentX - minEdgeX
+                Log.d(TAG, "Backtracking ${backDistance.toInt()}px to best position x=${minEdgeX.toInt()}")
+                status("ครั้งที่ $attempt: ย้อนกลับ ${backDistance.toInt()}px...")
+
+                val backDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
+                service.swipeWithContinuation(
+                    currentX, sliderY,
+                    minEdgeX, sliderY,
+                    (backDistance / FINE_STEP_PX * STEP_DURATION_MS).toLong().coerceIn(50, 1500),
+                    willContinue = true,
+                    previousStroke = currentStroke
+                ) { stroke -> backDone.complete(stroke) }
+
+                val backStroke = withTimeoutOrNull(3000) { backDone.await() }
+                if (backStroke != null) {
+                    currentStroke = backStroke
+                    currentX = minEdgeX
+                    Log.d(TAG, "Backtracked to x=${currentX.toInt()}")
+                } else {
+                    Log.w(TAG, "Backtrack failed, releasing at current position")
+                }
             }
 
             // Step 4: Release finger (willContinue = false)
@@ -276,7 +312,6 @@ object PuzzleCaptchaAction {
                 // Dark region still present
                 if (attempt < config.maxRetries) {
                     status("⚠ ยังไม่ผ่าน ลองใหม่...")
-                    // Tap refresh to get a new puzzle for next attempt
                     if (hasRefresh) {
                         val refreshDone = CompletableDeferred<Unit>()
                         service.tapAtCoordinates(refreshX, refreshY) { refreshDone.complete(Unit) }
