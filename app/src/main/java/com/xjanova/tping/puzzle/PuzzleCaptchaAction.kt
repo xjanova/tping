@@ -99,12 +99,15 @@ object PuzzleCaptchaAction {
             }
 
             val darkRegion = PuzzleSolver.findDarkRegion(screenshot, sliderY.toInt())
+            val initialEdgeStrength = if (darkRegion != null) {
+                PuzzleSolver.measureEdgeStrength(screenshot, darkRegion)
+            } else -1
             val initialDarkness = if (darkRegion != null) {
                 PuzzleSolver.measureDarkness(screenshot, darkRegion)
             } else -1
             screenshot.recycle()
 
-            if (darkRegion == null || initialDarkness <= 0) {
+            if (darkRegion == null) {
                 status("⚠ หาช่องว่างไม่พบ")
                 // Tap refresh button if available
                 if (hasRefresh) {
@@ -119,7 +122,7 @@ object PuzzleCaptchaAction {
 
             val gapCenterX = (darkRegion.left + darkRegion.right) / 2f
             val targetDragDistance = gapCenterX - sliderX
-            Log.d(TAG, "Gap at x=${gapCenterX.toInt()}, darkness=$initialDarkness, dragDist=${targetDragDistance.toInt()}")
+            Log.d(TAG, "Gap at x=${gapCenterX.toInt()}, edge=$initialEdgeStrength, darkness=$initialDarkness, dragDist=${targetDragDistance.toInt()}")
 
             if (targetDragDistance <= 5) {
                 status("⚠ ระยะเลื่อนน้อยเกินไป")
@@ -154,9 +157,11 @@ object PuzzleCaptchaAction {
             // Step 3: Fine phase — slide in small increments with visual feedback
             status("ครั้งที่ $attempt: ปรับละเอียด...")
             var previousDarkness = initialDarkness
+            var previousEdge = initialEdgeStrength
             var fineStepCount = 0
             var bestDarkness = initialDarkness
             var darknessIncreasing = 0
+            var edgeIncreasing = 0
 
             while (fineStepCount < MAX_FINE_STEPS) {
                 fineStepCount++
@@ -171,28 +176,49 @@ object PuzzleCaptchaAction {
                     break
                 }
 
+                val currentEdge = PuzzleSolver.measureEdgeStrength(fineScreenshot, darkRegion)
                 val currentDarkness = PuzzleSolver.measureDarkness(fineScreenshot, darkRegion)
                 fineScreenshot.recycle()
 
-                Log.d(TAG, "Fine step $fineStepCount: x=${currentX.toInt()}, darkness=$currentDarkness (prev=$previousDarkness)")
+                Log.d(TAG, "Fine step $fineStepCount: x=${currentX.toInt()}, edge=$currentEdge/$initialEdgeStrength, darkness=$currentDarkness")
 
-                // Check if gap is filled (darkness near zero)
+                // Primary: edge strength dropped significantly = gap filled
+                if (currentEdge >= 0 && initialEdgeStrength > 0 &&
+                    currentEdge < initialEdgeStrength * 0.40
+                ) {
+                    Log.d(TAG, "Gap filled! edge=$currentEdge < ${(initialEdgeStrength * 0.40).toInt()} (40% of $initialEdgeStrength)")
+                    break
+                }
+
+                // Secondary: darkness near zero (for classic dark gaps)
                 if (currentDarkness >= 0 && currentDarkness < DARKNESS_NEAR_ZERO) {
                     Log.d(TAG, "Gap filled! darkness=$currentDarkness < $DARKNESS_NEAR_ZERO")
                     break
                 }
 
-                // Track if darkness is increasing (we overshot)
+                // Track if edge strength increasing (overshot — piece past gap)
+                if (currentEdge >= 0 && previousEdge >= 0 && currentEdge > previousEdge * 1.3) {
+                    edgeIncreasing++
+                    if (edgeIncreasing >= 3) {
+                        Log.d(TAG, "Edge increasing $edgeIncreasing times in a row — stopping")
+                        break
+                    }
+                } else {
+                    edgeIncreasing = 0
+                }
+
+                // Also track darkness increase
                 if (currentDarkness >= 0 && currentDarkness > previousDarkness) {
                     darknessIncreasing++
                     if (darknessIncreasing >= 3) {
-                        Log.d(TAG, "Darkness increasing $darknessIncreasing times in a row — stopping")
+                        Log.d(TAG, "Darkness increasing $darknessIncreasing times — stopping")
                         break
                     }
                 } else {
                     darknessIncreasing = 0
                 }
 
+                if (currentEdge >= 0) previousEdge = currentEdge
                 if (currentDarkness >= 0) {
                     if (currentDarkness < bestDarkness) bestDarkness = currentDarkness
                     previousDarkness = currentDarkness
