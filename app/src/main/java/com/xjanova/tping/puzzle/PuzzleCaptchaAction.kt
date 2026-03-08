@@ -14,19 +14,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Puzzle CAPTCHA solver — v1.2.26
+ * Puzzle CAPTCHA solver — v1.2.28
  *
- * Key changes from v1.2.25:
- *   1. PRIMARY mode = press-hold-drag (continuation chains) — simulates human finger
- *   2. Warm-up uses tap (touch-down + release) at center screen, not micro-swipe
- *   3. Press phase: hold finger at slider 300ms before dragging
- *   4. Single swipe is FALLBACK (not primary)
- *
- * Why press-hold-drag:
- *   Many slider implementations require ACTION_DOWN to "grab" the handle first,
- *   then ACTION_MOVE to drag. A single Path swipe may not properly "grab" the slider
- *   handle. By using continuation chains with an initial hold phase, we ensure the
- *   slider registers the touch before the drag begins.
+ * Slide strategy (3 tiers):
+ *   1. PRIMARY: Tap slider handle → delay → slow swipe to target
+ *      - Tap "activates" the slider handle (ACTION_DOWN + UP)
+ *      - 300ms delay lets the handle register
+ *      - Slow swipe (long duration) drags to target
+ *   2. FALLBACK: Very slow single swipe (no pre-tap)
+ *      - Extra-long duration so the slider has time to register the initial touch
+ *   3. LAST RESORT: Press-hold-drag (continuation chains)
+ *      - Phase 1: hold finger at slider 300ms (willContinue=true)
+ *      - Phase 2: drag to target (willContinue=false)
+ *      - Only used if both tier 1 and 2 fail
  */
 object PuzzleCaptchaAction {
 
@@ -128,7 +128,7 @@ object PuzzleCaptchaAction {
         val blindFixedOffsets = intArrayOf(200, 350, 500, 150, 450, 300, 550)
         var blindIndex = 0
         var consecutiveGestureFailures = 0
-        var useSingleSwipeMode = false  // Start with press-hold-drag, fallback to single swipe
+        var swipeTier = 1  // 1=tap+swipe, 2=slow swipe, 3=press-hold-drag
 
         // ============================================================
         // === MAIN SOLVING LOOP ===
@@ -199,51 +199,56 @@ object PuzzleCaptchaAction {
             }
 
             // === Execute swipe ===
-            val duration = (dragDist * 2.5f).toLong().coerceIn(600, 2500)
-            val swipeMode = if (useSingleSwipeMode) "single" else "press-hold-drag"
-            status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode+$swipeMode, ${dragDist.toInt()}px)...")
+            val swipeModeName = when (swipeTier) {
+                1 -> "tap+swipe"
+                2 -> "slow-swipe"
+                else -> "press-hold-drag"
+            }
+            status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode+$swipeModeName, ${dragDist.toInt()}px)...")
 
-            val swipeResult: String = if (useSingleSwipeMode) {
-                doSwipe(service, sliderX, sliderY, targetX, sliderY, duration)
-            } else {
-                doPressHoldDrag(service, sliderX, sliderY, targetX, sliderY, duration)
+            val swipeResult: String = when (swipeTier) {
+                1 -> doTapThenSwipe(service, sliderX, sliderY, targetX, sliderY, dragDist)
+                2 -> doSlowSwipe(service, sliderX, sliderY, targetX, sliderY, dragDist)
+                else -> doPressHoldDrag(service, sliderX, sliderY, targetX, sliderY,
+                    (dragDist * 3f).toLong().coerceIn(800, 3000))
             }
 
             Log.d(
                 TAG,
-                "Swipe result=$swipeResult, mode=$dragMode+$swipeMode, " +
+                "Swipe result=$swipeResult, mode=$dragMode+$swipeModeName, " +
                     "attempt=$attempt, dist=${"%.0f".format(dragDist)}, target=${targetX.toInt()}"
             )
             DiagnosticReporter.logCaptcha(
                 "Swipe attempt=$attempt",
-                "result=$swipeResult, mode=$dragMode+$swipeMode, " +
+                "result=$swipeResult, mode=$dragMode+$swipeModeName, " +
                     "dist=${"%.0f".format(dragDist)}, target=${targetX.toInt()}, " +
                     "trackW=${trackWidth.toInt()}"
             )
 
             if (swipeResult != "completed") {
                 consecutiveGestureFailures++
-                status("⚠ gesture: $swipeResult (fail #$consecutiveGestureFailures)")
+                status("⚠ gesture: $swipeResult (fail #$consecutiveGestureFailures, tier $swipeTier)")
                 DiagnosticReporter.logCaptcha(
                     "Swipe failed",
-                    "result=$swipeResult, consecutiveFails=$consecutiveGestureFailures, single=$useSingleSwipeMode"
+                    "result=$swipeResult, consecutiveFails=$consecutiveGestureFailures, tier=$swipeTier"
                 )
 
-                // After 2 press-hold-drag failures → switch to single swipe
-                if (!useSingleSwipeMode && consecutiveGestureFailures >= 2) {
-                    status("🔄 เปลี่ยนเป็นโหมด single swipe...")
-                    useSingleSwipeMode = true
+                // Escalate to next tier after 2 consecutive failures
+                if (consecutiveGestureFailures >= 2 && swipeTier < 3) {
+                    swipeTier++
+                    consecutiveGestureFailures = 0
+                    status("🔄 เปลี่ยนเป็นโหมด ${when(swipeTier) { 2 -> "slow-swipe"; else -> "press-hold-drag" }}...")
                     doWarmupTap(service, screenW, screenH)
                     delay(300)
                     continue
                 }
 
-                // After 4 total failures → give up
-                if (consecutiveGestureFailures >= 4) {
+                // After 2 failures on last tier → give up
+                if (consecutiveGestureFailures >= 2 && swipeTier >= 3) {
                     status("❌ ระบบ gesture ไม่ทำงาน! ลอง ปิด/เปิด Accessibility Service")
                     DiagnosticReporter.logCaptcha(
                         "CRITICAL: gesture broken",
-                        "$consecutiveGestureFailures consecutive failures, aborting"
+                        "all tiers exhausted, $consecutiveGestureFailures failures at tier $swipeTier"
                     )
                     autoSendDiagnostics()
                     return
@@ -268,7 +273,7 @@ object PuzzleCaptchaAction {
                         status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt)")
                         DiagnosticReporter.logCaptcha(
                             "Solved",
-                            "attempt=$attempt, mode=$dragMode+$swipeMode"
+                            "attempt=$attempt, mode=$dragMode+$swipeModeName"
                         )
                         autoSendDiagnostics()
                         return
@@ -296,7 +301,7 @@ object PuzzleCaptchaAction {
         DiagnosticReporter.logCaptcha(
             "All attempts done",
             "maxRetries=${config.maxRetries}, opencv=$opencvOk, " +
-                "hasTrack=$hasTrack, single=$useSingleSwipeMode"
+                "hasTrack=$hasTrack, tier=$swipeTier"
         )
         autoSendDiagnostics()
     }
@@ -345,18 +350,86 @@ object PuzzleCaptchaAction {
     }
 
     // ============================================================
-    // === PRESS-HOLD-DRAG (Primary mode) ===
+    // === TIER 1: TAP-THEN-SWIPE (Primary) ===
     // ============================================================
 
     /**
-     * Execute a press-hold-drag using continuation chains.
+     * Tap the slider handle first to "activate" it, then slow swipe to target.
      *
-     * Phase 1: Touch down at slider, tiny movement (2px), hold 300ms  →  willContinue=true
-     * Phase 2: Drag from slider to target, calculated duration          →  willContinue=false (release)
+     * Many slider CAPTCHAs need the handle to register ACTION_DOWN before
+     * they start tracking drag. A quick tap wakes up the handle, then
+     * the slow swipe drags it to the target position.
+     */
+    private suspend fun doTapThenSwipe(
+        service: TpingAccessibilityService,
+        startX: Float, startY: Float,
+        endX: Float, endY: Float,
+        dragDist: Float
+    ): String {
+        // Step 1: Tap on slider handle (150ms touch)
+        Log.d(TAG, "TapThenSwipe: tap at (${startX.toInt()},${startY.toInt()})")
+        val tapDone = CompletableDeferred<Boolean>()
+        service.swipeGesture(startX, startY, startX + 1f, startY, 150) { success ->
+            tapDone.complete(success)
+        }
+        val tapOk = withTimeoutOrNull(3000) { tapDone.await() } ?: false
+        if (!tapOk) {
+            Log.e(TAG, "TapThenSwipe: tap failed")
+            return "tap_failed"
+        }
+
+        // Step 2: Wait for handle to register
+        delay(300)
+
+        // Step 3: Slow swipe from slider to target
+        // Use long duration: ~4ms per pixel, min 1500ms, max 4000ms
+        val swipeDuration = (dragDist * 4f).toLong().coerceIn(1500, 4000)
+        Log.d(TAG, "TapThenSwipe: swipe to (${endX.toInt()},${endY.toInt()}), dur=${swipeDuration}ms")
+
+        val result = CompletableDeferred<String>()
+        service.swipeGesture(startX, startY, endX, endY, swipeDuration) { success ->
+            result.complete(if (success) "completed" else "cancelled")
+        }
+        return withTimeoutOrNull(swipeDuration + 5000) { result.await() } ?: "timeout"
+    }
+
+    // ============================================================
+    // === TIER 2: VERY SLOW SWIPE (Fallback) ===
+    // ============================================================
+
+    /**
+     * Single continuous swipe with extra-long duration.
+     * The slow speed gives the slider time to register the initial touch
+     * and start tracking the drag, even without a pre-tap.
+     */
+    private suspend fun doSlowSwipe(
+        service: TpingAccessibilityService,
+        startX: Float, startY: Float,
+        endX: Float, endY: Float,
+        dragDist: Float
+    ): String {
+        // Very slow: ~6ms per pixel, min 2000ms, max 5000ms
+        val duration = (dragDist * 6f).toLong().coerceIn(2000, 5000)
+        Log.d(TAG, "SlowSwipe: (${startX.toInt()},${startY.toInt()})→(${endX.toInt()},${endY.toInt()}), dur=${duration}ms")
+
+        val result = CompletableDeferred<String>()
+        service.swipeGesture(startX, startY, endX, endY, duration) { success ->
+            result.complete(if (success) "completed" else "cancelled")
+        }
+        return withTimeoutOrNull(duration + 5000) { result.await() } ?: "timeout"
+    }
+
+    // ============================================================
+    // === TIER 3: PRESS-HOLD-DRAG (Last Resort) ===
+    // ============================================================
+
+    /**
+     * Press-hold-drag using continuation chains.
+     * Phase 1: Touch down + hold 300ms (willContinue=true)
+     * Phase 2: Drag to target (willContinue=false)
      *
-     * This simulates how a human drags: press the slider handle, pause briefly,
-     * then drag to target position. Many slider implementations need this touch-down
-     * "grab" phase before accepting drag movements.
+     * NOTE: Continuation chains are unreliable on some devices/ROMs.
+     * This is the last resort after tap+swipe and slow swipe fail.
      */
     private suspend fun doPressHoldDrag(
         service: TpingAccessibilityService,
@@ -367,68 +440,29 @@ object PuzzleCaptchaAction {
         val dragDist = endX - startX
         if (dragDist < 10) return "skip"
 
-        // Phase 1: Press and hold at slider position (tiny 2px movement to register as gesture)
         val holdDuration = 300L
-        Log.d(TAG, "PressHoldDrag: Phase 1 — press at (${startX.toInt()},${startY.toInt()}), hold ${holdDuration}ms")
+        Log.d(TAG, "PressHoldDrag: Phase 1 — press at (${startX.toInt()},${startY.toInt()})")
 
         val phase1Result = CompletableDeferred<GestureDescription.StrokeDescription?>()
         service.swipeWithContinuation(
-            startX, startY,
-            startX + 2f, startY,
-            holdDuration,
-            willContinue = true,
-            previousStroke = null
+            startX, startY, startX + 2f, startY,
+            holdDuration, willContinue = true, previousStroke = null
         ) { stroke -> phase1Result.complete(stroke) }
 
         val holdStroke = withTimeoutOrNull(holdDuration + 5000) { phase1Result.await() }
-        if (holdStroke == null) {
-            Log.e(TAG, "PressHoldDrag: Phase 1 (press) failed!")
-            return "press_failed"
-        }
-        Log.d(TAG, "PressHoldDrag: Phase 1 OK — finger down on slider")
+        if (holdStroke == null) return "press_failed"
 
-        // Phase 2: Drag from current position to target
         val dragDuration = (totalDurationMs - holdDuration).coerceAtLeast(400)
-        Log.d(TAG, "PressHoldDrag: Phase 2 — drag to (${endX.toInt()},${endY.toInt()}), dur=${dragDuration}ms")
+        Log.d(TAG, "PressHoldDrag: Phase 2 — drag to (${endX.toInt()},${endY.toInt()})")
 
         val phase2Result = CompletableDeferred<GestureDescription.StrokeDescription?>()
         service.swipeWithContinuation(
-            startX + 2f, startY,
-            endX, endY,
-            dragDuration,
-            willContinue = false,  // Release finger
-            previousStroke = holdStroke
+            startX + 2f, startY, endX, endY,
+            dragDuration, willContinue = false, previousStroke = holdStroke
         ) { stroke -> phase2Result.complete(stroke) }
 
         val dragStroke = withTimeoutOrNull(dragDuration + 5000) { phase2Result.await() }
-        if (dragStroke == null) {
-            Log.e(TAG, "PressHoldDrag: Phase 2 (drag) failed!")
-            return "drag_failed"
-        }
-        Log.d(TAG, "PressHoldDrag: Phase 2 OK — drag completed")
-
-        return "completed"
-    }
-
-    // ============================================================
-    // === SINGLE SWIPE (Fallback) ===
-    // ============================================================
-
-    /**
-     * Execute a single continuous swipe.
-     * Returns: "completed", "cancelled", or "timeout"
-     */
-    private suspend fun doSwipe(
-        service: TpingAccessibilityService,
-        startX: Float, startY: Float,
-        endX: Float, endY: Float,
-        durationMs: Long
-    ): String {
-        val result = CompletableDeferred<String>()
-        service.swipeGesture(startX, startY, endX, endY, durationMs) { success ->
-            result.complete(if (success) "completed" else "cancelled")
-        }
-        return withTimeoutOrNull(durationMs + 5000) { result.await() } ?: "timeout"
+        return if (dragStroke != null) "completed" else "drag_failed"
     }
 
     // ============================================================
