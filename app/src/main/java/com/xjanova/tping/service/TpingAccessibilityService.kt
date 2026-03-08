@@ -455,13 +455,17 @@ class TpingAccessibilityService : AccessibilityService() {
 
     // ====== Gesture APIs (for slide puzzle CAPTCHA) ======
 
-    /** Simple one-shot swipe from start to end */
+    /**
+     * Simple one-shot swipe from start to end.
+     * callback(true) = gesture completed, callback(false) = cancelled or dispatch failed.
+     */
     fun swipeGesture(
         startX: Float, startY: Float,
         endX: Float, endY: Float,
         durationMs: Long = 600,
-        callback: () -> Unit
+        callback: (Boolean) -> Unit
     ) {
+        Log.d(TAG, "swipeGesture: ($startX,$startY)→($endX,$endY), dur=${durationMs}ms")
         val path = Path().apply {
             moveTo(startX, startY)
             lineTo(endX, endY)
@@ -469,10 +473,20 @@ class TpingAccessibilityService : AccessibilityService() {
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
             .build()
-        dispatchGesture(gesture, object : GestureResultCallback() {
-            override fun onCompleted(g: GestureDescription?) { callback() }
-            override fun onCancelled(g: GestureDescription?) { callback() }
+        val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(g: GestureDescription?) {
+                Log.d(TAG, "swipeGesture: onCompleted")
+                callback(true)
+            }
+            override fun onCancelled(g: GestureDescription?) {
+                Log.w(TAG, "swipeGesture: onCancelled")
+                callback(false)
+            }
         }, null)
+        if (!dispatched) {
+            Log.e(TAG, "swipeGesture: dispatchGesture returned FALSE — gesture not sent!")
+            callback(false)
+        }
     }
 
     /**
@@ -522,13 +536,18 @@ class TpingAccessibilityService : AccessibilityService() {
 
     /** Tap at specific screen coordinates (for pressing refresh button etc.) */
     fun tapAtCoordinates(x: Float, y: Float, callback: () -> Unit) {
+        Log.d(TAG, "tapAtCoordinates: ($x, $y)")
         val path = Path().apply { moveTo(x, y) }
         val gesture = GestureDescription.Builder()
             .addStroke(GestureDescription.StrokeDescription(path, 0, 100))
             .build()
-        dispatchGesture(gesture, object : GestureResultCallback() {
+        val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(g: GestureDescription?) { callback() }
             override fun onCancelled(g: GestureDescription?) { callback() }
         }, null)
+        if (!dispatched) {
+            Log.e(TAG, "tapAtCoordinates: dispatchGesture returned FALSE!")
+            callback()
+        }
     }
 }
