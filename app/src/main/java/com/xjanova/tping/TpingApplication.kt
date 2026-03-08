@@ -7,6 +7,7 @@ import android.os.Build
 import android.util.Log
 import com.xjanova.tping.data.cloud.CloudAuthManager
 import com.xjanova.tping.data.database.TpingDatabase
+import com.xjanova.tping.data.diagnostic.DiagnosticReporter
 
 class TpingApplication : Application() {
 
@@ -15,6 +16,9 @@ class TpingApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+
+        // Initialize diagnostic reporter early
+        DiagnosticReporter.initialize(this)
 
         // Global crash handler — save stack trace to prefs for display on next launch
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
@@ -27,6 +31,10 @@ class TpingApplication : Application() {
                     .putString("last_crash", trace)
                     .putLong("crash_time", System.currentTimeMillis())
                     .commit() // commit() not apply() — must write before process dies
+            } catch (_: Exception) { }
+            // Also log crash to DiagnosticReporter for remote reporting
+            try {
+                DiagnosticReporter.logCrash(throwable)
             } catch (_: Exception) { }
             defaultHandler?.uncaughtException(thread, throwable)
         }

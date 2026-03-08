@@ -37,6 +37,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.OutlinedTextField
+import com.xjanova.tping.data.diagnostic.DiagnosticReporter
 import com.xjanova.tping.data.license.LicenseManager
 import com.xjanova.tping.data.license.LicenseStatus
 import kotlinx.coroutines.launch
@@ -142,6 +143,9 @@ fun HomeScreen(
         // Check for saved crash from previous session
         val crashPrefs = context.getSharedPreferences("crash_log", android.content.Context.MODE_PRIVATE)
         var lastCrash by remember { mutableStateOf(crashPrefs.getString("last_crash", null)) }
+        var diagnosticCount by remember { mutableIntStateOf(DiagnosticReporter.getPendingCount()) }
+        var sendingReport by remember { mutableStateOf(false) }
+        var sendResultMsg by remember { mutableStateOf<String?>(null) }
 
         LazyColumn(
             modifier = Modifier
@@ -150,9 +154,10 @@ fun HomeScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // === Crash Report (shown once after crash) ===
+            // === Crash Report + Diagnostics ===
             item(key = "crash_report") {
-                if (lastCrash != null) {
+                val scope = rememberCoroutineScope()
+                if (lastCrash != null || diagnosticCount > 0 || sendResultMsg != null) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
@@ -162,32 +167,77 @@ fun HomeScreen(
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Icon(Icons.Default.BugReport, null, tint = Color(0xFFEF4444), modifier = Modifier.size(20.dp))
                                 Spacer(modifier = Modifier.width(8.dp))
-                                Text("พบข้อผิดพลาดครั้งก่อน", fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFFEF4444))
+                                Text(
+                                    if (lastCrash != null) "พบข้อผิดพลาดครั้งก่อน"
+                                    else "รายงานวินิจฉัย ($diagnosticCount รายการ)",
+                                    fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFFEF4444)
+                                )
                                 Spacer(modifier = Modifier.weight(1f))
-                                TextButton(onClick = {
-                                    crashPrefs.edit().remove("last_crash").apply()
-                                    lastCrash = null
-                                }) {
-                                    Text("ปิด", fontSize = 12.sp)
+                                if (lastCrash != null) {
+                                    TextButton(onClick = {
+                                        crashPrefs.edit().remove("last_crash").apply()
+                                        lastCrash = null
+                                    }) {
+                                        Text("ปิด", fontSize = 12.sp)
+                                    }
                                 }
                             }
-                            Text(
-                                lastCrash ?: "",
-                                fontSize = 9.sp,
-                                lineHeight = 12.sp,
-                                maxLines = 30,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                                modifier = Modifier.fillMaxWidth()
-                            )
+                            if (lastCrash != null) {
+                                Text(
+                                    lastCrash ?: "",
+                                    fontSize = 9.sp,
+                                    lineHeight = 12.sp,
+                                    maxLines = 15,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                            if (sendResultMsg != null) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(sendResultMsg ?: "", fontSize = 12.sp, color = Color(0xFF22C55E))
+                            }
                             Spacer(modifier = Modifier.height(4.dp))
-                            TextButton(onClick = {
-                                val clip = android.content.ClipData.newPlainText("crash", lastCrash)
-                                val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-                                cm.setPrimaryClip(clip)
-                            }) {
-                                Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(14.dp))
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text("คัดลอก", fontSize = 11.sp)
+                            Row {
+                                if (lastCrash != null) {
+                                    TextButton(onClick = {
+                                        val clip = android.content.ClipData.newPlainText("crash", lastCrash)
+                                        val cm = context.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                                        cm.setPrimaryClip(clip)
+                                    }) {
+                                        Icon(Icons.Default.ContentCopy, null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("คัดลอก", fontSize = 11.sp)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.weight(1f))
+                                TextButton(
+                                    onClick = {
+                                        if (!sendingReport) {
+                                            sendingReport = true
+                                            sendResultMsg = null
+                                            scope.launch {
+                                                val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                                    DiagnosticReporter.sendReport()
+                                                }
+                                                sendResultMsg = if (result.success) "✓ ${result.message}" else "✗ ${result.message}"
+                                                sendingReport = false
+                                                diagnosticCount = DiagnosticReporter.getPendingCount()
+                                            }
+                                        }
+                                    },
+                                    enabled = !sendingReport && diagnosticCount > 0
+                                ) {
+                                    if (sendingReport) {
+                                        CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                    } else {
+                                        Icon(Icons.Default.CloudUpload, null, modifier = Modifier.size(14.dp))
+                                    }
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text(
+                                        if (sendingReport) "กำลังส่ง..." else "ส่งรายงาน${if (diagnosticCount > 0) " ($diagnosticCount)" else ""}",
+                                        fontSize = 11.sp
+                                    )
+                                }
                             }
                         }
                     }
