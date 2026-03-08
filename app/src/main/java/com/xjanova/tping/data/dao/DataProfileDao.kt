@@ -29,4 +29,10 @@ interface DataProfileDao {
 
     @Query("SELECT * FROM data_profiles WHERE category = :category ORDER BY createdAt")
     suspend fun getByCategory(category: String): List<DataProfile>
+
+    @Query("SELECT * FROM data_profiles WHERE name = :name AND category = :category LIMIT 1")
+    suspend fun findByNameAndCategory(name: String, category: String): DataProfile?
+
+    @Query("SELECT * FROM data_profiles")
+    suspend fun getAllOnce(): List<DataProfile>
 }

@@ -37,9 +37,11 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.OutlinedTextField
+import com.xjanova.tping.data.cloud.CloudSyncManager
 import com.xjanova.tping.data.diagnostic.DiagnosticReporter
 import com.xjanova.tping.data.license.LicenseManager
 import com.xjanova.tping.data.license.LicenseStatus
+import com.xjanova.tping.data.update.UpdateChecker
 import kotlinx.coroutines.launch
 import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.service.TpingAccessibilityService
@@ -105,6 +107,12 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    // Auto-check for updates + auto-sync on startup
+    LaunchedEffect(Unit) {
+        UpdateChecker.checkForUpdate(context, shouldThrottle = true)
+        CloudSyncManager.autoSyncIfEligible()
     }
 
     var licenseKeyInput by remember { mutableStateOf("") }
@@ -390,6 +398,117 @@ fun HomeScreen(
                         }
                         if (activateSuccess.isNotEmpty()) {
                             Text(activateSuccess, color = Color(0xFF22C55E), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                        }
+                    }
+                }
+            }
+
+            // === Update Available ===
+            item(key = "update_check") {
+                val updateInfo by UpdateChecker.updateInfo.collectAsState()
+                val updateScope = rememberCoroutineScope()
+
+                if (updateInfo.hasUpdate) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFF8B5CF6).copy(alpha = 0.12f)
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.SystemUpdate,
+                                    null,
+                                    tint = Color(0xFF8B5CF6),
+                                    modifier = Modifier.size(20.dp)
+                                )
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text(
+                                    "อัพเดทใหม่ v${updateInfo.latestVersion}",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp,
+                                    color = Color(0xFF8B5CF6)
+                                )
+                                Spacer(modifier = Modifier.weight(1f))
+                                TextButton(onClick = {
+                                    UpdateChecker.dismissVersion(context, updateInfo.latestVersion)
+                                }) {
+                                    Text("ข้าม", fontSize = 12.sp)
+                                }
+                            }
+                            Text(
+                                "เวอร์ชัน ${updateInfo.currentVersion} → ${updateInfo.latestVersion}",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+
+                            if (updateInfo.isDownloading) {
+                                LinearProgressIndicator(
+                                    progress = { updateInfo.downloadProgress / 100f },
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(6.dp)
+                                        .clip(RoundedCornerShape(3.dp)),
+                                    color = Color(0xFF8B5CF6)
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    "กำลังดาวน์โหลด ${updateInfo.downloadProgress}%",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
+                            } else {
+                                Button(
+                                    onClick = {
+                                        updateScope.launch {
+                                            UpdateChecker.downloadAndInstall(context)
+                                        }
+                                    },
+                                    modifier = Modifier.fillMaxWidth(),
+                                    shape = RoundedCornerShape(8.dp),
+                                    colors = ButtonDefaults.buttonColors(
+                                        containerColor = Color(0xFF8B5CF6)
+                                    )
+                                ) {
+                                    Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("ดาวน์โหลดอัพเดท", fontWeight = FontWeight.Medium)
+                                }
+                            }
+
+                            if (updateInfo.error.isNotEmpty()) {
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(updateInfo.error, fontSize = 11.sp, color = Color(0xFFEF4444))
+                            }
+                        }
+                    }
+                } else if (updateInfo.error.isNotEmpty()) {
+                    // Show error card for GitHub token issues
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(12.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFFFF9800).copy(alpha = 0.1f)
+                        )
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Warning,
+                                    null,
+                                    tint = Color(0xFFFF9800),
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    "เช็คอัพเดท: ${updateInfo.error}",
+                                    fontSize = 12.sp,
+                                    color = Color(0xFFFF9800)
+                                )
+                            }
                         }
                     }
                 }

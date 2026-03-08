@@ -20,4 +20,10 @@ interface WorkflowDao {
 
     @Delete
     suspend fun delete(workflow: Workflow)
+
+    @Query("SELECT * FROM workflows WHERE name = :name AND targetAppPackage = :pkg LIMIT 1")
+    suspend fun findByNameAndPackage(name: String, pkg: String): Workflow?
+
+    @Query("SELECT * FROM workflows")
+    suspend fun getAllOnce(): List<Workflow>
 }

@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xjanova.tping.data.cloud.CloudAuthManager
 import com.xjanova.tping.data.cloud.CloudSyncManager
+import com.xjanova.tping.data.update.UpdateChecker
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -487,22 +488,143 @@ private fun CloudDashboard(
 
         // Divider
         item {
-            Divider(modifier = Modifier.padding(vertical = 4.dp))
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
         }
 
-        // Open dashboard
+        // Open dashboard links
         item {
-            OutlinedButton(
-                onClick = {
-                    val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://xman4289.com/my-account/tping-workflows"))
-                    context.startActivity(intent)
-                },
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(
+                    onClick = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://xman4289.com/my-account/tping-workflows"))
+                        context.startActivity(intent)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.OpenInBrowser, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Workflow Dashboard บนเว็บ", fontWeight = FontWeight.Medium)
+                }
+                OutlinedButton(
+                    onClick = {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://xman4289.com/my-account/tping-data-profiles"))
+                        context.startActivity(intent)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.OpenInBrowser, contentDescription = null)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Data Profile Dashboard บนเว็บ", fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+
+        // Divider
+        item {
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+        }
+
+        // GitHub Token for auto-update (private repo)
+        item {
+            var githubToken by remember {
+                mutableStateOf(UpdateChecker.getGitHubToken(context) ?: "")
+            }
+            var showTokenField by remember { mutableStateOf(false) }
+
+            Card(
                 modifier = Modifier.fillMaxWidth(),
-                shape = RoundedCornerShape(12.dp)
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFF8B5CF6).copy(alpha = 0.06f)
+                )
             ) {
-                Icon(Icons.Default.OpenInBrowser, contentDescription = null)
-                Spacer(modifier = Modifier.width(8.dp))
-                Text("เปิด Dashboard บนเว็บ", fontWeight = FontWeight.Medium)
+                Column(modifier = Modifier.padding(14.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.SystemUpdate,
+                            contentDescription = null,
+                            tint = Color(0xFF8B5CF6),
+                            modifier = Modifier.size(22.dp)
+                        )
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                "เช็คอัพเดทอัตโนมัติ",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp
+                            )
+                            Text(
+                                if (githubToken.isNotBlank()) "GitHub Token: ตั้งค่าแล้ว"
+                                else "ใส่ GitHub Token สำหรับ private repo",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                        TextButton(onClick = { showTokenField = !showTokenField }) {
+                            Text(
+                                if (showTokenField) "ซ่อน" else "ตั้งค่า",
+                                fontSize = 12.sp,
+                                color = Color(0xFF8B5CF6)
+                            )
+                        }
+                    }
+
+                    if (showTokenField) {
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedTextField(
+                            value = githubToken,
+                            onValueChange = { githubToken = it },
+                            label = { Text("GitHub Personal Access Token", fontSize = 12.sp) },
+                            placeholder = { Text("ghp_...", fontSize = 12.sp) },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
+                            visualTransformation = PasswordVisualTransformation()
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(
+                                onClick = {
+                                    UpdateChecker.setGitHubToken(context, githubToken)
+                                    Toast.makeText(context, "บันทึก Token แล้ว", Toast.LENGTH_SHORT).show()
+                                    scope.launch {
+                                        UpdateChecker.checkForUpdate(context, shouldThrottle = false)
+                                    }
+                                },
+                                enabled = githubToken.isNotBlank(),
+                                shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6)),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("บันทึก & เช็คอัพเดท", fontSize = 13.sp)
+                            }
+                            if (githubToken.isNotBlank()) {
+                                OutlinedButton(
+                                    onClick = {
+                                        githubToken = ""
+                                        UpdateChecker.clearGitHubToken(context)
+                                        Toast.makeText(context, "ลบ Token แล้ว", Toast.LENGTH_SHORT).show()
+                                    },
+                                    shape = RoundedCornerShape(8.dp)
+                                ) {
+                                    Text("ลบ", fontSize = 13.sp, color = Color(0xFFEF4444))
+                                }
+                            }
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Token ต้องมีสิทธิ์ repo (read) สำหรับ private repo",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                        )
+                    }
+                }
             }
         }
 
