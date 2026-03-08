@@ -98,7 +98,6 @@ fun TpingApp() {
                 onNavigateToData = { navController.navigate("data") { launchSingleTop = true } },
                 onNavigateToWorkflows = { navController.navigate("workflows") { launchSingleTop = true } },
                 onNavigateToPlay = { navController.navigate("play") { launchSingleTop = true } },
-                onNavigateToExport = { navController.navigate("export") { launchSingleTop = true } },
                 onNavigateToCloud = { navController.navigate("cloud") { launchSingleTop = true } }
             )
         }

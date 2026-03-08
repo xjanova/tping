@@ -100,8 +100,12 @@ object LicenseManager {
                 // Has license key — validate with server (paid license)
                 validatePaidLicense(context, licenseKey, machineId, displayId)
             } else {
-                // No license key — check demo/trial from server, fallback to local trial
-                checkOrStartDemo(context, machineId, displayId)
+                // No saved key — check if this machine already has a license on server (HWID auto-check)
+                val found = checkMachineForExistingLicense(context, machineId, displayId)
+                if (!found) {
+                    // No existing license — check demo/trial from server, fallback to local trial
+                    checkOrStartDemo(context, machineId, displayId)
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "initialize failed completely", e)
@@ -164,6 +168,59 @@ object LicenseManager {
             Log.e(TAG, "validatePaidLicense failed", e)
             // Network error — use cached state (paid license only)
             useCachedState(displayId)
+        }
+    }
+
+    /**
+     * Check if this machine already has an active license on server (HWID auto-check).
+     * Returns true if license found and auto-activated, false otherwise.
+     */
+    private suspend fun checkMachineForExistingLicense(
+        context: Context,
+        machineId: String,
+        displayId: String
+    ): Boolean {
+        return try {
+            val result = withContext(Dispatchers.IO) {
+                LicenseApiClient.checkMachine(machineId)
+            }
+            if (result.success) {
+                val hasLicense = result.data.get("has_license")?.asBoolean ?: false
+                if (hasLicense) {
+                    val data = result.data.getAsJsonObject("data") ?: return false
+                    val key = data.get("license_key")?.asString ?: return false
+                    val type = data.get("license_type")?.asString ?: ""
+                    val expiresAtStr = data.get("expires_at")?.asString
+                    val expiresAt = parseIsoTimestamp(expiresAtStr)
+                    val daysRemaining = data.get("days_remaining")?.asInt ?: 0
+
+                    // Save license key locally
+                    prefs?.edit()
+                        ?.putString(KEY_LICENSE_KEY, key)
+                        ?.putString(KEY_LICENSE_TYPE, type)
+                        ?.putString(KEY_LICENSE_STATUS, "active")
+                        ?.putLong(KEY_LICENSE_EXPIRES_AT, expiresAt)
+                        ?.apply()
+
+                    _state.value = LicenseState(
+                        status = LicenseStatus.ACTIVE,
+                        licenseType = type,
+                        expiresAt = expiresAt,
+                        remainingDays = daysRemaining,
+                        deviceId = displayId,
+                        isLoading = false
+                    )
+                    Log.d(TAG, "Auto-activated license from HWID: $key")
+                    true
+                } else {
+                    false
+                }
+            } else {
+                false // Server error — fall through to demo check
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "checkMachineForExistingLicense failed", e)
+            false // Network error — fall through to demo check
         }
     }
 

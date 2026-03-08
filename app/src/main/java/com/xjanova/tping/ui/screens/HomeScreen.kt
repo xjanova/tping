@@ -37,6 +37,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.runtime.collectAsState
+import com.xjanova.tping.data.cloud.CloudAuthManager
 import com.xjanova.tping.data.cloud.CloudSyncManager
 import com.xjanova.tping.data.diagnostic.DiagnosticReporter
 import com.xjanova.tping.data.license.LicenseManager
@@ -57,7 +59,6 @@ fun HomeScreen(
     onNavigateToData: () -> Unit,
     onNavigateToWorkflows: () -> Unit,
     onNavigateToPlay: () -> Unit,
-    onNavigateToExport: () -> Unit = {},
     onNavigateToCloud: () -> Unit = {}
 ) {
     val context = LocalContext.current
@@ -792,22 +793,9 @@ fun HomeScreen(
                 QuickPlaySection(viewModel = viewModel)
             }
 
-            item(key = "action_export") {
-                MainActionCard(
-                    icon = Icons.Default.SwapHoriz,
-                    title = "Export / Import",
-                    subtitle = "สำรองหรือนำเข้า Workflow + ข้อมูล",
-                    gradientColors = listOf(Color(0xFFEC4899), Color(0xFFF43F5E)),
-                    onClick = onNavigateToExport
-                )
-            }
-
             item(key = "action_cloud") {
-                MainActionCard(
-                    icon = Icons.Default.Cloud,
-                    title = "Cloud Sync",
-                    subtitle = "ซิงค์ข้อมูลผ่าน Xman Studio Cloud",
-                    gradientColors = listOf(Color(0xFF06B6D4), Color(0xFF3B82F6)),
+                CloudStatusCard(
+                    isConnected = CloudAuthManager.authState.collectAsState().value.isLoggedIn,
                     onClick = onNavigateToCloud
                 )
             }
@@ -1536,6 +1524,55 @@ fun MainActionCard(
                 Text(title, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                 Text(subtitle, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
             }
+        }
+    }
+}
+
+@Composable
+fun CloudStatusCard(
+    isConnected: Boolean,
+    onClick: () -> Unit
+) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick),
+        shape = RoundedCornerShape(16.dp),
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            // Status light (dot)
+            Box(
+                modifier = Modifier
+                    .size(12.dp)
+                    .clip(CircleShape)
+                    .background(
+                        if (isConnected) Color(0xFF22C55E)  // green
+                        else Color(0xFF9CA3AF)               // gray
+                    )
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Cloud Sync",
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 14.sp
+                )
+                Text(
+                    if (isConnected) "เชื่อมต่อแล้ว" else "ยังไม่ได้เชื่อมต่อ",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                )
+            }
+            Icon(
+                Icons.Default.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f),
+                modifier = Modifier.size(20.dp)
+            )
         }
     }
 }

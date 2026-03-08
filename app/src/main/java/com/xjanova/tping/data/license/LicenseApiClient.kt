@@ -85,6 +85,17 @@ object LicenseApiClient {
     }
 
     /**
+     * Check if this machine already has an active license (HWID auto-check).
+     * Used on first launch when no license_key is saved locally.
+     */
+    fun checkMachine(machineId: String): ApiResult {
+        val body = JsonObject().apply {
+            addProperty("machine_id", machineId)
+        }
+        return post("$BASE_URL/check-machine", body)
+    }
+
+    /**
      * Validate an existing license.
      */
     fun validateLicense(licenseKey: String, machineId: String): ApiResult {
