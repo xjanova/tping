@@ -294,7 +294,14 @@ fun HomeScreen(
                             "ไลเซนส์: $typeDisplay — เหลือ ${licenseState.remainingDays} วัน"
                         }
                     }
-                    LicenseStatus.TRIAL -> "ทดลองใช้ฟรี — เหลือ ${licenseState.remainingHours} ชั่วโมง"
+                    LicenseStatus.TRIAL -> {
+                        val h = licenseState.remainingHours
+                        when {
+                            h >= 48 -> "ทดลองใช้ฟรี — เหลือ ${licenseState.remainingDays} วัน"
+                            h >= 1 -> "ทดลองใช้ฟรี — เหลือ ${h} ชั่วโมง"
+                            else -> "ทดลองใช้ฟรี — เหลือไม่ถึง 1 ชั่วโมง"
+                        }
+                    }
                     LicenseStatus.EXPIRED -> "ไลเซนส์หมดอายุ — กดซื้อคีย์ใหม่"
                     LicenseStatus.NONE -> "กรุณากรอก License Key"
                     LicenseStatus.CHECKING -> "กำลังตรวจสอบ..."

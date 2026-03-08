@@ -29,9 +29,18 @@ object LicenseManager {
     private const val KEY_MACHINE_ID = "machine_id"
     private const val KEY_FIRST_LAUNCH_AT = "first_launch_at"
     private const val KEY_LOCAL_TRIAL_USED = "local_trial_used"
+    private const val KEY_LAST_VERIFIED_AT = "last_verified_at"
+    private const val KEY_SERVER_TIME_DRIFT_MS = "server_time_drift_ms"
+    private const val KEY_CLOCK_TAMPER_COUNT = "clock_tamper_count"
 
     // Local trial: 24 hours (fallback when server unreachable)
     private const val LOCAL_TRIAL_DURATION_MS = 24L * 60 * 60 * 1000
+
+    // Max allowed clock drift before flagging (5 minutes)
+    private const val MAX_CLOCK_DRIFT_MS = 5L * 60 * 1000
+
+    // Max clock tamper events before forcing server-only mode
+    private const val MAX_TAMPER_COUNT = 3
 
     // Purchase URL (base for plan-specific URLs)
     private const val PURCHASE_BASE_URL = "https://xman4289.com/tping/buy"
@@ -88,6 +97,9 @@ object LicenseManager {
                 deviceId = displayId,
                 isLoading = true
             )
+
+            // Anti-clock-tampering: check if time went backward
+            detectClockTampering()
 
             val licenseKey = try {
                 prefs?.getString(KEY_LICENSE_KEY, "") ?: ""
@@ -244,22 +256,34 @@ object LicenseManager {
                 return
             }
 
+            // Detect clock drift from server_time
+            val serverTimeStr = checkResult.data.get("server_time")?.asString
+            updateServerTimeDrift(serverTimeStr)
+
             val data = checkResult.data.getAsJsonObject("data") ?: checkResult.data
             val hasUsedDemo = data.get("has_used_demo")?.asBoolean ?: false
             val canStartDemo = data.get("can_start_demo")?.asBoolean ?: false
             val isTrialActive = data.get("is_trial_active")?.asBoolean ?: false
 
             if (isTrialActive) {
-                // Trial still active on server
+                // Trial still active on server — use server's precise values
                 val trialInfo = data.getAsJsonObject("trial_info")
                 val daysRemaining = trialInfo?.get("days_remaining")?.asInt ?: 0
+                val serverHoursRemaining = trialInfo?.get("hours_remaining")?.asInt
+                val serverSecondsRemaining = trialInfo?.get("seconds_remaining")?.asInt
                 val expiresAtStr = trialInfo?.get("expires_at")?.asString
                 val expiresAt = parseIsoTimestamp(expiresAtStr)
-                val hoursRemaining = if (expiresAt > 0) {
-                    ((expiresAt - System.currentTimeMillis()) / (60 * 60 * 1000)).toInt().coerceAtLeast(0)
-                } else {
-                    daysRemaining * 24
-                }
+
+                // Use server's precise hours if available, otherwise calculate from expires_at
+                val hoursRemaining = serverHoursRemaining
+                    ?: if (expiresAt > 0) {
+                        ((expiresAt - getAdjustedCurrentTimeMs()) / (60 * 60 * 1000)).toInt().coerceAtLeast(0)
+                    } else {
+                        daysRemaining * 24
+                    }
+
+                // Record verification time
+                recordVerification()
 
                 _state.value = LicenseState(
                     status = LicenseStatus.TRIAL,
@@ -322,11 +346,19 @@ object LicenseManager {
             if (demoResult.success) {
                 prefs?.edit()?.putBoolean(KEY_DEVICE_REGISTERED, true)?.apply()
 
+                // Record server time drift
+                val serverTimeStr = demoResult.data.get("server_time")?.asString
+                updateServerTimeDrift(serverTimeStr)
+
                 val data = demoResult.data.getAsJsonObject("data") ?: demoResult.data
                 val daysRemaining = data.get("days_remaining")?.asInt ?: 7
+                val serverHoursRemaining = data.get("hours_remaining")?.asInt
                 val expiresAtStr = data.get("expires_at")?.asString
                 val expiresAt = parseIsoTimestamp(expiresAtStr)
-                val hoursRemaining = daysRemaining * 24
+                val hoursRemaining = serverHoursRemaining ?: (daysRemaining * 24)
+
+                // Record verification time
+                recordVerification()
 
                 _state.value = LicenseState(
                     status = LicenseStatus.TRIAL,
@@ -352,11 +384,26 @@ object LicenseManager {
     /**
      * LOCAL trial fallback: 24-hour trial stored locally.
      * Used when server is unreachable, to ensure the app is always usable on first launch.
+     * If clock tampering detected too many times, refuse local trial.
      */
     private fun useLocalTrialFallback(context: Context?) {
         try {
             val p = prefs ?: context?.let { getPrefs(it) }
             val displayId = p?.getString(KEY_DEVICE_ID, "") ?: ""
+
+            // If clock tampered too many times, don't trust local trial
+            val tamperCount = try { p?.getInt(KEY_CLOCK_TAMPER_COUNT, 0) ?: 0 } catch (_: Exception) { 0 }
+            if (tamperCount >= MAX_TAMPER_COUNT) {
+                Log.w(TAG, "Clock tampered $tamperCount times — refusing local trial")
+                _state.value = LicenseState(
+                    status = LicenseStatus.EXPIRED,
+                    licenseType = "trial",
+                    deviceId = displayId,
+                    isLoading = false,
+                    errorMessage = "กรุณาเชื่อมต่ออินเทอร์เน็ตเพื่อตรวจสอบสิทธิ์"
+                )
+                return
+            }
 
             val firstLaunch = p?.getLong(KEY_FIRST_LAUNCH_AT, 0L) ?: 0L
             val now = System.currentTimeMillis()
@@ -552,6 +599,88 @@ object LicenseManager {
         } catch (_: Exception) {
             0L
         }
+    }
+
+    // ---- Anti-cheat: Clock tampering detection ----
+
+    /**
+     * Detect if the system clock was set backward (time travel).
+     * Compares current time with last verified time.
+     * If clock went backward significantly, increment tamper count.
+     */
+    private fun detectClockTampering() {
+        try {
+            val lastVerified = prefs?.getLong(KEY_LAST_VERIFIED_AT, 0L) ?: 0L
+            val now = System.currentTimeMillis()
+
+            if (lastVerified > 0 && now < lastVerified - 60_000) {
+                // Clock went backward by more than 1 minute — suspicious
+                val tamperCount = (prefs?.getInt(KEY_CLOCK_TAMPER_COUNT, 0) ?: 0) + 1
+                prefs?.edit()?.putInt(KEY_CLOCK_TAMPER_COUNT, tamperCount)?.apply()
+                Log.w(TAG, "Clock tampering detected! Count: $tamperCount, " +
+                    "now=$now, lastVerified=$lastVerified, diff=${lastVerified - now}ms")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "detectClockTampering failed", e)
+        }
+    }
+
+    /**
+     * Update server time drift measurement.
+     * Called when we receive a server_time in API response.
+     */
+    private fun updateServerTimeDrift(serverTimeIso: String?) {
+        if (serverTimeIso.isNullOrBlank()) return
+        try {
+            val serverTimeMs = parseIsoTimestamp(serverTimeIso)
+            if (serverTimeMs <= 0) return
+
+            val localTimeMs = System.currentTimeMillis()
+            val driftMs = localTimeMs - serverTimeMs
+
+            prefs?.edit()?.putLong(KEY_SERVER_TIME_DRIFT_MS, driftMs)?.apply()
+
+            if (Math.abs(driftMs) > MAX_CLOCK_DRIFT_MS) {
+                Log.w(TAG, "Significant clock drift detected: ${driftMs}ms " +
+                    "(local=${localTimeMs}, server=${serverTimeMs})")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "updateServerTimeDrift failed", e)
+        }
+    }
+
+    /**
+     * Get adjusted current time (corrected for known server drift).
+     * If clock drift is significant, use server-based time instead.
+     */
+    private fun getAdjustedCurrentTimeMs(): Long {
+        val now = System.currentTimeMillis()
+        try {
+            val driftMs = prefs?.getLong(KEY_SERVER_TIME_DRIFT_MS, 0L) ?: 0L
+            if (Math.abs(driftMs) > MAX_CLOCK_DRIFT_MS) {
+                // Significant drift — adjust local time to match server
+                return now - driftMs
+            }
+        } catch (_: Exception) {}
+        return now
+    }
+
+    /**
+     * Record the last time we successfully verified with server.
+     */
+    private fun recordVerification() {
+        try {
+            prefs?.edit()?.putLong(KEY_LAST_VERIFIED_AT, System.currentTimeMillis())?.apply()
+        } catch (_: Exception) {}
+    }
+
+    /**
+     * Check if clock has been tampered with too many times.
+     * If so, do not trust local trial — force server verification.
+     */
+    fun isClockTampered(): Boolean {
+        val count = try { prefs?.getInt(KEY_CLOCK_TAMPER_COUNT, 0) ?: 0 } catch (_: Exception) { 0 }
+        return count >= MAX_TAMPER_COUNT
     }
 
     private fun getPrefs(context: Context): SharedPreferences {
