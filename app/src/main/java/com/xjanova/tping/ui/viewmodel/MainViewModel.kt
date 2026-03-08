@@ -52,6 +52,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (savedPf > 0) _selectedProfileId.value = savedPf
         val savedLoop = prefs.getInt("loop_count", 1)
         _loopCount.value = savedLoop.coerceIn(1, 999)
+
+        // Validate saved IDs against actual data — clear stale selections
+        viewModelScope.launch {
+            val wfs = workflows.first { it.isNotEmpty() }
+            val currentId = _selectedWorkflowId.value
+            if (currentId != null && wfs.none { it.id == currentId }) {
+                _selectedWorkflowId.value = null
+                prefs.edit().remove("selected_workflow_id").apply()
+            }
+        }
     }
 
     // Launch status

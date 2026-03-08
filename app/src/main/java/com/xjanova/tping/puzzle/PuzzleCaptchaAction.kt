@@ -34,7 +34,7 @@ object PuzzleCaptchaAction {
      * Execute CAPTCHA solve using Forward-Only Predictive Stopping:
      *
      * 1. Screenshot → auto-detect gap region above slider
-     * 2. If no gap found → tap refresh button → retry
+     * 2. If no gap found → try blind-drag fallback OR tap refresh → retry
      * 3. Press-hold slider button → drag toward gap (fast phase, 65% of target)
      * 4. Fine-tune forward only (3px steps), screenshot each time, track edge strength
      * 5. When approaching target (edge < 60%), switch to ultra-fine (1px steps)
@@ -60,7 +60,7 @@ object PuzzleCaptchaAction {
         val config: PuzzleConfig = try {
             gson.fromJson(action.inputText, PuzzleConfig::class.java)
         } catch (e: Exception) {
-            status("❌ Config ผิดพลาด")
+            status("❌ Config ผิดพลาด: ${e.message?.take(50)}")
             Log.e(TAG, "Failed to parse PuzzleConfig: ${e.message}")
             return
         }
@@ -78,9 +78,10 @@ object PuzzleCaptchaAction {
         }
 
         status("โหลด OpenCV...")
-        if (!PuzzleSolver.ensureOpenCV()) {
-            status("❌ OpenCV โหลดไม่ได้")
-            return
+        val opencvOk = PuzzleSolver.ensureOpenCV()
+        if (!opencvOk) {
+            Log.w(TAG, "OpenCV failed — will use blind-drag mode")
+            status("⚠ OpenCV ไม่พร้อม — ใช้โหมดเลื่อนอัตโนมัติ")
         }
 
         // Scale coordinates if screen resolution changed
@@ -96,32 +97,92 @@ object PuzzleCaptchaAction {
         val refreshY = config.refreshButtonY * scaleY
         val hasRefresh = config.refreshButtonX > 0 && config.refreshButtonY > 0
 
-        Log.d(TAG, "Slider: ($sliderX, $sliderY), Refresh: ($refreshX, $refreshY), Scale: ${scaleX}x$scaleY")
+        Log.d(TAG, "Slider: ($sliderX, $sliderY), Refresh: ($refreshX, $refreshY), Scale: ${scaleX}x$scaleY, Screen: ${metrics.widthPixels}x${metrics.heightPixels}")
+
+        // Blind-drag target positions (% of screen width) — used when gap detection fails
+        val blindDragPositions = floatArrayOf(0.65f, 0.45f, 0.80f, 0.35f, 0.55f)
+        var blindDragIndex = 0
 
         for (attempt in 1..config.maxRetries) {
             status("ครั้งที่ $attempt/${config.maxRetries}: จับภาพ...")
             delay(if (attempt == 1) 1000 else config.retryDelayMs)
 
-            // Step 1: Screenshot and find gap
-            val screenshot = PuzzleScreenCapture.captureScreen()
-            if (screenshot == null) {
-                status("⚠ จับภาพไม่ได้ (ครั้งที่ $attempt)")
-                continue
+            // Step 1: Screenshot and find gap (if OpenCV available)
+            var darkRegion: android.graphics.Rect? = null
+            var initialEdgeStrength = -1
+            var initialDarkness = -1
+            var useBlindDrag = !opencvOk
+
+            if (opencvOk) {
+                val screenshot = PuzzleScreenCapture.captureScreen()
+                if (screenshot == null) {
+                    status("⚠ จับภาพไม่ได้ — ใช้เลื่อนอัตโนมัติ")
+                    Log.w(TAG, "Screenshot failed at attempt $attempt")
+                    useBlindDrag = true
+                } else {
+                    darkRegion = PuzzleSolver.findDarkRegion(screenshot, sliderY.toInt())
+                    if (darkRegion != null) {
+                        initialEdgeStrength = PuzzleSolver.measureEdgeStrength(screenshot, darkRegion)
+                        initialDarkness = PuzzleSolver.measureDarkness(screenshot, darkRegion)
+                    } else {
+                        Log.w(TAG, "Gap not found at attempt $attempt — falling back to blind drag")
+                        useBlindDrag = true
+                    }
+                    screenshot.recycle()
+                }
             }
 
-            val darkRegion = PuzzleSolver.findDarkRegion(screenshot, sliderY.toInt())
-            val initialEdgeStrength = if (darkRegion != null) {
-                PuzzleSolver.measureEdgeStrength(screenshot, darkRegion)
-            } else -1
-            val initialDarkness = if (darkRegion != null) {
-                PuzzleSolver.measureDarkness(screenshot, darkRegion)
-            } else -1
-            screenshot.recycle()
+            // === BLIND DRAG FALLBACK ===
+            // If gap detection fails, drag slider to a predefined position
+            if (useBlindDrag) {
+                val targetPercent = blindDragPositions[blindDragIndex % blindDragPositions.size]
+                blindDragIndex++
+                val targetX = metrics.widthPixels * targetPercent
+                val dragDistance = targetX - sliderX
 
-            if (darkRegion == null) {
-                status("⚠ หาช่องว่างไม่พบ")
-                if (hasRefresh) {
-                    status("🔄 กดรีเฟรช Puzzle...")
+                if (dragDistance <= 5) continue
+
+                val pct = (targetPercent * 100).toInt()
+                status("ครั้งที่ $attempt: เลื่อนไปที่ $pct%...")
+                Log.d(TAG, "Blind drag attempt $attempt: slider=$sliderX → target=$targetX ($pct%)")
+
+                // Simple single-stroke drag
+                val dragDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
+                val duration = (dragDistance / 15f * STEP_DURATION_MS).toLong().coerceIn(300, 3000)
+                service.swipeWithContinuation(
+                    sliderX, sliderY,
+                    targetX, sliderY,
+                    duration,
+                    willContinue = false,
+                    previousStroke = null
+                ) { stroke -> dragDone.complete(stroke) }
+
+                val result = withTimeoutOrNull(5000) { dragDone.await() }
+                if (result == null) {
+                    status("⚠ เลื่อนไม่สำเร็จ (gesture cancelled)")
+                    Log.w(TAG, "Blind drag gesture cancelled/timed out")
+                    continue
+                }
+
+                // Wait and verify
+                status("ครั้งที่ $attempt: ตรวจสอบผล...")
+                delay(2000)
+
+                if (opencvOk) {
+                    val verifyScreenshot = PuzzleScreenCapture.captureScreen()
+                    if (verifyScreenshot != null) {
+                        val verifyDark = PuzzleSolver.findDarkRegion(verifyScreenshot, sliderY.toInt())
+                        verifyScreenshot.recycle()
+                        if (verifyDark == null) {
+                            status("✓ แก้ Captcha สำเร็จ")
+                            return
+                        }
+                    }
+                }
+
+                // Refresh and try next position
+                if (hasRefresh && attempt < config.maxRetries) {
+                    status("🔄 กดรีเฟรช...")
                     val tapDone = CompletableDeferred<Unit>()
                     service.tapAtCoordinates(refreshX, refreshY) { tapDone.complete(Unit) }
                     withTimeoutOrNull(3000) { tapDone.await() }
@@ -130,12 +191,13 @@ object PuzzleCaptchaAction {
                 continue
             }
 
-            val gapCenterX = (darkRegion.left + darkRegion.right) / 2f
+            // === SMART DRAG (gap detected) ===
+            val gapCenterX = (darkRegion!!.left + darkRegion.right) / 2f
             val targetDragDistance = gapCenterX - sliderX
             Log.d(TAG, "Gap at x=${gapCenterX.toInt()}, edge=$initialEdgeStrength, darkness=$initialDarkness, dragDist=${targetDragDistance.toInt()}")
 
             if (targetDragDistance <= 5) {
-                status("⚠ ระยะเลื่อนน้อยเกินไป")
+                status("⚠ ระยะเลื่อนน้อยเกินไป (${targetDragDistance.toInt()}px)")
                 continue
             }
 
@@ -158,24 +220,21 @@ object PuzzleCaptchaAction {
 
             var currentStroke = withTimeoutOrNull(5000) { fastDone.await() }
             if (currentStroke == null) {
-                status("⚠ เลื่อนเร็วไม่สำเร็จ")
+                status("⚠ เลื่อนเร็วไม่สำเร็จ (gesture cancelled)")
+                Log.w(TAG, "Fast phase gesture cancelled/timed out")
                 continue
             }
 
             var currentX = fastEndX
 
             // Step 3: Forward-only fine phase with PREDICTIVE STOPPING
-            // - Start with 3px steps
-            // - When edge drops below 60% of initial → switch to 1px steps (ultra-fine)
-            // - Stop and release immediately when optimal position detected
-            // - NO BACKTRACKING — puzzle changes on wrong release
             status("ครั้งที่ $attempt: ปรับละเอียด...")
 
             var fineStepCount = 0
             var bestEdgeStrength = if (initialEdgeStrength > 0) initialEdgeStrength else Int.MAX_VALUE
-            var consecutiveRising = 0       // Count of consecutive edge-rising steps
-            var inUltraFineMode = false     // True when using 1px steps
-            var shouldRelease = false       // Set true when we should release NOW
+            var consecutiveRising = 0
+            var inUltraFineMode = false
+            var shouldRelease = false
 
             while (fineStepCount < MAX_FINE_STEPS && !shouldRelease) {
                 fineStepCount++
@@ -185,7 +244,10 @@ object PuzzleCaptchaAction {
 
                 // Screenshot to measure fit quality
                 val fineScreenshot = PuzzleScreenCapture.captureScreen()
-                if (fineScreenshot == null) break
+                if (fineScreenshot == null) {
+                    Log.w(TAG, "Fine step $fineStepCount: screenshot failed")
+                    break
+                }
 
                 val currentEdge = PuzzleSolver.measureEdgeStrength(fineScreenshot, darkRegion)
                 val currentDarkness = PuzzleSolver.measureDarkness(fineScreenshot, darkRegion)
@@ -218,19 +280,13 @@ object PuzzleCaptchaAction {
                 // === Track edge trend ===
                 if (currentEdge >= 0) {
                     if (currentEdge < bestEdgeStrength) {
-                        // Still improving — new best
                         bestEdgeStrength = currentEdge
                         consecutiveRising = 0
                     } else {
-                        // Edge increased = moving past optimal
                         consecutiveRising++
                     }
 
                     // === Check 3: Edge was good and now rising → release NOW ===
-                    // We already passed the best position, but since we can't go back,
-                    // release immediately if:
-                    // - Best edge was reasonably good (< 45% of initial)
-                    // - Edge has been rising for 2+ steps
                     if (consecutiveRising >= RISING_STEPS_TO_STOP &&
                         initialEdgeStrength > 0 &&
                         bestEdgeStrength < initialEdgeStrength * EDGE_GOOD_ENOUGH_RATIO
@@ -252,8 +308,7 @@ object PuzzleCaptchaAction {
                         inUltraFineMode = true
                     }
 
-                    // === Check 5: Safety — edge rising a lot (5+ steps), even if best wasn't great ===
-                    // This catches cases where initial measurement was noisy
+                    // === Check 5: Safety — edge rising a lot (5+ steps) ===
                     if (consecutiveRising >= 5) {
                         Log.d(
                             TAG,
@@ -288,12 +343,11 @@ object PuzzleCaptchaAction {
             }
 
             // Step 4: Release finger at current position (willContinue = false)
-            // NO BACKTRACKING — release exactly where we are
             status("ครั้งที่ $attempt: ปล่อยนิ้ว...")
             val releaseDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
             service.swipeWithContinuation(
                 currentX, sliderY,
-                currentX, sliderY,  // Stay at same position
+                currentX, sliderY,
                 50,
                 willContinue = false,
                 previousStroke = currentStroke
@@ -311,12 +365,10 @@ object PuzzleCaptchaAction {
                 verifyScreenshot.recycle()
 
                 if (verifyDark == null) {
-                    // No dark region found → CAPTCHA solved!
                     status("✓ แก้ Captcha สำเร็จ")
                     return
                 }
 
-                // Dark region still present
                 if (attempt < config.maxRetries) {
                     status("⚠ ยังไม่ผ่าน ลองใหม่...")
                     if (hasRefresh) {

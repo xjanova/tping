@@ -6,6 +6,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -915,7 +916,7 @@ fun QuickPlaySection(
     if (showWorkflowDialog) {
         AlertDialog(
             onDismissRequest = { showWorkflowDialog = false },
-            title = { Text("เลือก Workflow", fontWeight = FontWeight.Bold) },
+            title = { Text("เลือก Workflow แล้วเล่นเลย", fontWeight = FontWeight.Bold) },
             text = {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     workflows.forEach { wf ->
@@ -927,11 +928,24 @@ fun QuickPlaySection(
                                 .clickable {
                                     viewModel.selectWorkflow(wf.id)
                                     showWorkflowDialog = false
+                                    // Auto-start playback on selection
+                                    if (TpingAccessibilityService.instance != null) {
+                                        try {
+                                            context.startForegroundService(
+                                                Intent(context, FloatingOverlayService::class.java)
+                                                    .putExtra("mode", "playing")
+                                            )
+                                        } catch (_: Exception) { }
+                                        viewModel.startPlayback()
+                                    } else {
+                                        Toast.makeText(context, "⚠ กรุณาเปิด Accessibility Service ก่อน", Toast.LENGTH_SHORT).show()
+                                        context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+                                    }
                                 }
                                 .padding(vertical = 10.dp, horizontal = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Icon(Icons.Default.AccountTree, null, tint = Color(0xFF22C55E), modifier = Modifier.size(18.dp))
+                            Icon(Icons.Default.PlayArrow, null, tint = Color(0xFF22C55E), modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(wf.name, fontWeight = FontWeight.Medium, fontSize = 14.sp)
