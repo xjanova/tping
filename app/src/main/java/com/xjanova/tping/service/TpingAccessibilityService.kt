@@ -525,13 +525,17 @@ class TpingAccessibilityService : AccessibilityService() {
             .addStroke(stroke)
             .build()
 
-        dispatchGesture(gesture, object : GestureResultCallback() {
+        val dispatched = dispatchGesture(gesture, object : GestureResultCallback() {
             override fun onCompleted(g: GestureDescription?) { callback(stroke) }
             override fun onCancelled(g: GestureDescription?) {
                 Log.w(TAG, "swipeWithContinuation cancelled")
                 callback(null)
             }
         }, null)
+        if (!dispatched) {
+            Log.e(TAG, "swipeWithContinuation: dispatchGesture returned FALSE!")
+            callback(null)
+        }
     }
 
     /** Tap at specific screen coordinates (for pressing refresh button etc.) */

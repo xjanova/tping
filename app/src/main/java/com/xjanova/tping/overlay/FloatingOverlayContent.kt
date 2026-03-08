@@ -1013,53 +1013,67 @@ fun CrosshairOverlay(
                 }
             }
     ) {
-        // Top bar with controls
-        Row(
+        // Top bar with controls — full-width info
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(Color(0xDD000000))
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .padding(horizontal = 16.dp, vertical = 10.dp)
         ) {
-            // Cancel button
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(Color(0xFF444444))
-                    .clickable(onClick = onCancel)
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            // Row 1: Cancel + Confirm buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text("ยกเลิก", color = Color.White, fontSize = 13.sp)
+                // Cancel button
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color(0xFF444444))
+                        .clickable(onClick = onCancel)
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Text("ยกเลิก", color = Color.White, fontSize = 13.sp)
+                }
+
+                // Confirm button
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(GameColor)
+                        .clickable {
+                            onConfirm(crosshairX.roundToInt(), crosshairY.roundToInt())
+                        }
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                ) {
+                    Text("ยืนยัน ✓", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                }
             }
 
-            // Coordinate display
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(
-                    actionLabel,
-                    color = GameColor,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
-                Text(
-                    "(${crosshairX.roundToInt()}, ${crosshairY.roundToInt()})",
-                    color = Color(0xFFCCCCCC),
-                    fontSize = 12.sp
-                )
-            }
+            Spacer(modifier = Modifier.height(8.dp))
 
-            // Confirm button
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(GameColor)
-                    .clickable {
-                        onConfirm(crosshairX.roundToInt(), crosshairY.roundToInt())
-                    }
-                    .padding(horizontal = 14.dp, vertical = 8.dp)
-            ) {
-                Text("ยืนยัน ✓", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-            }
+            // Row 2: Action label — full width
+            Text(
+                actionLabel,
+                color = GameColor,
+                fontWeight = FontWeight.Bold,
+                fontSize = 16.sp,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Row 3: Coordinate display — full width, bigger font
+            Text(
+                "X: ${crosshairX.roundToInt()}   Y: ${crosshairY.roundToInt()}",
+                color = Color.White,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center
+            )
         }
 
         // Crosshair lines and circle
