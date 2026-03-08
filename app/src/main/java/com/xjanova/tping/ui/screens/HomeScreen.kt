@@ -980,6 +980,8 @@ fun QuickPlaySection(
                                     showWorkflowDialog = false
                                     // Auto-start playback on selection
                                     if (TpingAccessibilityService.instance != null) {
+                                        // Bridge ViewModel's engine to overlay so it can observe state
+                                        FloatingOverlayService.playbackEngine = viewModel.playbackEngine
                                         try {
                                             context.startForegroundService(
                                                 Intent(context, FloatingOverlayService::class.java)

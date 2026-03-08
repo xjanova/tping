@@ -17,35 +17,20 @@ object PuzzleCaptchaAction {
     private val gson = Gson()
 
     // Sliding parameters
-    private const val FAST_STEP_PX = 20f        // Fast phase: move 20px per step
-    private const val FINE_STEP_PX = 3f          // Normal fine phase: 3px per step
-    private const val ULTRA_FINE_STEP_PX = 1f    // Ultra-fine: 1px per step (when close to target)
-    private const val STEP_DURATION_MS = 80L     // Duration per micro-step
-    private const val DARKNESS_NEAR_ZERO = 50    // If dark pixels < this, gap is "filled"
-    private const val MAX_FINE_STEPS = 80        // Max fine-tuning steps total
-    private const val FAST_PHASE_RATIO = 0.65f   // Fast phase covers 65% of target (conservative)
+    private const val FAST_STEP_PX = 20f
+    private const val FINE_STEP_PX = 3f
+    private const val ULTRA_FINE_STEP_PX = 1f
+    private const val STEP_DURATION_MS = 80L
+    private const val DARKNESS_NEAR_ZERO = 50
+    private const val MAX_FINE_STEPS = 80
+    private const val FAST_PHASE_RATIO = 0.65f
 
     // Edge thresholds for stop decisions
-    private const val EDGE_FILLED_RATIO = 0.30f      // Edge < 30% of initial = definitely filled
-    private const val EDGE_APPROACHING_RATIO = 0.60f  // Edge < 60% = approaching — switch to ultra-fine
-    private const val EDGE_GOOD_ENOUGH_RATIO = 0.45f  // Edge < 45% = good enough to release
-    private const val RISING_STEPS_TO_STOP = 2        // Release after edge rises 2 consecutive steps
+    private const val EDGE_FILLED_RATIO = 0.30f
+    private const val EDGE_APPROACHING_RATIO = 0.60f
+    private const val EDGE_GOOD_ENOUGH_RATIO = 0.45f
+    private const val RISING_STEPS_TO_STOP = 2
 
-    /**
-     * Execute CAPTCHA solve using Forward-Only Predictive Stopping:
-     *
-     * 1. Screenshot → auto-detect gap region above slider
-     * 2. If no gap found → try blind-drag fallback OR tap refresh → retry
-     * 3. Press-hold slider button → drag toward gap (fast phase, 65% of target)
-     * 4. Fine-tune forward only (3px steps), screenshot each time, track edge strength
-     * 5. When approaching target (edge < 60%), switch to ultra-fine (1px steps)
-     * 6. Stop and release IMMEDIATELY when:
-     *    a) Edge drops below 30% of initial (perfect match)
-     *    b) Darkness near zero (classic filled)
-     *    c) Edge was good (<45%) and starts rising for 2+ steps (just passed optimal)
-     * 7. NO BACKTRACKING — puzzle resets on wrong release, so must be accurate first pass
-     * 8. Verify CAPTCHA is solved
-     */
     suspend fun execute(
         service: TpingAccessibilityService,
         action: RecordedAction,
@@ -63,19 +48,20 @@ object PuzzleCaptchaAction {
         } catch (e: Exception) {
             status("❌ Config ผิดพลาด: ${e.message?.take(50)}")
             Log.e(TAG, "Failed to parse PuzzleConfig: ${e.message}")
-            DiagnosticReporter.logCaptcha("Config parse error", "inputText=${action.inputText.take(200)}, error=${e.message}")
+            DiagnosticReporter.logCaptcha("Config parse error", "inputText=${action.inputText?.take(200)}, error=${e.message}")
             return
         }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
             status("❌ ต้อง Android 11+")
+            DiagnosticReporter.logCaptcha("Android < 11", "SDK=${Build.VERSION.SDK_INT}")
             return
         }
 
-        // Check if this is a new-format config (has slider button)
         val isNewFormat = config.sliderButtonX > 0 && config.sliderButtonY > 0
         if (!isNewFormat) {
             status("❌ กรุณาบันทึก Captcha ใหม่ (แบบ 2 จุด)")
+            DiagnosticReporter.logCaptcha("Old format config", "sliderX=${config.sliderButtonX}, sliderY=${config.sliderButtonY}")
             return
         }
 
@@ -89,10 +75,12 @@ object PuzzleCaptchaAction {
 
         // Scale coordinates if screen resolution changed
         val metrics = service.resources.displayMetrics
+        val screenW = metrics.widthPixels
+        val screenH = metrics.heightPixels
         val scaleX = if (action.screenWidth > 0)
-            metrics.widthPixels.toFloat() / action.screenWidth else 1f
+            screenW.toFloat() / action.screenWidth else 1f
         val scaleY = if (action.screenHeight > 0)
-            metrics.heightPixels.toFloat() / action.screenHeight else 1f
+            screenH.toFloat() / action.screenHeight else 1f
 
         val sliderX = config.sliderButtonX * scaleX
         val sliderY = config.sliderButtonY * scaleY
@@ -100,15 +88,22 @@ object PuzzleCaptchaAction {
         val refreshY = config.refreshButtonY * scaleY
         val hasRefresh = config.refreshButtonX > 0 && config.refreshButtonY > 0
 
-        Log.d(TAG, "Slider: ($sliderX, $sliderY), Refresh: ($refreshX, $refreshY), Scale: ${scaleX}x$scaleY, Screen: ${metrics.widthPixels}x${metrics.heightPixels}")
+        val coordInfo = "slider=(${sliderX.toInt()},${sliderY.toInt()}), refresh=(${refreshX.toInt()},${refreshY.toInt()}), " +
+            "scale=${scaleX}x$scaleY, screen=${screenW}x$screenH, " +
+            "recorded=${action.screenWidth}x${action.screenHeight}, " +
+            "configRaw=(${config.sliderButtonX},${config.sliderButtonY})"
+        Log.d(TAG, coordInfo)
+        DiagnosticReporter.logCaptcha("Captcha start", coordInfo)
 
-        // Blind-drag target positions (% of screen width) — used when gap detection fails
-        val blindDragPositions = floatArrayOf(0.65f, 0.45f, 0.80f, 0.35f, 0.55f)
+        // Blind-drag offsets (pixels to drag RIGHT from slider position)
+        // Use absolute pixel offsets instead of screen % to avoid issues
+        // when slider is in the middle of the screen
+        val blindDragOffsets = intArrayOf(200, 350, 500, 150, 450)
         var blindDragIndex = 0
 
         for (attempt in 1..config.maxRetries) {
             status("ครั้งที่ $attempt/${config.maxRetries}: จับภาพ...")
-            delay(if (attempt == 1) 1000 else config.retryDelayMs)
+            delay(if (attempt == 1) 1500 else config.retryDelayMs)
 
             // Step 1: Screenshot and find gap (if OpenCV available)
             var darkRegion: android.graphics.Rect? = null
@@ -121,12 +116,14 @@ object PuzzleCaptchaAction {
                 if (screenshot == null) {
                     status("⚠ จับภาพไม่ได้ — ใช้เลื่อนอัตโนมัติ")
                     Log.w(TAG, "Screenshot failed at attempt $attempt")
+                    DiagnosticReporter.logCaptcha("Screenshot failed", "attempt=$attempt")
                     useBlindDrag = true
                 } else {
                     darkRegion = PuzzleSolver.findDarkRegion(screenshot, sliderY.toInt())
                     if (darkRegion != null) {
                         initialEdgeStrength = PuzzleSolver.measureEdgeStrength(screenshot, darkRegion)
                         initialDarkness = PuzzleSolver.measureDarkness(screenshot, darkRegion)
+                        Log.d(TAG, "Gap found: $darkRegion, edge=$initialEdgeStrength, darkness=$initialDarkness")
                     } else {
                         Log.w(TAG, "Gap not found at attempt $attempt — falling back to blind drag")
                         useBlindDrag = true
@@ -136,40 +133,46 @@ object PuzzleCaptchaAction {
             }
 
             // === BLIND DRAG FALLBACK ===
-            // If gap detection fails, drag slider to a predefined position
             if (useBlindDrag) {
-                val targetPercent = blindDragPositions[blindDragIndex % blindDragPositions.size]
+                val dragOffset = blindDragOffsets[blindDragIndex % blindDragOffsets.size]
                 blindDragIndex++
-                val targetX = metrics.widthPixels * targetPercent
+                val targetX = (sliderX + dragOffset).coerceAtMost(screenW - 50f)
                 val dragDistance = targetX - sliderX
 
-                if (dragDistance <= 5) continue
+                Log.d(TAG, "Blind drag attempt $attempt: sliderX=$sliderX, offset=$dragOffset, targetX=$targetX, dragDist=$dragDistance")
 
-                val pct = (targetPercent * 100).toInt()
-                status("ครั้งที่ $attempt: เลื่อนไปที่ $pct%...")
-                Log.d(TAG, "Blind drag attempt $attempt: slider=$sliderX → target=$targetX ($pct%)")
-
-                // Simple single-stroke drag
-                val dragDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
-                val duration = (dragDistance / 15f * STEP_DURATION_MS).toLong().coerceIn(300, 3000)
-                service.swipeWithContinuation(
-                    sliderX, sliderY,
-                    targetX, sliderY,
-                    duration,
-                    willContinue = false,
-                    previousStroke = null
-                ) { stroke -> dragDone.complete(stroke) }
-
-                val result = withTimeoutOrNull(5000) { dragDone.await() }
-                if (result == null) {
-                    status("⚠ เลื่อนไม่สำเร็จ (gesture cancelled)")
-                    Log.w(TAG, "Blind drag gesture cancelled/timed out")
+                if (dragDistance <= 10) {
+                    // This should never happen with offset-based approach, but log it
+                    status("⚠ ครั้งที่ $attempt: ระยะเลื่อนน้อยเกินไป (${"%.0f".format(dragDistance)}px)")
+                    DiagnosticReporter.logCaptcha("Blind drag skip", "attempt=$attempt, dist=$dragDistance, sliderX=$sliderX, targetX=$targetX")
                     continue
                 }
 
+                status("ครั้งที่ $attempt: เลื่อน ${dragOffset}px...")
+
+                // Use simple swipeGesture (most reliable, no continuation)
+                val dragDone = CompletableDeferred<Unit>()
+                val duration = (dragDistance / 10f * STEP_DURATION_MS).toLong().coerceIn(400, 3000)
+                Log.d(TAG, "Dispatching swipeGesture: ($sliderX,$sliderY) → ($targetX,$sliderY), duration=${duration}ms")
+
+                service.swipeGesture(
+                    sliderX, sliderY,
+                    targetX, sliderY,
+                    duration
+                ) { dragDone.complete(Unit) }
+
+                val completed = withTimeoutOrNull(8000) { dragDone.await() }
+                if (completed == null) {
+                    status("⚠ เลื่อนไม่สำเร็จ (timeout)")
+                    Log.w(TAG, "Blind drag gesture timed out")
+                    DiagnosticReporter.logCaptcha("Blind drag timeout", "attempt=$attempt")
+                    continue
+                }
+                Log.d(TAG, "Blind drag gesture completed for attempt $attempt")
+
                 // Wait and verify
                 status("ครั้งที่ $attempt: ตรวจสอบผล...")
-                delay(2000)
+                delay(2500)
 
                 if (opencvOk) {
                     val verifyScreenshot = PuzzleScreenCapture.captureScreen()
@@ -178,7 +181,7 @@ object PuzzleCaptchaAction {
                         verifyScreenshot.recycle()
                         if (verifyDark == null) {
                             status("✓ แก้ Captcha สำเร็จ")
-                            DiagnosticReporter.logCaptcha("Captcha solved (blind drag)", "attempt=$attempt, position=${(targetPercent*100).toInt()}%")
+                            DiagnosticReporter.logCaptcha("Captcha solved (blind drag)", "attempt=$attempt, offset=${dragOffset}px")
                             return
                         }
                     }
@@ -202,13 +205,14 @@ object PuzzleCaptchaAction {
 
             if (targetDragDistance <= 5) {
                 status("⚠ ระยะเลื่อนน้อยเกินไป (${targetDragDistance.toInt()}px)")
+                DiagnosticReporter.logCaptcha("Smart drag skip - distance too small", "dist=$targetDragDistance, gap=$gapCenterX, slider=$sliderX")
                 continue
             }
 
-            val gapPercent = ((gapCenterX / metrics.widthPixels) * 100).toInt()
+            val gapPercent = ((gapCenterX / screenW) * 100).toInt()
             status("ครั้งที่ $attempt: พบที่ ${gapPercent}% → เลื่อน...")
 
-            // Step 2: Fast phase — drag 65% of estimated distance (conservative)
+            // Step 2: Fast phase — drag 65% of estimated distance
             val fastDistance = targetDragDistance * FAST_PHASE_RATIO
             val fastEndX = sliderX + fastDistance
 
@@ -224,8 +228,9 @@ object PuzzleCaptchaAction {
 
             var currentStroke = withTimeoutOrNull(5000) { fastDone.await() }
             if (currentStroke == null) {
-                status("⚠ เลื่อนเร็วไม่สำเร็จ (gesture cancelled)")
+                status("⚠ เลื่อนเร็วไม่สำเร็จ")
                 Log.w(TAG, "Fast phase gesture cancelled/timed out")
+                DiagnosticReporter.logCaptcha("Smart drag fast phase failed", "attempt=$attempt, fastEndX=$fastEndX")
                 continue
             }
 
@@ -242,11 +247,8 @@ object PuzzleCaptchaAction {
 
             while (fineStepCount < MAX_FINE_STEPS && !shouldRelease) {
                 fineStepCount++
-
-                // Delay for UI update after sliding
                 delay(if (inUltraFineMode) 100 else 120)
 
-                // Screenshot to measure fit quality
                 val fineScreenshot = PuzzleScreenCapture.captureScreen()
                 if (fineScreenshot == null) {
                     Log.w(TAG, "Fine step $fineStepCount: screenshot failed")
@@ -258,82 +260,47 @@ object PuzzleCaptchaAction {
                 fineScreenshot.recycle()
 
                 val stepSize = if (inUltraFineMode) "1px" else "3px"
-                Log.d(
-                    TAG,
-                    "Fine step $fineStepCount ($stepSize): x=${currentX.toInt()}, " +
-                        "edge=$currentEdge/$initialEdgeStrength (best=$bestEdgeStrength), " +
-                        "darkness=$currentDarkness, rising=$consecutiveRising"
-                )
+                Log.d(TAG, "Fine step $fineStepCount ($stepSize): x=${currentX.toInt()}, edge=$currentEdge/$initialEdgeStrength (best=$bestEdgeStrength), darkness=$currentDarkness, rising=$consecutiveRising")
 
-                // === Check 1: Definite fill — edge dropped below 30% of initial ===
                 if (currentEdge >= 0 && initialEdgeStrength > 0 &&
-                    currentEdge < initialEdgeStrength * EDGE_FILLED_RATIO
-                ) {
-                    Log.d(TAG, "✓ Gap definitely filled! edge=$currentEdge < ${(initialEdgeStrength * EDGE_FILLED_RATIO).toInt()}")
-                    shouldRelease = true
-                    break
+                    currentEdge < initialEdgeStrength * EDGE_FILLED_RATIO) {
+                    Log.d(TAG, "✓ Gap definitely filled!")
+                    shouldRelease = true; break
                 }
 
-                // === Check 2: Darkness near zero (classic dark gaps) ===
                 if (currentDarkness >= 0 && currentDarkness < DARKNESS_NEAR_ZERO) {
-                    Log.d(TAG, "✓ Gap filled! darkness=$currentDarkness < $DARKNESS_NEAR_ZERO")
-                    shouldRelease = true
-                    break
+                    Log.d(TAG, "✓ Gap filled by darkness!")
+                    shouldRelease = true; break
                 }
 
-                // === Track edge trend ===
                 if (currentEdge >= 0) {
                     if (currentEdge < bestEdgeStrength) {
-                        bestEdgeStrength = currentEdge
-                        consecutiveRising = 0
+                        bestEdgeStrength = currentEdge; consecutiveRising = 0
                     } else {
                         consecutiveRising++
                     }
-
-                    // === Check 3: Edge was good and now rising → release NOW ===
                     if (consecutiveRising >= RISING_STEPS_TO_STOP &&
                         initialEdgeStrength > 0 &&
-                        bestEdgeStrength < initialEdgeStrength * EDGE_GOOD_ENOUGH_RATIO
-                    ) {
-                        Log.d(
-                            TAG,
-                            "✓ Releasing: edge rising $consecutiveRising steps, " +
-                                "best=$bestEdgeStrength (${(bestEdgeStrength * 100.0 / initialEdgeStrength).toInt()}% of initial)"
-                        )
-                        shouldRelease = true
-                        break
+                        bestEdgeStrength < initialEdgeStrength * EDGE_GOOD_ENOUGH_RATIO) {
+                        Log.d(TAG, "✓ Releasing: edge rising, best=$bestEdgeStrength")
+                        shouldRelease = true; break
                     }
-
-                    // === Check 4: Edge approaching target — switch to ultra-fine ===
                     if (!inUltraFineMode && initialEdgeStrength > 0 &&
-                        currentEdge < initialEdgeStrength * EDGE_APPROACHING_RATIO
-                    ) {
-                        Log.d(TAG, "→ Approaching target, switching to ultra-fine (1px) steps")
+                        currentEdge < initialEdgeStrength * EDGE_APPROACHING_RATIO) {
                         inUltraFineMode = true
                     }
-
-                    // === Check 5: Safety — edge rising a lot (5+ steps) ===
                     if (consecutiveRising >= 5) {
-                        Log.d(
-                            TAG,
-                            "⚠ Edge rising $consecutiveRising steps — releasing at current position " +
-                                "(best=$bestEdgeStrength, current=$currentEdge)"
-                        )
-                        shouldRelease = true
-                        break
+                        Log.d(TAG, "⚠ Edge rising too much — releasing")
+                        shouldRelease = true; break
                     }
                 }
 
-                // Continue sliding forward
                 val stepPx = if (inUltraFineMode) ULTRA_FINE_STEP_PX else FINE_STEP_PX
                 val nextX = currentX + stepPx
                 val fineDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
                 service.swipeWithContinuation(
-                    currentX, sliderY,
-                    nextX, sliderY,
-                    STEP_DURATION_MS,
-                    willContinue = true,
-                    previousStroke = currentStroke
+                    currentX, sliderY, nextX, sliderY,
+                    STEP_DURATION_MS, willContinue = true, previousStroke = currentStroke
                 ) { stroke -> fineDone.complete(stroke) }
 
                 val nextStroke = withTimeoutOrNull(3000) { fineDone.await() }
@@ -341,20 +308,16 @@ object PuzzleCaptchaAction {
                     Log.w(TAG, "Fine step $fineStepCount: continuation failed")
                     break
                 }
-
                 currentStroke = nextStroke
                 currentX = nextX
             }
 
-            // Step 4: Release finger at current position (willContinue = false)
+            // Step 4: Release finger
             status("ครั้งที่ $attempt: ปล่อยนิ้ว...")
             val releaseDone = CompletableDeferred<GestureDescription.StrokeDescription?>()
             service.swipeWithContinuation(
-                currentX, sliderY,
-                currentX, sliderY,
-                50,
-                willContinue = false,
-                previousStroke = currentStroke
+                currentX, sliderY, currentX, sliderY,
+                50, willContinue = false, previousStroke = currentStroke
             ) { stroke -> releaseDone.complete(stroke) }
             withTimeoutOrNull(3000) { releaseDone.await() }
 
@@ -362,7 +325,6 @@ object PuzzleCaptchaAction {
             status("ครั้งที่ $attempt: ตรวจสอบผล...")
             delay(2000)
 
-            // Check if CAPTCHA is still showing
             val verifyScreenshot = PuzzleScreenCapture.captureScreen()
             if (verifyScreenshot != null) {
                 val verifyDark = PuzzleSolver.findDarkRegion(verifyScreenshot, sliderY.toInt())
@@ -386,7 +348,6 @@ object PuzzleCaptchaAction {
                 }
             }
 
-            // If we can't verify or it's the last attempt, assume success
             status("✓ แก้ Captcha สำเร็จ")
             DiagnosticReporter.logCaptcha("Captcha assumed solved (unverified)", "attempt=$attempt")
             return
@@ -395,7 +356,7 @@ object PuzzleCaptchaAction {
         status("❌ แก้ไม่สำเร็จ หลัง ${config.maxRetries} ครั้ง")
         DiagnosticReporter.logCaptcha(
             "Captcha failed after ${config.maxRetries} attempts",
-            "opencv=$opencvOk, slider=(${sliderX.toInt()},${sliderY.toInt()}), screen=${metrics.widthPixels}x${metrics.heightPixels}"
+            "opencv=$opencvOk, $coordInfo"
         )
     }
 }

@@ -137,7 +137,7 @@ class PlaybackEngine {
         // SOLVE_CAPTCHA is a suspend function — wrap entire call in timeout
         if (action.actionType == ActionType.SOLVE_CAPTCHA) {
             _state.value = _state.value.copy(currentActionDesc = _state.value.currentActionDesc + " ⏳")
-            withTimeoutOrNull(30_000L) {
+            withTimeoutOrNull(90_000L) {
                 try {
                     PuzzleCaptchaAction.execute(service, action) { status ->
                         val step = _state.value.currentStep
@@ -153,7 +153,7 @@ class PlaybackEngine {
                     )
                 }
             } ?: run {
-                Log.w(TAG, "SOLVE_CAPTCHA timed out after 30s")
+                Log.w(TAG, "SOLVE_CAPTCHA timed out after 90s")
                 _state.value = _state.value.copy(
                     currentActionDesc = _state.value.currentActionDesc.replace("⏳", "⏰ หมดเวลา")
                 )
