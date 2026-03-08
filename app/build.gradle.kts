@@ -16,7 +16,7 @@ android {
 
         // === Semantic Versioning (source of truth) ===
         // Change this string to bump version. CI reads it for GitHub releases.
-        val versionStr = "1.2.25"
+        val versionStr = "1.2.26"
         val parts = versionStr.split(".")
         versionCode = parts[0].toInt() * 10000 + parts[1].toInt() * 100 + parts[2].toInt()
         versionName = versionStr
@@ -87,6 +87,16 @@ dependencies {
 
     // OpenCV for slide puzzle CAPTCHA solving
     implementation("org.opencv:opencv:4.9.0")
+
+    // ML Kit Barcode Scanning (QR Code scanner for license key)
+    implementation("com.google.mlkit:barcode-scanning:17.3.0")
+
+    // CameraX for QR scanner
+    implementation("androidx.camera:camera-core:1.4.1")
+    implementation("androidx.camera:camera-camera2:1.4.1")
+    implementation("androidx.camera:camera-lifecycle:1.4.1")
+    implementation("androidx.camera:camera-view:1.4.1")
+    implementation("androidx.camera:camera-mlkit-vision:1.4.1")
 
     // Debug
     debugImplementation("androidx.compose.ui:ui-tooling")

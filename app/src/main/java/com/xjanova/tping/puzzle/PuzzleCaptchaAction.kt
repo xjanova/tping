@@ -14,19 +14,19 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Puzzle CAPTCHA solver — v1.2.25
+ * Puzzle CAPTCHA solver — v1.2.26
  *
- * Key design decisions:
- *   1. WARM-UP gesture at neutral position before solving (gesture system needs kick-start)
- *   2. Primary: single swipe with track-aware positioning
- *   3. Fallback: gradual slide using continuation chains (keeps finger down)
- *   4. OpenCV gap detection → verify after each attempt
+ * Key changes from v1.2.25:
+ *   1. PRIMARY mode = press-hold-drag (continuation chains) — simulates human finger
+ *   2. Warm-up uses tap (touch-down + release) at center screen, not micro-swipe
+ *   3. Press phase: hold finger at slider 300ms before dragging
+ *   4. Single swipe is FALLBACK (not primary)
  *
- * Why warm-up is needed:
- *   Android AccessibilityService gesture dispatch sometimes fails silently on the first gesture
- *   after a period of inactivity. A micro-swipe at a safe position "wakes up" the system.
- *   v1.2.22 had testGestureDispatch which accidentally served this purpose → worked.
- *   v1.2.24 removed it → slider stopped moving.
+ * Why press-hold-drag:
+ *   Many slider implementations require ACTION_DOWN to "grab" the handle first,
+ *   then ACTION_MOVE to drag. A single Path swipe may not properly "grab" the slider
+ *   handle. By using continuation chains with an initial hold phase, we ensure the
+ *   slider registers the touch before the drag begins.
  */
 object PuzzleCaptchaAction {
 
@@ -104,32 +104,31 @@ object PuzzleCaptchaAction {
         DiagnosticReporter.logCaptcha("Captcha start", info)
 
         // ============================================================
-        // === WARM-UP GESTURE ===
-        // Micro-swipe at a neutral position to wake up the gesture system.
-        // Position: top-center of screen (status bar area) — safe, no UI interaction.
+        // === WARM-UP: Tap at screen center to wake gesture system ===
         // ============================================================
         status("ตรวจสอบระบบ gesture...")
-        var warmupOk = doWarmup(service, screenW)
+        var warmupOk = doWarmupTap(service, screenW, screenH)
         if (!warmupOk) {
-            DiagnosticReporter.logCaptcha("Warmup 1 failed", "retrying...")
+            DiagnosticReporter.logCaptcha("Warmup tap 1 failed", "retrying with swipe...")
             delay(500)
-            warmupOk = doWarmup(service, screenW)
+            // Retry with swipe warm-up
+            warmupOk = doWarmupSwipe(service, screenW, screenH)
             if (!warmupOk) {
                 status("❌ ระบบ gesture ไม่พร้อม! ลอง ปิด/เปิด Accessibility Service")
-                DiagnosticReporter.logCaptcha("CRITICAL: warmup failed", "both attempts failed")
+                DiagnosticReporter.logCaptcha("CRITICAL: warmup failed", "both tap+swipe failed")
                 autoSendDiagnostics()
                 return
             }
         }
         status("✓ ระบบ gesture พร้อม")
-        delay(500)
+        delay(600)
 
-        // === Blind-drag offsets (when OpenCV can't find gap) ===
+        // === Blind-drag offsets ===
         val blindPercentages = floatArrayOf(0.30f, 0.50f, 0.70f, 0.20f, 0.60f, 0.40f, 0.80f)
         val blindFixedOffsets = intArrayOf(200, 350, 500, 150, 450, 300, 550)
         var blindIndex = 0
         var consecutiveGestureFailures = 0
-        var useGradualMode = false
+        var useSingleSwipeMode = false  // Start with press-hold-drag, fallback to single swipe
 
         // ============================================================
         // === MAIN SOLVING LOOP ===
@@ -169,7 +168,6 @@ object PuzzleCaptchaAction {
                         targetX = result.first
                         dragMode = result.second
                         blindIndex++
-                        status("ครั้งที่ $attempt: เลื่อน ${(targetX - sliderX).toInt()}px ($dragMode)")
                     }
                 } else {
                     val result = getBlindTarget(
@@ -179,7 +177,6 @@ object PuzzleCaptchaAction {
                     targetX = result.first
                     dragMode = result.second
                     blindIndex++
-                    status("ครั้งที่ $attempt: เลื่อน ${(targetX - sliderX).toInt()}px ($dragMode)")
                 }
             } else {
                 val result = getBlindTarget(
@@ -189,7 +186,6 @@ object PuzzleCaptchaAction {
                 targetX = result.first
                 dragMode = result.second
                 blindIndex++
-                status("ครั้งที่ $attempt: เลื่อน ${(targetX - sliderX).toInt()}px ($dragMode)")
             }
 
             val dragDist = targetX - sliderX
@@ -204,13 +200,13 @@ object PuzzleCaptchaAction {
 
             // === Execute swipe ===
             val duration = (dragDist * 2.5f).toLong().coerceIn(600, 2500)
-            val swipeMode = if (useGradualMode) "gradual" else "single"
+            val swipeMode = if (useSingleSwipeMode) "single" else "press-hold-drag"
             status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode+$swipeMode, ${dragDist.toInt()}px)...")
 
-            val swipeResult: String = if (useGradualMode) {
-                doGradualSwipe(service, sliderX, sliderY, targetX, sliderY, duration)
-            } else {
+            val swipeResult: String = if (useSingleSwipeMode) {
                 doSwipe(service, sliderX, sliderY, targetX, sliderY, duration)
+            } else {
+                doPressHoldDrag(service, sliderX, sliderY, targetX, sliderY, duration)
             }
 
             Log.d(
@@ -230,15 +226,14 @@ object PuzzleCaptchaAction {
                 status("⚠ gesture: $swipeResult (fail #$consecutiveGestureFailures)")
                 DiagnosticReporter.logCaptcha(
                     "Swipe failed",
-                    "result=$swipeResult, consecutiveFails=$consecutiveGestureFailures, gradual=$useGradualMode"
+                    "result=$swipeResult, consecutiveFails=$consecutiveGestureFailures, single=$useSingleSwipeMode"
                 )
 
-                // After 2 single-swipe failures → switch to gradual mode
-                if (!useGradualMode && consecutiveGestureFailures >= 2) {
-                    status("🔄 เปลี่ยนเป็นโหมดเลื่อนทีละน้อย...")
-                    useGradualMode = true
-                    // Re-warmup before gradual mode
-                    doWarmup(service, screenW)
+                // After 2 press-hold-drag failures → switch to single swipe
+                if (!useSingleSwipeMode && consecutiveGestureFailures >= 2) {
+                    status("🔄 เปลี่ยนเป็นโหมด single swipe...")
+                    useSingleSwipeMode = true
+                    doWarmupTap(service, screenW, screenH)
                     delay(300)
                     continue
                 }
@@ -301,36 +296,122 @@ object PuzzleCaptchaAction {
         DiagnosticReporter.logCaptcha(
             "All attempts done",
             "maxRetries=${config.maxRetries}, opencv=$opencvOk, " +
-                "hasTrack=$hasTrack, gradual=$useGradualMode"
+                "hasTrack=$hasTrack, single=$useSingleSwipeMode"
         )
         autoSendDiagnostics()
     }
 
     // ============================================================
-    // === WARM-UP ===
+    // === WARM-UP: Tap ===
     // ============================================================
 
     /**
-     * Warm up the gesture dispatch system with a micro-swipe at a neutral position.
-     * Returns true if the gesture completed successfully.
+     * Warm up gesture system with a quick tap at safe position (center-bottom area).
+     * Using tap instead of swipe to be more universal across devices.
      */
-    private suspend fun doWarmup(service: TpingAccessibilityService, screenW: Int): Boolean {
-        Log.d(TAG, "Warmup: micro-swipe at top center")
+    private suspend fun doWarmupTap(
+        service: TpingAccessibilityService,
+        screenW: Int,
+        screenH: Int
+    ): Boolean {
+        val tapX = screenW / 2f
+        val tapY = screenH * 0.7f  // 70% down — safe area, below most UI
+        Log.d(TAG, "Warmup: tap at ($tapX, $tapY)")
         val result = CompletableDeferred<Boolean>()
-        // 1-pixel micro-swipe at top-center (status bar area — won't trigger any UI action)
-        service.swipeGesture(
-            screenW / 2f, 3f,
-            screenW / 2f + 1f, 3f,
-            50
-        ) { success ->
-            Log.d(TAG, "Warmup result: $success")
+        service.swipeGesture(tapX, tapY, tapX + 1f, tapY, 100) { success ->
+            Log.d(TAG, "Warmup tap result: $success")
+            result.complete(success)
+        }
+        return withTimeoutOrNull(3000) { result.await() } ?: false
+    }
+
+    /**
+     * Alternative warm-up with swipe gesture at center of screen.
+     */
+    private suspend fun doWarmupSwipe(
+        service: TpingAccessibilityService,
+        screenW: Int,
+        screenH: Int
+    ): Boolean {
+        val centerX = screenW / 2f
+        val centerY = screenH / 2f
+        Log.d(TAG, "Warmup: swipe at center ($centerX, $centerY)")
+        val result = CompletableDeferred<Boolean>()
+        service.swipeGesture(centerX, centerY, centerX + 20f, centerY, 200) { success ->
+            Log.d(TAG, "Warmup swipe result: $success")
             result.complete(success)
         }
         return withTimeoutOrNull(3000) { result.await() } ?: false
     }
 
     // ============================================================
-    // === SINGLE SWIPE ===
+    // === PRESS-HOLD-DRAG (Primary mode) ===
+    // ============================================================
+
+    /**
+     * Execute a press-hold-drag using continuation chains.
+     *
+     * Phase 1: Touch down at slider, tiny movement (2px), hold 300ms  →  willContinue=true
+     * Phase 2: Drag from slider to target, calculated duration          →  willContinue=false (release)
+     *
+     * This simulates how a human drags: press the slider handle, pause briefly,
+     * then drag to target position. Many slider implementations need this touch-down
+     * "grab" phase before accepting drag movements.
+     */
+    private suspend fun doPressHoldDrag(
+        service: TpingAccessibilityService,
+        startX: Float, startY: Float,
+        endX: Float, endY: Float,
+        totalDurationMs: Long
+    ): String {
+        val dragDist = endX - startX
+        if (dragDist < 10) return "skip"
+
+        // Phase 1: Press and hold at slider position (tiny 2px movement to register as gesture)
+        val holdDuration = 300L
+        Log.d(TAG, "PressHoldDrag: Phase 1 — press at (${startX.toInt()},${startY.toInt()}), hold ${holdDuration}ms")
+
+        val phase1Result = CompletableDeferred<GestureDescription.StrokeDescription?>()
+        service.swipeWithContinuation(
+            startX, startY,
+            startX + 2f, startY,
+            holdDuration,
+            willContinue = true,
+            previousStroke = null
+        ) { stroke -> phase1Result.complete(stroke) }
+
+        val holdStroke = withTimeoutOrNull(holdDuration + 5000) { phase1Result.await() }
+        if (holdStroke == null) {
+            Log.e(TAG, "PressHoldDrag: Phase 1 (press) failed!")
+            return "press_failed"
+        }
+        Log.d(TAG, "PressHoldDrag: Phase 1 OK — finger down on slider")
+
+        // Phase 2: Drag from current position to target
+        val dragDuration = (totalDurationMs - holdDuration).coerceAtLeast(400)
+        Log.d(TAG, "PressHoldDrag: Phase 2 — drag to (${endX.toInt()},${endY.toInt()}), dur=${dragDuration}ms")
+
+        val phase2Result = CompletableDeferred<GestureDescription.StrokeDescription?>()
+        service.swipeWithContinuation(
+            startX + 2f, startY,
+            endX, endY,
+            dragDuration,
+            willContinue = false,  // Release finger
+            previousStroke = holdStroke
+        ) { stroke -> phase2Result.complete(stroke) }
+
+        val dragStroke = withTimeoutOrNull(dragDuration + 5000) { phase2Result.await() }
+        if (dragStroke == null) {
+            Log.e(TAG, "PressHoldDrag: Phase 2 (drag) failed!")
+            return "drag_failed"
+        }
+        Log.d(TAG, "PressHoldDrag: Phase 2 OK — drag completed")
+
+        return "completed"
+    }
+
+    // ============================================================
+    // === SINGLE SWIPE (Fallback) ===
     // ============================================================
 
     /**
@@ -351,74 +432,9 @@ object PuzzleCaptchaAction {
     }
 
     // ============================================================
-    // === GRADUAL SWIPE (continuation chains) ===
-    // ============================================================
-
-    /**
-     * Execute a gradual swipe using continuation chains — finger stays pressed down
-     * between segments. More human-like and sometimes more reliable than single swipe.
-     *
-     * Breaks the total distance into small ~40px segments, each dispatched as a
-     * continuation of the previous stroke (willContinue=true), with the last segment
-     * releasing (willContinue=false).
-     */
-    private suspend fun doGradualSwipe(
-        service: TpingAccessibilityService,
-        startX: Float, startY: Float,
-        endX: Float, endY: Float,
-        totalDurationMs: Long
-    ): String {
-        val totalDist = endX - startX
-        if (totalDist < 10) return "skip"
-
-        val numSegments = (totalDist / 40f).toInt().coerceIn(3, 20)
-        val segmentDist = totalDist / numSegments
-        val segmentDuration = (totalDurationMs / numSegments).coerceAtLeast(60)
-
-        Log.d(
-            TAG,
-            "Gradual swipe: $numSegments segments, " +
-                "segDist=${segmentDist.toInt()}, segDur=$segmentDuration"
-        )
-
-        var currentX = startX
-        var previousStroke: GestureDescription.StrokeDescription? = null
-
-        for (i in 0 until numSegments) {
-            val isLast = (i == numSegments - 1)
-            val nextX = if (isLast) endX else (currentX + segmentDist)
-
-            val segResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
-            service.swipeWithContinuation(
-                currentX, startY,
-                nextX, startY,
-                segmentDuration,
-                willContinue = !isLast,
-                previousStroke = previousStroke
-            ) { stroke -> segResult.complete(stroke) }
-
-            val stroke = withTimeoutOrNull(segmentDuration + 5000) { segResult.await() }
-            if (stroke == null) {
-                Log.e(TAG, "Gradual swipe failed at segment $i/$numSegments")
-                return if (i == 0) "dispatch_failed" else "partial_$i"
-            }
-
-            previousStroke = stroke
-            currentX = nextX
-        }
-
-        return "completed"
-    }
-
-    // ============================================================
     // === BLIND TARGETS ===
     // ============================================================
 
-    /**
-     * Get blind target position based on whether we have track info.
-     * With track: use % of track width (more accurate coverage)
-     * Without track: use fixed pixel offsets
-     */
     private fun getBlindTarget(
         hasTrack: Boolean,
         trackWidth: Float,
@@ -444,7 +460,6 @@ object PuzzleCaptchaAction {
     // === DIAGNOSTICS ===
     // ============================================================
 
-    /** Auto-send diagnostics in background (fire & forget) */
     private fun autoSendDiagnostics() {
         try {
             kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {

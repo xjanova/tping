@@ -24,6 +24,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.xjanova.tping.data.license.LicenseManager
 import com.xjanova.tping.data.license.LicenseStatus
+import com.xjanova.tping.ui.components.LicenseKeyField
+import com.xjanova.tping.ui.components.QrScannerDialog
 import kotlinx.coroutines.launch
 
 @Composable
@@ -39,6 +41,20 @@ fun LicenseGateScreen(
     var errorMessage by remember { mutableStateOf("") }
     var successMessage by remember { mutableStateOf("") }
     var selectedPlan by remember { mutableStateOf("yearly") }
+    var showQrScanner by remember { mutableStateOf(false) }
+
+    // QR Scanner Dialog
+    if (showQrScanner) {
+        QrScannerDialog(
+            onDismiss = { showQrScanner = false },
+            onKeyScanned = { key ->
+                showQrScanner = false
+                licenseKeyInput = key
+                errorMessage = ""
+                successMessage = ""
+            }
+        )
+    }
 
     // Navigate when license becomes active
     LaunchedEffect(licenseState.status) {
@@ -307,30 +323,17 @@ fun LicenseGateScreen(
                 }
             }
 
-            // License key input
+            // License key input with auto-dash formatting + QR scanner
             item {
-                OutlinedTextField(
+                LicenseKeyField(
                     value = licenseKeyInput,
                     onValueChange = {
-                        licenseKeyInput = it.uppercase().take(19)
+                        licenseKeyInput = it
                         errorMessage = ""
                         successMessage = ""
                     },
-                    label = { Text("License Key", color = Color.White.copy(alpha = 0.6f)) },
-                    placeholder = { Text("XXXX-XXXX-XXXX-XXXX", color = Color.White.copy(alpha = 0.3f)) },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = Color.White,
-                        unfocusedTextColor = Color.White,
-                        focusedBorderColor = Color(0xFF8B5CF6),
-                        unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
-                        cursorColor = Color(0xFF8B5CF6)
-                    ),
-                    shape = RoundedCornerShape(12.dp),
-                    leadingIcon = {
-                        Icon(Icons.Default.Key, null, tint = Color(0xFF8B5CF6))
-                    }
+                    onScanQr = { showQrScanner = true },
+                    compact = false
                 )
             }
 

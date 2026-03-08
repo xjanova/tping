@@ -43,6 +43,8 @@ import com.xjanova.tping.data.license.LicenseStatus
 import kotlinx.coroutines.launch
 import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.service.TpingAccessibilityService
+import com.xjanova.tping.ui.components.LicenseKeyField
+import com.xjanova.tping.ui.components.QrScannerDialog
 import com.xjanova.tping.ui.viewmodel.MainViewModel
 import com.xjanova.tping.util.PermissionHelper
 
@@ -109,6 +111,20 @@ fun HomeScreen(
     var isActivating by remember { mutableStateOf(false) }
     var activateError by remember { mutableStateOf("") }
     var activateSuccess by remember { mutableStateOf("") }
+    var showQrScanner by remember { mutableStateOf(false) }
+
+    // QR Scanner Dialog
+    if (showQrScanner) {
+        QrScannerDialog(
+            onDismiss = { showQrScanner = false },
+            onKeyScanned = { key ->
+                showQrScanner = false
+                licenseKeyInput = key
+                activateError = ""
+                activateSuccess = ""
+            }
+        )
+    }
     val activateScope = rememberCoroutineScope()
 
     Scaffold(
@@ -334,18 +350,16 @@ fun HomeScreen(
                             modifier = Modifier.fillMaxWidth(),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            OutlinedTextField(
+                            LicenseKeyField(
                                 value = licenseKeyInput,
                                 onValueChange = {
-                                    licenseKeyInput = it.uppercase().take(19)
+                                    licenseKeyInput = it
                                     activateError = ""
                                     activateSuccess = ""
                                 },
-                                placeholder = { Text("XXXX-XXXX-XXXX-XXXX", fontSize = 12.sp) },
-                                singleLine = true,
+                                onScanQr = { showQrScanner = true },
                                 modifier = Modifier.weight(1f),
-                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
-                                shape = RoundedCornerShape(8.dp)
+                                compact = true
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Button(
