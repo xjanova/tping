@@ -96,25 +96,13 @@ object PuzzleCaptchaAction {
         Log.d(TAG, info)
         DiagnosticReporter.logCaptcha("Captcha start", info)
 
-        // === TEST: Verify gesture dispatch works ===
-        status("ทดสอบ gesture...")
-        val testResult = testGestureDispatch(service, sliderX, sliderY)
-        DiagnosticReporter.logCaptcha("Gesture test", "result=$testResult")
-        if (testResult == "dispatch_failed") {
-            status("❌ ระบบ gesture ไม่ทำงาน!")
-            DiagnosticReporter.logCaptcha("CRITICAL: dispatchGesture returns false", info)
-            autoSendDiagnostics()
-            return
-        }
-        status("✓ gesture ทำงาน ($testResult)")
-        delay(500)
-
         // === Blind-drag offsets (used when OpenCV can't find gap) ===
         // With track info: use % of track width for more accurate blind drags
         // Without track info: use fixed pixel offsets
         val blindPercentages = floatArrayOf(0.30f, 0.50f, 0.70f, 0.20f, 0.60f, 0.40f, 0.80f)
         val blindFixedOffsets = intArrayOf(200, 350, 500, 150, 450, 300, 550)
         var blindIndex = 0
+        var consecutiveFailures = 0
 
         for (attempt in 1..config.maxRetries) {
             status("ครั้งที่ $attempt/${config.maxRetries}")
@@ -202,16 +190,20 @@ object PuzzleCaptchaAction {
                 "result=$swipeResult, mode=$dragMode, dist=${"%.0f".format(dragDist)}, target=${targetX.toInt()}, trackW=${trackWidth.toInt()}"
             )
 
-            if (swipeResult == "dispatch_failed") {
-                status("❌ gesture dispatch ล้มเหลว!")
-                continue
-            } else if (swipeResult == "cancelled") {
-                status("⚠ gesture ถูกยกเลิก")
-                continue
-            } else if (swipeResult == "timeout") {
-                status("⚠ gesture หมดเวลา")
+            if (swipeResult != "completed") {
+                consecutiveFailures++
+                status("⚠ gesture: $swipeResult (fail #$consecutiveFailures)")
+                DiagnosticReporter.logCaptcha("Swipe failed", "result=$swipeResult, consecutiveFails=$consecutiveFailures")
+                if (consecutiveFailures >= 3) {
+                    status("❌ ระบบ gesture ไม่ทำงาน! ลอง ปิด/เปิด Accessibility Service")
+                    DiagnosticReporter.logCaptcha("CRITICAL: gesture broken", "3 consecutive failures, aborting")
+                    autoSendDiagnostics()
+                    return
+                }
+                delay(1000)
                 continue
             }
+            consecutiveFailures = 0
 
             // swipeResult == "completed"
             status("ครั้งที่ $attempt: ✓ เลื่อนแล้ว ตรวจสอบ...")
@@ -277,21 +269,6 @@ object PuzzleCaptchaAction {
             val target = (sliderX + offset).coerceAtMost(screenW - 50f)
             target to "blind(${offset}px)"
         }
-    }
-
-    /**
-     * Test that gesture dispatch works by sending a tiny tap at the slider position.
-     * Returns: "completed", "cancelled", "dispatch_failed", or "timeout"
-     */
-    private suspend fun testGestureDispatch(
-        service: TpingAccessibilityService,
-        x: Float, y: Float
-    ): String {
-        val result = CompletableDeferred<String>()
-        service.swipeGesture(x, y, x + 1f, y, 50) { success ->
-            result.complete(if (success) "completed" else "cancelled_or_failed")
-        }
-        return withTimeoutOrNull(5000) { result.await() } ?: "timeout"
     }
 
     /**
