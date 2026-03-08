@@ -7,6 +7,7 @@ import com.xjanova.tping.data.entity.RecordedAction
 enum class PuzzleRecordingStep {
     IDLE,
     SELECT_SLIDER_BUTTON,
+    SELECT_SLIDER_TRACK_END,
     SELECT_REFRESH_BUTTON,
     DONE
 }
@@ -15,6 +16,8 @@ data class PuzzleRecordingState(
     val step: PuzzleRecordingStep = PuzzleRecordingStep.IDLE,
     val sliderButtonX: Int = 0,
     val sliderButtonY: Int = 0,
+    val sliderTrackEndX: Int = 0,
+    val sliderTrackEndY: Int = 0,
     val refreshButtonX: Int = 0,
     val refreshButtonY: Int = 0
 )
@@ -25,7 +28,8 @@ object PuzzleRecordingFlow {
 
     fun getCrosshairLabel(step: PuzzleRecordingStep): String {
         return when (step) {
-            PuzzleRecordingStep.SELECT_SLIDER_BUTTON -> "กดที่ปุ่มสไลด์"
+            PuzzleRecordingStep.SELECT_SLIDER_BUTTON -> "กดที่ปุ่มสไลด์ (ซ้ายสุด)"
+            PuzzleRecordingStep.SELECT_SLIDER_TRACK_END -> "กดที่ปลายทาง slider (ขวาสุด)"
             PuzzleRecordingStep.SELECT_REFRESH_BUTTON -> "กดที่ปุ่มรีเฟรช Puzzle"
             else -> ""
         }
@@ -42,6 +46,8 @@ object PuzzleRecordingFlow {
         val config = PuzzleConfig(
             sliderButtonX = state.sliderButtonX,
             sliderButtonY = state.sliderButtonY,
+            sliderTrackEndX = state.sliderTrackEndX,
+            sliderTrackEndY = state.sliderTrackEndY,
             refreshButtonX = state.refreshButtonX,
             refreshButtonY = state.refreshButtonY
         )

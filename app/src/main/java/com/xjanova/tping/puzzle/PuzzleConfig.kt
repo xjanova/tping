@@ -13,6 +13,10 @@ data class PuzzleConfig(
     // Slider button center (screen coordinates at recording time)
     val sliderButtonX: Int = 0,
     val sliderButtonY: Int = 0,
+    // Slider track end (rightmost point the slider can reach)
+    // Used to calculate track width for accurate gap positioning
+    val sliderTrackEndX: Int = 0,
+    val sliderTrackEndY: Int = 0,
     // Refresh/reload button center (for when gap detection fails)
     val refreshButtonX: Int = 0,
     val refreshButtonY: Int = 0,
@@ -27,4 +31,10 @@ data class PuzzleConfig(
     val puzzleRight: Int = 0,
     val puzzleBottom: Int = 0,
     val sliderPaddingPx: Int = 30
-)
+) {
+    /** Track width in pixels (0 if track end not recorded — old recordings) */
+    val trackWidth: Int get() = if (sliderTrackEndX > sliderButtonX) sliderTrackEndX - sliderButtonX else 0
+
+    /** Whether this config has track end info for accurate positioning */
+    val hasTrackInfo: Boolean get() = sliderTrackEndX > 0 && sliderTrackEndY > 0
+}

@@ -13,11 +13,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Puzzle CAPTCHA solver — simple single-swipe approach.
+ * Puzzle CAPTCHA solver — track-aware single-swipe approach.
  *
- * 1. Screenshot → detect gap (OpenCV) or use blind offset
- * 2. Single swipe from slider → target
- * 3. Verify → refresh → retry
+ * With track info (v1.2.23+):
+ *   1. Screenshot → detect gap (OpenCV) → calculate gap position relative to track
+ *   2. Single accurate swipe from slider → gap center mapped to track distance
+ *   3. Verify → done in 1 attempt
+ *
+ * Without track info (legacy recordings):
+ *   1. Screenshot → detect gap or blind offsets
+ *   2. Single swipe → verify → refresh → retry
  */
 object PuzzleCaptchaAction {
 
@@ -52,7 +57,7 @@ object PuzzleCaptchaAction {
         }
 
         if (config.sliderButtonX <= 0 || config.sliderButtonY <= 0) {
-            status("❌ กรุณาบันทึก Captcha ใหม่ (แบบ 2 จุด)")
+            status("❌ กรุณาบันทึก Captcha ใหม่")
             DiagnosticReporter.logCaptcha("Bad config", "sliderX=${config.sliderButtonX}, sliderY=${config.sliderButtonY}")
             autoSendDiagnostics()
             return
@@ -76,14 +81,18 @@ object PuzzleCaptchaAction {
 
         val sliderX = config.sliderButtonX * scaleX
         val sliderY = config.sliderButtonY * scaleY
+        val trackEndX = config.sliderTrackEndX * scaleX
         val refreshX = config.refreshButtonX * scaleX
         val refreshY = config.refreshButtonY * scaleY
         val hasRefresh = config.refreshButtonX > 0 && config.refreshButtonY > 0
+        val hasTrack = config.hasTrackInfo
+        val trackWidth = if (hasTrack) (trackEndX - sliderX) else 0f
 
-        val info = "slider=(${sliderX.toInt()},${sliderY.toInt()}), screen=${screenW}x$screenH, " +
+        val info = "slider=(${sliderX.toInt()},${sliderY.toInt()}), " +
+            "trackEnd=${trackEndX.toInt()}, trackW=${trackWidth.toInt()}, " +
+            "screen=${screenW}x$screenH, " +
             "scale=${"%.2f".format(scaleX)}x${"%.2f".format(scaleY)}, " +
-            "raw=(${config.sliderButtonX},${config.sliderButtonY}), " +
-            "recorded=${action.screenWidth}x${action.screenHeight}"
+            "hasTrack=$hasTrack, recorded=${action.screenWidth}x${action.screenHeight}"
         Log.d(TAG, info)
         DiagnosticReporter.logCaptcha("Captcha start", info)
 
@@ -100,8 +109,11 @@ object PuzzleCaptchaAction {
         status("✓ gesture ทำงาน ($testResult)")
         delay(500)
 
-        // Blind-drag offsets
-        val blindOffsets = intArrayOf(200, 350, 500, 150, 450)
+        // === Blind-drag offsets (used when OpenCV can't find gap) ===
+        // With track info: use % of track width for more accurate blind drags
+        // Without track info: use fixed pixel offsets
+        val blindPercentages = floatArrayOf(0.30f, 0.50f, 0.70f, 0.20f, 0.60f, 0.40f, 0.80f)
+        val blindFixedOffsets = intArrayOf(200, 350, 500, 150, 450, 300, 550)
         var blindIndex = 0
 
         for (attempt in 1..config.maxRetries) {
@@ -115,30 +127,59 @@ object PuzzleCaptchaAction {
             if (opencvOk) {
                 val screenshot = PuzzleScreenCapture.captureScreen()
                 if (screenshot != null) {
-                    val gap = PuzzleSolver.findDarkRegion(screenshot, sliderY.toInt())
+                    val gap = PuzzleSolver.findGapRegion(screenshot, sliderY.toInt())
                     screenshot.recycle()
                     if (gap != null) {
-                        targetX = (gap.left + gap.right) / 2f
-                        dragMode = "smart"
-                        val pct = ((targetX / screenW) * 100).toInt()
-                        status("ครั้งที่ $attempt: พบช่องว่างที่ $pct%")
+                        val gapCenterX = (gap.left + gap.right) / 2f
+
+                        if (hasTrack && trackWidth > 50) {
+                            // === TRACK-AWARE SMART MODE ===
+                            // The gap's screen X position maps to a slider drag distance.
+                            // The puzzle image occupies roughly the same width as the slider track.
+                            // Gap position relative to the image = drag distance on the track.
+                            //
+                            // Gap at image left edge → slider barely moves
+                            // Gap at image right edge → slider moves to track end
+                            //
+                            // We assume the puzzle image left edge aligns with slider start (sliderX)
+                            // and right edge aligns with track end (trackEndX).
+                            val dragDistance = gapCenterX - sliderX
+                            // Clamp to track bounds
+                            targetX = (sliderX + dragDistance.coerceIn(20f, trackWidth - 10f))
+                            dragMode = "smart-track"
+                            val pct = ((dragDistance / trackWidth) * 100).toInt()
+                            status("ครั้งที่ $attempt: พบช่องว่าง track=$pct%")
+                        } else {
+                            // === SMART MODE (no track info) ===
+                            targetX = gapCenterX
+                            dragMode = "smart"
+                            val pct = ((gapCenterX / screenW) * 100).toInt()
+                            status("ครั้งที่ $attempt: พบช่องว่างที่ $pct%")
+                        }
                     } else {
-                        val offset = blindOffsets[blindIndex % blindOffsets.size]; blindIndex++
-                        targetX = (sliderX + offset).coerceAtMost(screenW - 50f)
-                        dragMode = "blind(no-gap)"
-                        status("ครั้งที่ $attempt: เลื่อน ${offset}px")
+                        // Gap not found — use blind offset
+                        val result = getBlindTarget(hasTrack, trackWidth, sliderX, trackEndX, screenW, blindPercentages, blindFixedOffsets, blindIndex)
+                        targetX = result.first
+                        dragMode = result.second
+                        blindIndex++
+                        val offset = (targetX - sliderX).toInt()
+                        status("ครั้งที่ $attempt: เลื่อน ${offset}px ($dragMode)")
                     }
                 } else {
-                    val offset = blindOffsets[blindIndex % blindOffsets.size]; blindIndex++
-                    targetX = (sliderX + offset).coerceAtMost(screenW - 50f)
-                    dragMode = "blind(no-screenshot)"
-                    status("ครั้งที่ $attempt: เลื่อน ${offset}px")
+                    val result = getBlindTarget(hasTrack, trackWidth, sliderX, trackEndX, screenW, blindPercentages, blindFixedOffsets, blindIndex)
+                    targetX = result.first
+                    dragMode = result.second
+                    blindIndex++
+                    val offset = (targetX - sliderX).toInt()
+                    status("ครั้งที่ $attempt: เลื่อน ${offset}px ($dragMode)")
                 }
             } else {
-                val offset = blindOffsets[blindIndex % blindOffsets.size]; blindIndex++
-                targetX = (sliderX + offset).coerceAtMost(screenW - 50f)
-                dragMode = "blind(no-opencv)"
-                status("ครั้งที่ $attempt: เลื่อน ${offset}px")
+                val result = getBlindTarget(hasTrack, trackWidth, sliderX, trackEndX, screenW, blindPercentages, blindFixedOffsets, blindIndex)
+                targetX = result.first
+                dragMode = result.second
+                blindIndex++
+                val offset = (targetX - sliderX).toInt()
+                status("ครั้งที่ $attempt: เลื่อน ${offset}px ($dragMode)")
             }
 
             val dragDist = targetX - sliderX
@@ -149,13 +190,17 @@ object PuzzleCaptchaAction {
             }
 
             // === Execute swipe ===
-            val duration = (dragDist * 2.5f).toLong().coerceIn(600, 2000)
-            status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode)...")
+            // Slower swipe = more human-like and more accurate
+            val duration = (dragDist * 2.5f).toLong().coerceIn(600, 2500)
+            status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode, ${dragDist.toInt()}px)...")
 
             val swipeResult = doSwipe(service, sliderX, sliderY, targetX, sliderY, duration)
 
-            Log.d(TAG, "Swipe result=$swipeResult, mode=$dragMode, attempt=$attempt, dist=${"%.0f".format(dragDist)}")
-            DiagnosticReporter.logCaptcha("Swipe attempt=$attempt", "result=$swipeResult, mode=$dragMode, dist=${"%.0f".format(dragDist)}, target=${targetX.toInt()}")
+            Log.d(TAG, "Swipe result=$swipeResult, mode=$dragMode, attempt=$attempt, dist=${"%.0f".format(dragDist)}, target=${targetX.toInt()}")
+            DiagnosticReporter.logCaptcha(
+                "Swipe attempt=$attempt",
+                "result=$swipeResult, mode=$dragMode, dist=${"%.0f".format(dragDist)}, target=${targetX.toInt()}, trackW=${trackWidth.toInt()}"
+            )
 
             if (swipeResult == "dispatch_failed") {
                 status("❌ gesture dispatch ล้มเหลว!")
@@ -176,13 +221,19 @@ object PuzzleCaptchaAction {
             if (opencvOk) {
                 val verifyShot = PuzzleScreenCapture.captureScreen()
                 if (verifyShot != null) {
-                    val stillHasGap = PuzzleSolver.findDarkRegion(verifyShot, sliderY.toInt())
+                    val stillHasGap = PuzzleSolver.findGapRegion(verifyShot, sliderY.toInt())
                     verifyShot.recycle()
                     if (stillHasGap == null) {
-                        status("✓ แก้ Captcha สำเร็จ!")
+                        status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt)")
                         DiagnosticReporter.logCaptcha("Solved", "attempt=$attempt, mode=$dragMode")
                         autoSendDiagnostics()
                         return
+                    } else {
+                        val remainGapX = (stillHasGap.left + stillHasGap.right) / 2
+                        DiagnosticReporter.logCaptcha(
+                            "Not solved",
+                            "attempt=$attempt, remainGapX=$remainGapX, target=${targetX.toInt()}"
+                        )
                     }
                 }
             }
@@ -198,8 +249,34 @@ object PuzzleCaptchaAction {
         }
 
         status("⚠ ลอง ${config.maxRetries} ครั้งแล้ว")
-        DiagnosticReporter.logCaptcha("All attempts done", "maxRetries=${config.maxRetries}, opencv=$opencvOk")
+        DiagnosticReporter.logCaptcha("All attempts done", "maxRetries=${config.maxRetries}, opencv=$opencvOk, hasTrack=$hasTrack")
         autoSendDiagnostics()
+    }
+
+    /**
+     * Get blind target position based on whether we have track info.
+     * With track: use % of track width (more accurate coverage)
+     * Without track: use fixed pixel offsets
+     */
+    private fun getBlindTarget(
+        hasTrack: Boolean,
+        trackWidth: Float,
+        sliderX: Float,
+        trackEndX: Float,
+        screenW: Int,
+        percentages: FloatArray,
+        fixedOffsets: IntArray,
+        index: Int
+    ): Pair<Float, String> {
+        return if (hasTrack && trackWidth > 50) {
+            val pct = percentages[index % percentages.size]
+            val target = (sliderX + trackWidth * pct).coerceAtMost(trackEndX - 10f)
+            target to "blind-track(${(pct * 100).toInt()}%)"
+        } else {
+            val offset = fixedOffsets[index % fixedOffsets.size]
+            val target = (sliderX + offset).coerceAtMost(screenW - 50f)
+            target to "blind(${offset}px)"
+        }
     }
 
     /**

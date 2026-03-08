@@ -573,6 +573,16 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             PuzzleRecordingStep.SELECT_SLIDER_BUTTON -> {
                 puzzleRecordingState = puzzleRecordingState.copy(
                     sliderButtonX = x, sliderButtonY = y,
+                    step = PuzzleRecordingStep.SELECT_SLIDER_TRACK_END
+                )
+                _overlayState.value = _overlayState.value.copy(
+                    statusText = "กดที่ปลายทาง slider (ขวาสุด)"
+                )
+                showCrosshair(ActionType.CLICK, "puzzle")
+            }
+            PuzzleRecordingStep.SELECT_SLIDER_TRACK_END -> {
+                puzzleRecordingState = puzzleRecordingState.copy(
+                    sliderTrackEndX = x, sliderTrackEndY = y,
                     step = PuzzleRecordingStep.SELECT_REFRESH_BUTTON
                 )
                 _overlayState.value = _overlayState.value.copy(
