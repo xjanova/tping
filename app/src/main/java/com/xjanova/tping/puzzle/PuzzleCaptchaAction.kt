@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Puzzle CAPTCHA solver — v1.2.28
+ * Puzzle CAPTCHA solver — v1.2.29
  *
  * Slide strategy (3 tiers):
  *   1. PRIMARY: Tap slider handle → delay → slow swipe to target
