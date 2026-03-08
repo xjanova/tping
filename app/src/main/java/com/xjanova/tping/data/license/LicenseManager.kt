@@ -101,6 +101,31 @@ object LicenseManager {
             // Anti-clock-tampering: check if time went backward
             detectClockTampering()
 
+            // Runtime integrity check (APK signature, root, Frida, debugger)
+            val integrityResult = IntegrityChecker.runAllChecks(context)
+            if (integrityResult.hasAnyFlag) {
+                try {
+                    com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                        "integrity",
+                        "Integrity flags: ${integrityResult.details.joinToString(", ")}",
+                        "tampered=${integrityResult.isApkTampered} " +
+                                "root=${integrityResult.isRooted} " +
+                                "frida=${integrityResult.isFridaDetected} " +
+                                "debugger=${integrityResult.isDebuggerAttached}"
+                    )
+                } catch (_: Exception) {}
+            }
+            if (integrityResult.shouldBlockLicense) {
+                Log.w(TAG, "Integrity check FAILED — blocking license")
+                _state.value = LicenseState(
+                    status = LicenseStatus.EXPIRED,
+                    deviceId = displayId,
+                    isLoading = false,
+                    errorMessage = "ตรวจพบการแก้ไขแอป กรุณาดาวน์โหลดจากแหล่งที่ถูกต้อง"
+                )
+                return
+            }
+
             val licenseKey = try {
                 prefs?.getString(KEY_LICENSE_KEY, "") ?: ""
             } catch (e: Exception) {

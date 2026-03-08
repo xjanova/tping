@@ -25,6 +25,14 @@ android {
         vectorDrawables {
             useSupportLibrary = true
         }
+
+        // APK signing cert SHA-256 for runtime integrity verification.
+        // Current value: debug keystore. Update when switching to release signing.
+        buildConfigField(
+            "String",
+            "EXPECTED_SIGNING_CERT_HASH",
+            "\"d1b1e9b7e9b223b66a800d38d1ac0f401ae01c8855625f32105aa6369384a6c3\""
+        )
     }
 
     buildTypes {

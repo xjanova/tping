@@ -7,6 +7,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import com.xjanova.tping.data.license.CertPinning
 import java.util.concurrent.TimeUnit
 
 data class ApiResult(
@@ -29,6 +30,7 @@ object CloudApiClient {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(30, TimeUnit.SECONDS)
         .writeTimeout(30, TimeUnit.SECONDS)
+        .certificatePinner(CertPinning.pinner)
         .build()
 
     // ===== Auth =====

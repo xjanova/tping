@@ -25,6 +25,10 @@
 -keep class com.xjanova.tping.data.license.LicenseState { *; }
 -keepclassmembers enum com.xjanova.tping.data.license.LicenseStatus { *; }
 
+# Security — Integrity checker + certificate pinning
+-keep class com.xjanova.tping.data.license.IntegrityChecker$IntegrityResult { *; }
+-keep class com.xjanova.tping.data.license.CertPinning { *; }
+
 # Cloud API
 -keep class com.xjanova.tping.data.cloud.ApiResult { *; }
 -keep class com.xjanova.tping.data.cloud.AuthState { *; }

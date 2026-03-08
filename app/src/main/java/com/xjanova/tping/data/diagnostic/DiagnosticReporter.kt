@@ -6,6 +6,7 @@ import com.google.gson.Gson
 import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.xjanova.tping.BuildConfig
+import com.xjanova.tping.data.license.CertPinning
 import com.xjanova.tping.data.license.DeviceManager
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -37,6 +38,7 @@ object DiagnosticReporter {
         .connectTimeout(15, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(15, TimeUnit.SECONDS)
+        .certificatePinner(CertPinning.pinner)
         .build()
 
     private var appContext: Context? = null

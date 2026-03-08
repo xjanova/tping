@@ -8,6 +8,7 @@ import android.util.Log
 import com.xjanova.tping.data.cloud.CloudAuthManager
 import com.xjanova.tping.data.database.TpingDatabase
 import com.xjanova.tping.data.diagnostic.DiagnosticReporter
+import com.xjanova.tping.data.license.IntegrityChecker
 
 class TpingApplication : Application() {
 
@@ -19,6 +20,18 @@ class TpingApplication : Application() {
 
         // Initialize diagnostic reporter early
         DiagnosticReporter.initialize(this)
+
+        // Quick integrity check (debugger + Frida ports — fast, no disk I/O)
+        try {
+            val quickResult = IntegrityChecker.runQuickCheck()
+            if (quickResult.isFridaDetected || quickResult.isDebuggerAttached) {
+                Log.w("TpingApp", "Quick integrity check: ${quickResult.details}")
+                DiagnosticReporter.logEvent(
+                    "integrity_quick",
+                    "Early detection: ${quickResult.details.joinToString(", ")}"
+                )
+            }
+        } catch (_: Exception) {}
 
         // Global crash handler — save stack trace to prefs for display on next launch
         val defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
