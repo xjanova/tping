@@ -7,6 +7,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
+import com.xjanova.tping.BuildConfig
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -172,6 +173,16 @@ fun HomeScreen(
         var sendingReport by remember { mutableStateOf(false) }
         var sendResultMsg by remember { mutableStateOf<String?>(null) }
 
+        // Auto-send pending diagnostics on launch (silent, no UI)
+        LaunchedEffect(Unit) {
+            if (diagnosticCount > 0) {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    try { DiagnosticReporter.sendReport() } catch (_: Exception) { }
+                }
+                diagnosticCount = DiagnosticReporter.getPendingCount()
+            }
+        }
+
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
@@ -179,10 +190,10 @@ fun HomeScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            // === Crash Report + Diagnostics ===
+            // === Crash Report + Diagnostics (debug only) ===
             item(key = "crash_report") {
                 val scope = rememberCoroutineScope()
-                if (lastCrash != null || diagnosticCount > 0 || sendResultMsg != null) {
+                if (BuildConfig.DEBUG && (lastCrash != null || diagnosticCount > 0 || sendResultMsg != null)) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),
                         shape = RoundedCornerShape(12.dp),
