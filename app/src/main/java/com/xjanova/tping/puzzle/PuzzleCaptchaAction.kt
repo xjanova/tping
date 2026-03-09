@@ -248,8 +248,11 @@ object PuzzleCaptchaAction {
             DiagnosticReporter.logCaptcha(
                 "Swipe attempt=$attempt",
                 "result=$swipeResult, mode=$dragMode+$swipeModeName, " +
+                    "start=(${sliderX.toInt()},${swipeY.toInt()}), end=(${targetX.toInt()},${swipeY.toInt()}), " +
                     "dist=${"%.0f".format(dragDist)}, target=${targetX.toInt()}, " +
-                    "trackW=${trackWidth.toInt()}"
+                    "trackW=${trackWidth.toInt()}, yOffset=${"%.0f".format(yOffset)}, " +
+                    "dur=${(dragDist * 1.5f).toLong().coerceIn(400, 1500)}ms, " +
+                    "tier=$swipeTier, funcFails=$functionalFailures"
             )
 
             if (swipeResult != "completed") {

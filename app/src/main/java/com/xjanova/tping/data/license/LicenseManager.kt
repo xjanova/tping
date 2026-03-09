@@ -142,6 +142,21 @@ object LicenseManager {
                 Log.i(TAG, "HWID migration detected: old=${oldMachineId.take(16)}..., new=${machineId.take(16)}...")
             }
 
+            // Diagnostic: log the full initialization path
+            val initPath = when {
+                licenseKey.isNotEmpty() && hwidChanged -> "migrate-hwid"
+                licenseKey.isNotEmpty() -> "validate-paid"
+                else -> "check-machine"
+            }
+            try {
+                com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                    "license", "init path=$initPath",
+                    "hasKey=${licenseKey.isNotEmpty()}, hwidChanged=$hwidChanged, " +
+                        "oldHwid=${oldMachineId.take(16).ifEmpty { "empty" }}, " +
+                        "newHwid=${machineId.take(16)}, machineIdLen=${machineId.length}"
+                )
+            } catch (_: Exception) {}
+
             if (licenseKey.isNotEmpty()) {
                 if (hwidChanged) {
                     // HWID changed but we have a license key — re-activate to bind new HWID
@@ -187,6 +202,13 @@ object LicenseManager {
                 val expiresAtStr = data.get("expires_at")?.asString
                 val daysRemaining = data.get("days_remaining")?.asInt ?: 0
                 val expiresAt = parseIsoTimestamp(expiresAtStr)
+
+                try {
+                    com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                        "license", "validate result",
+                        "valid=$valid, type=$type, status=${result.statusCode}, msg=${result.message}"
+                    )
+                } catch (_: Exception) {}
 
                 if (valid) {
                     prefs?.edit()
@@ -272,13 +294,29 @@ object LicenseManager {
                     isLoading = false
                 )
                 Log.i(TAG, "Re-activate succeeded — HWID rebound to current device")
+                try {
+                    com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                        "license", "tryReActivate OK", "type=$type, days=$daysRemaining"
+                    )
+                } catch (_: Exception) {}
                 true
             } else {
                 Log.w(TAG, "Re-activate failed: ${result.message}")
+                try {
+                    com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                        "license", "tryReActivate FAILED",
+                        "status=${result.statusCode}, msg=${result.message}"
+                    )
+                } catch (_: Exception) {}
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "tryReActivate failed", e)
+            try {
+                com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                    "license", "tryReActivate EXCEPTION", "error=${e.message}"
+                )
+            } catch (_: Exception) {}
             false
         }
     }
@@ -322,8 +360,19 @@ object LicenseManager {
                     isLoading = false
                 )
                 Log.i(TAG, "HWID migration successful — license re-bound to new HWID")
+                try {
+                    com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                        "license", "migrateHwid OK", "type=$type, days=$daysRemaining"
+                    )
+                } catch (_: Exception) {}
             } else {
                 Log.w(TAG, "HWID migration failed: ${result.message}, falling back to validate")
+                try {
+                    com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                        "license", "migrateHwid FAILED",
+                        "status=${result.statusCode}, msg=${result.message}"
+                    )
+                } catch (_: Exception) {}
                 // Migration failed — try normal validation (server may already accept new HWID)
                 validatePaidLicense(context, licenseKey, newMachineId, displayId)
             }

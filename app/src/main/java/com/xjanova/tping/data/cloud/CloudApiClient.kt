@@ -183,12 +183,18 @@ object CloudApiClient {
     private fun executeRequest(request: Request): ApiResult {
         val response = client.newCall(request).execute()
         val responseBody = response.body?.string() ?: "{}"
+        val url = request.url.encodedPath
+        android.util.Log.d("CloudAPI", "$url → ${response.code} (${responseBody.take(200)})")
         return try {
             val json = gson.fromJson(responseBody, JsonObject::class.java)
             val success = json?.get("success")?.asBoolean ?: response.isSuccessful
             val message = json?.get("message")?.asString
+            if (!success) {
+                android.util.Log.w("CloudAPI", "$url FAILED: code=${response.code}, msg=$message, body=${responseBody.take(300)}")
+            }
             ApiResult(success, json, message)
         } catch (e: Exception) {
+            android.util.Log.e("CloudAPI", "$url parse error: ${e.message}, body=${responseBody.take(300)}")
             ApiResult(response.isSuccessful, message = responseBody)
         }
     }

@@ -121,7 +121,13 @@ object CloudAuthManager {
      */
     suspend fun deviceAuth(licenseKey: String, machineId: String): Boolean = withContext(Dispatchers.IO) {
         try {
-            android.util.Log.d("CloudAuth", "deviceAuth: key=${licenseKey.take(8)}..., machineId=${machineId.take(16)}...")
+            android.util.Log.d("CloudAuth", "deviceAuth: key=${licenseKey.take(8)}..., machineId=${machineId.take(16)}... (${machineId.length} chars)")
+            try {
+                com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                    "cloud", "deviceAuth start",
+                    "key=${licenseKey.take(8)}..., machineId=${machineId.take(16)}..., len=${machineId.length}"
+                )
+            } catch (_: Exception) {}
             val result = CloudApiClient.deviceAuth(licenseKey, machineId)
             if (result.success && result.data != null) {
                 val token = result.data.get("token")?.asString ?: ""
@@ -133,13 +139,29 @@ object CloudAuthManager {
                 saveAuth(token, userId, name, email)
                 _authState.value = AuthState(isLoggedIn = true, userId = userId, userName = name, userEmail = email)
                 android.util.Log.d("CloudAuth", "deviceAuth succeeded: userId=$userId")
+                try {
+                    com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                        "cloud", "deviceAuth OK", "userId=$userId"
+                    )
+                } catch (_: Exception) {}
                 true
             } else {
                 android.util.Log.w("CloudAuth", "deviceAuth failed: ${result.message}")
+                try {
+                    com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                        "cloud", "deviceAuth FAILED",
+                        "msg=${result.message}, data=${result.data?.toString()?.take(200)}"
+                    )
+                } catch (_: Exception) {}
                 false
             }
         } catch (e: Exception) {
             android.util.Log.e("CloudAuth", "deviceAuth exception: ${e.message}")
+            try {
+                com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                    "cloud", "deviceAuth EXCEPTION", "error=${e.message}"
+                )
+            } catch (_: Exception) {}
             false
         }
     }
