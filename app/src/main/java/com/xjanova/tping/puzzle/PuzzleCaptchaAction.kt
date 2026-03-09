@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Puzzle CAPTCHA solver — v1.2.32
+ * Puzzle CAPTCHA solver — v1.2.36
  *
  * Slide strategy (3 tiers):
  *   1. PRIMARY: Direct slow swipe from slider to target
@@ -127,29 +127,41 @@ object PuzzleCaptchaAction {
         delay(600)
 
         // ============================================================
-        // === FOCUS: Give WebView input focus via AccessibilityNodeInfo ===
+        // === FOCUS + ACTIVATION: Wake up WebView for gesture input ===
         // ============================================================
-        // Modern WebView (auto-updated) requires VIEW focus before forwarding
-        // dispatchGesture touch events to web content JavaScript.
+        // Problem: dispatchGesture touch events don't reach CAPTCHA JavaScript.
         // User confirmed: manual finger touch first → bot works after.
-        // Solution: find WebView node → ACTION_FOCUS + ACTION_CLICK to activate it.
+        // v1.2.36: Enhanced activation:
+        //   1. Search ALL windows for WebView (not just active window)
+        //   2. Log WebView details + children for diagnostics
+        //   3. Sequential activation taps, each FULLY AWAITED before next
+        //      (v1.2.35 bug: focus tap got stuck → Tier 1 CANCELLED)
         status("กำลังเปิดใช้งาน CAPTCHA...")
-        val focusResult = focusWebViewAtSlider(service, sliderX, sliderY)
-        DiagnosticReporter.logCaptcha("Focus phase done", "method=$focusResult, sliderAt=(${sliderX.toInt()},${sliderY.toInt()})")
-        if (focusResult == "none") {
-            Log.w(TAG, "Could not find WebView to focus — gesture may not work")
-        }
-        delay(800)
 
-        // Also do a tap gesture on the CAPTCHA area as backup activation
-        val captchaTapY = (sliderY - 150f).coerceAtLeast(50f)
-        val captchaTapX = sliderX + (if (trackWidth > 50) trackWidth * 0.3f else 100f)
-        val focusTap = CompletableDeferred<Boolean>()
-        service.swipeGesture(captchaTapX, captchaTapY, captchaTapX + 1f, captchaTapY, 150) { success ->
-            focusTap.complete(success)
-        }
-        withTimeoutOrNull(3000) { focusTap.await() }
-        delay(500)
+        // Step 1: Focus WebView via AccessibilityNodeInfo (search all windows)
+        val focusResult = focusWebViewAtSlider(service, sliderX, sliderY)
+        DiagnosticReporter.logCaptcha("Focus phase", "method=$focusResult, sliderAt=(${sliderX.toInt()},${sliderY.toInt()})")
+        delay(300)
+
+        // Step 2: Activation taps — wake up WebView touch handling
+        // Each tap is fully dispatched + awaited (no overlapping gestures!)
+        val activationResults = mutableListOf<String>()
+
+        // Tap 1: CAPTCHA image area (dismiss any "click to start" overlay)
+        val imgTapX = sliderX + (if (trackWidth > 50) trackWidth * 0.4f else 150f)
+        val imgTapY = (sliderY - 180f).coerceAtLeast(100f)
+        activationResults.add("img:" + doActivationTap(service, imgTapX, imgTapY, 250))
+        delay(350)
+
+        // Tap 2: Directly on slider handle (300ms press to trigger touch init)
+        activationResults.add("handle:" + doActivationTap(service, sliderX, sliderY, 300))
+        delay(350)
+
+        // Tap 3: Slightly right of handle (redundancy)
+        activationResults.add("handle2:" + doActivationTap(service, sliderX + 15f, sliderY, 200))
+        delay(300)
+
+        DiagnosticReporter.logCaptcha("Activation taps", activationResults.joinToString(", "))
         status("✓ CAPTCHA พร้อม")
 
         // === Blind-drag offsets ===
@@ -429,6 +441,40 @@ object PuzzleCaptchaAction {
     }
 
     // ============================================================
+    // === ACTIVATION TAP (for WebView wake-up) ===
+    // ============================================================
+
+    /**
+     * Dispatch a single tap gesture and WAIT for completion.
+     * Unlike the v1.2.35 approach (fire-and-forget via swipeGesture),
+     * this checks dispatchGesture return value and properly awaits
+     * the result to prevent overlapping gestures.
+     *
+     * Returns: "ok", "cancelled", "rejected" (dispatchGesture=false), or "timeout"
+     */
+    private suspend fun doActivationTap(
+        service: TpingAccessibilityService,
+        x: Float, y: Float,
+        durationMs: Long
+    ): String {
+        val path = android.graphics.Path().apply {
+            moveTo(x, y)
+            lineTo(x + 1f, y)
+        }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, durationMs))
+            .build()
+        val result = CompletableDeferred<String>()
+        val dispatched = service.dispatchGesture(gesture,
+            object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
+                override fun onCompleted(g: GestureDescription?) { result.complete("ok") }
+                override fun onCancelled(g: GestureDescription?) { result.complete("cancelled") }
+            }, null)
+        if (!dispatched) return "rejected"
+        return withTimeoutOrNull(durationMs + 3000) { result.await() } ?: "timeout"
+    }
+
+    // ============================================================
     // === TIER 2: TAP-THEN-SWIPE (Fallback) ===
     // ============================================================
 
@@ -479,12 +525,11 @@ object PuzzleCaptchaAction {
     // ============================================================
 
     /**
-     * Single continuous swipe at slow human speed with natural path.
-     * ACTION_DOWN must land exactly on the slider handle for the CAPTCHA
-     * JavaScript to start tracking the drag — never start before the handle.
+     * Single continuous swipe at slow human speed.
+     * v1.2.36: Simplified to straight-line path (complex multi-segment paths
+     * caused CANCELLED on v1.2.35). Also checks dispatchGesture return value.
      *
      * Key: duration must be long enough for CAPTCHA JS to track (>1s).
-     * Path includes slight Y jitter and initial "grip" pause to mimic human drag.
      */
     private suspend fun doSlowSwipe(
         service: TpingAccessibilityService,
@@ -492,27 +537,13 @@ object PuzzleCaptchaAction {
         endX: Float, endY: Float,
         dragDist: Float
     ): String {
-        // Slow human drag: ~4ms per pixel, 800-3000ms
-        // (1.5ms was too fast — CAPTCHA JS couldn't track the drag)
-        val duration = (dragDist * 4f).toLong().coerceIn(800, 3000)
+        // Slow human drag: ~4ms per pixel, 1000-4000ms
+        val duration = (dragDist * 4f).toLong().coerceIn(1000, 4000)
 
-        // Build human-like path: initial grip + gradual drag with Y jitter
+        // Simple straight-line path (complex paths caused CANCELLED on Vivo V2144)
         val path = android.graphics.Path().apply {
             moveTo(startX, startY)
-            // Phase 1: "grip" — tiny movements near start (~15% of path)
-            lineTo(startX + 2f, startY + 1f)
-            lineTo(startX + 5f, startY - 0.5f)
-            lineTo(startX + 8f, startY + 0.5f)
-            // Phase 2: drag to target with slight sine-wave Y jitter
-            val dragStart = startX + 8f
-            val remaining = endX - dragStart
-            val steps = 8
-            for (i in 1..steps) {
-                val t = i.toFloat() / steps
-                val x = dragStart + remaining * t
-                val yJitter = (kotlin.math.sin(t * Math.PI * 2.5) * 2.0).toFloat()
-                lineTo(x, startY + yJitter)
-            }
+            lineTo(endX, endY)
         }
         Log.d(TAG, "SlowSwipe: (${startX.toInt()},${startY.toInt()})→(${endX.toInt()},${endY.toInt()}), dur=${duration}ms, dist=${dragDist.toInt()}")
 
@@ -520,10 +551,11 @@ object PuzzleCaptchaAction {
             .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
             .build()
         val result = CompletableDeferred<String>()
-        service.dispatchGesture(gesture, object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
+        val dispatched = service.dispatchGesture(gesture, object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
             override fun onCompleted(g: GestureDescription?) { result.complete("completed") }
             override fun onCancelled(g: GestureDescription?) { result.complete("cancelled") }
         }, null)
+        if (!dispatched) return "rejected"
         return withTimeoutOrNull(duration + 5000) { result.await() } ?: "timeout"
     }
 
@@ -603,11 +635,12 @@ object PuzzleCaptchaAction {
     // ============================================================
 
     /**
-     * Find the WebView (or any view) at the slider position and give it focus.
-     * Modern Android WebView only forwards dispatchGesture touch events to
-     * JavaScript after the WebView has received VIEW focus.
+     * Find WebView in ALL windows and give it focus.
+     * v1.2.36: Searches service.windows (not just rootInActiveWindow) because
+     * the CAPTCHA WebView might be in a different window (dialog, popup, etc.).
+     * Also logs window info and WebView children for diagnostics.
      *
-     * Returns: "node-focus", "node-click", "tree-focus", or "none"
+     * Returns: "winN" (found in window N), "active-fallback", or "none"
      */
     private fun focusWebViewAtSlider(
         service: TpingAccessibilityService,
@@ -615,55 +648,76 @@ object PuzzleCaptchaAction {
         sliderY: Float
     ): String {
         try {
-            val root = service.rootInActiveWindow ?: run {
-                Log.w(TAG, "focusWebView: rootInActiveWindow is null")
-                return "none"
+            // Log all windows for diagnostics
+            val windows = try { service.windows } catch (_: Exception) { null }
+            if (windows != null) {
+                val wInfo = windows.joinToString("; ") { w ->
+                    "id=${w.id},type=${w.type},layer=${w.layer}"
+                }
+                DiagnosticReporter.logCaptcha("Windows", wInfo.take(300))
+
+                // Search ALL windows for WebView
+                for (window in windows) {
+                    val root = try { window.root } catch (_: Exception) { null } ?: continue
+                    val webView = findWebView(root)
+                    if (webView != null) {
+                        val className = webView.className?.toString() ?: ""
+                        val bounds = android.graphics.Rect()
+                        webView.getBoundsInScreen(bounds)
+                        val childCount = webView.childCount
+
+                        DiagnosticReporter.logCaptcha("WebView found",
+                            "class=$className, bounds=$bounds, children=$childCount, " +
+                                "winId=${window.id}, winType=${window.type}")
+
+                        // Try all focus methods
+                        val f1 = webView.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS)
+                        val f2 = webView.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+                        val f3 = webView.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
+
+                        DiagnosticReporter.logCaptcha("WebView focus",
+                            "FOCUS=$f1, CLICK=$f2, A11Y_FOCUS=$f3")
+
+                        // Log first-level children (DOM elements exposed to accessibility)
+                        val childInfo = StringBuilder()
+                        for (i in 0 until minOf(childCount, 8)) {
+                            val child = try { webView.getChild(i) } catch (_: Exception) { null } ?: continue
+                            val cClass = child.className?.toString()?.substringAfterLast('.') ?: ""
+                            val cBounds = android.graphics.Rect()
+                            child.getBoundsInScreen(cBounds)
+                            val cDesc = child.contentDescription?.toString()?.take(20) ?: ""
+                            childInfo.append("[$i]$cClass($cBounds)$cDesc; ")
+                            child.recycle()
+                        }
+                        if (childInfo.isNotEmpty()) {
+                            DiagnosticReporter.logCaptcha("WebView children",
+                                childInfo.toString().take(300))
+                        }
+
+                        webView.recycle()
+                        root.recycle()
+                        return "win${window.id}"
+                    }
+                    root.recycle()
+                }
             }
 
-            // Strategy 1: Find node at slider coordinates via tree traversal
-            val targetNode = findNodeAtPosition(root, sliderX.toInt(), sliderY.toInt())
-            if (targetNode != null) {
-                val className = targetNode.className?.toString() ?: ""
-                Log.d(TAG, "focusWebView: found node '$className' at slider position")
-
-                // Try ACTION_FOCUS first (gives view input focus)
-                val focused = targetNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS)
-                if (focused) {
-                    Log.d(TAG, "focusWebView: ACTION_FOCUS succeeded on '$className'")
-                    targetNode.recycle()
-                    root.recycle()
-                    return "node-focus"
-                }
-
-                // Try ACTION_CLICK (triggers View.performClick → might initialize touch handling)
-                val clicked = targetNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
-                if (clicked) {
-                    Log.d(TAG, "focusWebView: ACTION_CLICK succeeded on '$className'")
-                    targetNode.recycle()
-                    root.recycle()
-                    return "node-click"
-                }
-
-                targetNode.recycle()
-            }
-
-            // Strategy 2: Find any WebView in the tree and focus it
+            // Fallback: use rootInActiveWindow
+            val root = service.rootInActiveWindow ?: return "no-root"
             val webView = findWebView(root)
             if (webView != null) {
-                val className = webView.className?.toString() ?: ""
-                Log.d(TAG, "focusWebView: found WebView '$className' in tree")
                 webView.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS)
                 webView.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+                webView.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_ACCESSIBILITY_FOCUS)
                 webView.recycle()
                 root.recycle()
-                return "tree-focus"
+                return "active-fallback"
             }
-
             root.recycle()
             return "none"
         } catch (e: Exception) {
             Log.e(TAG, "focusWebView error: ${e.message}")
-            return "none"
+            return "error:${e.message?.take(30)}"
         }
     }
 
