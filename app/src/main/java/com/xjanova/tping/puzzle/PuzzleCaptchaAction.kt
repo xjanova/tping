@@ -127,44 +127,29 @@ object PuzzleCaptchaAction {
         delay(600)
 
         // ============================================================
-        // === FOCUS: Tap + micro-swipe on CAPTCHA area to activate WebView ===
+        // === FOCUS: Give WebView input focus via AccessibilityNodeInfo ===
         // ============================================================
-        // WebView needs a real-ish touch at the CAPTCHA area to gain input focus
-        // and initialize CAPTCHA JS event listeners. Without this, dispatchGesture
-        // events are delivered but not forwarded to the web content.
+        // Modern WebView (auto-updated) requires VIEW focus before forwarding
+        // dispatchGesture touch events to web content JavaScript.
+        // User confirmed: manual finger touch first → bot works after.
+        // Solution: find WebView node → ACTION_FOCUS + ACTION_CLICK to activate it.
         status("กำลังเปิดใช้งาน CAPTCHA...")
+        val focusResult = focusWebViewAtSlider(service, sliderX, sliderY)
+        DiagnosticReporter.logCaptcha("Focus phase done", "method=$focusResult, sliderAt=(${sliderX.toInt()},${sliderY.toInt()})")
+        if (focusResult == "none") {
+            Log.w(TAG, "Could not find WebView to focus — gesture may not work")
+        }
+        delay(800)
 
-        // Step 1: Tap on CAPTCHA image area (above slider track) to focus WebView
+        // Also do a tap gesture on the CAPTCHA area as backup activation
         val captchaTapY = (sliderY - 150f).coerceAtLeast(50f)
-        val captchaTapX = sliderX + trackWidth * 0.3f
-        Log.d(TAG, "Focus: tap CAPTCHA image at (${captchaTapX.toInt()}, ${captchaTapY.toInt()})")
+        val captchaTapX = sliderX + (if (trackWidth > 50) trackWidth * 0.3f else 100f)
         val focusTap = CompletableDeferred<Boolean>()
         service.swipeGesture(captchaTapX, captchaTapY, captchaTapX + 1f, captchaTapY, 150) { success ->
             focusTap.complete(success)
         }
         withTimeoutOrNull(3000) { focusTap.await() }
-        delay(400)
-
-        // Step 2: Micro-swipe on slider handle (5px) to trigger touchstart+touchmove+touchend
-        // This initializes the CAPTCHA's drag tracking without actually moving the slider
-        Log.d(TAG, "Focus: micro-swipe at slider (${sliderX.toInt()}, ${sliderY.toInt()})")
-        val microSwipe = CompletableDeferred<Boolean>()
-        service.swipeGesture(sliderX, sliderY, sliderX + 5f, sliderY, 300) { success ->
-            microSwipe.complete(success)
-        }
-        withTimeoutOrNull(3000) { microSwipe.await() }
-        delay(600)
-
-        // Step 3: Second micro-swipe (some CAPTCHAs need multiple touches to activate)
-        Log.d(TAG, "Focus: second micro-swipe at slider")
-        val microSwipe2 = CompletableDeferred<Boolean>()
-        service.swipeGesture(sliderX + 2f, sliderY, sliderX + 8f, sliderY, 400) { success ->
-            microSwipe2.complete(success)
-        }
-        withTimeoutOrNull(3000) { microSwipe2.await() }
         delay(500)
-
-        DiagnosticReporter.logCaptcha("Focus phase done", "tapAt=(${captchaTapX.toInt()},${captchaTapY.toInt()}), sliderAt=(${sliderX.toInt()},${sliderY.toInt()})")
         status("✓ CAPTCHA พร้อม")
 
         // === Blind-drag offsets ===
@@ -611,6 +596,121 @@ object PuzzleCaptchaAction {
             val target = (sliderX + offset).coerceAtMost(screenW - 50f)
             target to "blind(${offset}px)"
         }
+    }
+
+    // ============================================================
+    // === WEBVIEW FOCUS (Critical for modern WebView) ===
+    // ============================================================
+
+    /**
+     * Find the WebView (or any view) at the slider position and give it focus.
+     * Modern Android WebView only forwards dispatchGesture touch events to
+     * JavaScript after the WebView has received VIEW focus.
+     *
+     * Returns: "node-focus", "node-click", "tree-focus", or "none"
+     */
+    private fun focusWebViewAtSlider(
+        service: TpingAccessibilityService,
+        sliderX: Float,
+        sliderY: Float
+    ): String {
+        try {
+            val root = service.rootInActiveWindow ?: run {
+                Log.w(TAG, "focusWebView: rootInActiveWindow is null")
+                return "none"
+            }
+
+            // Strategy 1: Find node at slider coordinates via tree traversal
+            val targetNode = findNodeAtPosition(root, sliderX.toInt(), sliderY.toInt())
+            if (targetNode != null) {
+                val className = targetNode.className?.toString() ?: ""
+                Log.d(TAG, "focusWebView: found node '$className' at slider position")
+
+                // Try ACTION_FOCUS first (gives view input focus)
+                val focused = targetNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS)
+                if (focused) {
+                    Log.d(TAG, "focusWebView: ACTION_FOCUS succeeded on '$className'")
+                    targetNode.recycle()
+                    root.recycle()
+                    return "node-focus"
+                }
+
+                // Try ACTION_CLICK (triggers View.performClick → might initialize touch handling)
+                val clicked = targetNode.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+                if (clicked) {
+                    Log.d(TAG, "focusWebView: ACTION_CLICK succeeded on '$className'")
+                    targetNode.recycle()
+                    root.recycle()
+                    return "node-click"
+                }
+
+                targetNode.recycle()
+            }
+
+            // Strategy 2: Find any WebView in the tree and focus it
+            val webView = findWebView(root)
+            if (webView != null) {
+                val className = webView.className?.toString() ?: ""
+                Log.d(TAG, "focusWebView: found WebView '$className' in tree")
+                webView.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_FOCUS)
+                webView.performAction(android.view.accessibility.AccessibilityNodeInfo.ACTION_CLICK)
+                webView.recycle()
+                root.recycle()
+                return "tree-focus"
+            }
+
+            root.recycle()
+            return "none"
+        } catch (e: Exception) {
+            Log.e(TAG, "focusWebView error: ${e.message}")
+            return "none"
+        }
+    }
+
+    /**
+     * Find a node at the given screen coordinates by traversing the accessibility tree.
+     * Returns the deepest (most specific) node whose bounds contain the point.
+     */
+    private fun findNodeAtPosition(
+        node: android.view.accessibility.AccessibilityNodeInfo,
+        x: Int, y: Int
+    ): android.view.accessibility.AccessibilityNodeInfo? {
+        val bounds = android.graphics.Rect()
+        node.getBoundsInScreen(bounds)
+        if (!bounds.contains(x, y)) return null
+
+        // Check children — prefer deepest match
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val childResult = findNodeAtPosition(child, x, y)
+            if (childResult != null) return childResult
+            child.recycle()
+        }
+
+        // No child matched — this node is the deepest match
+        return android.view.accessibility.AccessibilityNodeInfo.obtain(node)
+    }
+
+    /**
+     * Find any WebView node in the accessibility tree.
+     */
+    private fun findWebView(
+        node: android.view.accessibility.AccessibilityNodeInfo
+    ): android.view.accessibility.AccessibilityNodeInfo? {
+        val className = node.className?.toString() ?: ""
+        if (className.contains("WebView", ignoreCase = true)) {
+            return android.view.accessibility.AccessibilityNodeInfo.obtain(node)
+        }
+        for (i in 0 until node.childCount) {
+            val child = node.getChild(i) ?: continue
+            val result = findWebView(child)
+            if (result != null) {
+                child.recycle()
+                return result
+            }
+            child.recycle()
+        }
+        return null
     }
 
     // ============================================================
