@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.util.Log
 import android.util.Size
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.Preview
@@ -13,6 +15,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material3.*
@@ -52,10 +55,29 @@ fun QrScannerDialog(
     var hasScanned by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf("") }
 
-    val hasCameraPermission = remember {
-        ContextCompat.checkSelfPermission(
-            context, Manifest.permission.CAMERA
-        ) == PackageManager.PERMISSION_GRANTED
+    var hasCameraPermission by remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.CAMERA
+            ) == PackageManager.PERMISSION_GRANTED
+        )
+    }
+
+    // Runtime permission request launcher
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        hasCameraPermission = isGranted
+        if (!isGranted) {
+            errorMessage = "ต้องอนุญาตใช้กล้องเพื่อสแกน QR Code"
+        }
+    }
+
+    // Auto-request permission when dialog opens
+    LaunchedEffect(Unit) {
+        if (!hasCameraPermission) {
+            permissionLauncher.launch(Manifest.permission.CAMERA)
+        }
     }
 
     Dialog(
@@ -101,7 +123,7 @@ fun QrScannerDialog(
                 Spacer(Modifier.height(12.dp))
 
                 if (!hasCameraPermission) {
-                    // No camera permission
+                    // No camera permission — show request button
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -112,18 +134,38 @@ fun QrScannerDialog(
                     ) {
                         Column(horizontalAlignment = Alignment.CenterHorizontally) {
                             Icon(
-                                Icons.Default.QrCodeScanner,
+                                Icons.Default.CameraAlt,
                                 null,
-                                tint = Color.White.copy(alpha = 0.3f),
+                                tint = Color.White.copy(alpha = 0.4f),
                                 modifier = Modifier.size(48.dp)
                             )
                             Spacer(Modifier.height(12.dp))
                             Text(
-                                "ต้องการสิทธิ์กล้อง\nเปิดสิทธิ์ในตั้งค่าแอพ",
-                                color = Color.White.copy(alpha = 0.6f),
-                                fontSize = 14.sp,
+                                "ต้องการสิทธิ์ใช้กล้อง",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 15.sp,
+                                fontWeight = FontWeight.Bold,
                                 textAlign = TextAlign.Center
                             )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "กดปุ่มด้านล่างเพื่ออนุญาต",
+                                color = Color.White.copy(alpha = 0.5f),
+                                fontSize = 13.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(Modifier.height(16.dp))
+                            Button(
+                                onClick = {
+                                    permissionLauncher.launch(Manifest.permission.CAMERA)
+                                },
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6)),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Icon(Icons.Default.CameraAlt, null, modifier = Modifier.size(18.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("อนุญาตใช้กล้อง", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 } else {

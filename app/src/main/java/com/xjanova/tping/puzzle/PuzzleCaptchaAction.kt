@@ -193,13 +193,29 @@ object PuzzleCaptchaAction {
             }
 
             val dragDist = targetX - sliderX
-            if (dragDist < 10) {
+            if (dragDist < 40) {
                 DiagnosticReporter.logCaptcha(
                     "Skip: dist=${"%.0f".format(dragDist)}",
-                    "mode=$dragMode"
+                    "mode=$dragMode, too short (<40px)"
                 )
-                status("⚠ ระยะน้อยเกินไป (${"%.0f".format(dragDist)}px)")
-                continue
+                // If OpenCV found gap too close to slider, use blind target instead
+                if (dragMode.startsWith("smart") && hasTrack && trackWidth > 50) {
+                    val result = getBlindTarget(
+                        hasTrack, trackWidth, sliderX, trackEndX, screenW,
+                        blindPercentages, blindFixedOffsets, blindIndex
+                    )
+                    targetX = result.first
+                    dragMode = result.second + "(fallback)"
+                    blindIndex++
+                    val newDist = targetX - sliderX
+                    if (newDist < 40) {
+                        status("⚠ ระยะน้อยเกินไป (${"%.0f".format(newDist)}px)")
+                        continue
+                    }
+                } else {
+                    status("⚠ ระยะน้อยเกินไป (${"%.0f".format(dragDist)}px)")
+                    continue
+                }
             }
 
             // === Execute swipe ===
@@ -237,8 +253,11 @@ object PuzzleCaptchaAction {
                     "result=$swipeResult, consecutiveFails=$consecutiveGestureFailures, tier=$swipeTier"
                 )
 
-                // Escalate to next tier after 2 consecutive failures
-                if (consecutiveGestureFailures >= 2 && swipeTier < 3) {
+                // "cancelled" = hard OS rejection → escalate IMMEDIATELY to next tier
+                // Other failures (timeout, etc.) → escalate after 2 consecutive
+                val escalateThreshold = if (swipeResult == "cancelled") 1 else 2
+
+                if (consecutiveGestureFailures >= escalateThreshold && swipeTier < 3) {
                     swipeTier++
                     consecutiveGestureFailures = 0
                     functionalFailures = 0
@@ -248,7 +267,7 @@ object PuzzleCaptchaAction {
                     continue
                 }
 
-                // After 2 failures on last tier → give up
+                // After threshold failures on last tier → give up
                 if (consecutiveGestureFailures >= 2 && swipeTier >= 3) {
                     status("❌ ระบบ gesture ไม่ทำงาน! ลอง ปิด/เปิด Accessibility Service")
                     DiagnosticReporter.logCaptcha(
@@ -425,10 +444,11 @@ object PuzzleCaptchaAction {
     // ============================================================
 
     /**
-     * Single continuous swipe with extra-long duration.
-     * The slow speed gives the slider time to register the initial touch
-     * and start tracking the drag. Most reliable for WebView-based CAPTCHAs
-     * because the finger never lifts (no touchUp until the end).
+     * Single continuous swipe with moderate duration.
+     * Starts 20px BEFORE the slider handle and sweeps through to the target.
+     * This "sweep-through" approach helps the gesture register on the slider
+     * instead of landing exactly on a WebView element that might cancel it.
+     * The finger never lifts (no touchUp until the end).
      */
     private suspend fun doSlowSwipe(
         service: TpingAccessibilityService,
@@ -436,12 +456,15 @@ object PuzzleCaptchaAction {
         endX: Float, endY: Float,
         dragDist: Float
     ): String {
-        // Very slow: ~6ms per pixel, min 2000ms, max 5000ms
-        val duration = (dragDist * 6f).toLong().coerceIn(2000, 5000)
-        Log.d(TAG, "SlowSwipe: (${startX.toInt()},${startY.toInt()})→(${endX.toInt()},${endY.toInt()}), dur=${duration}ms")
+        // Start 20px before slider to sweep through the handle
+        val sweepStartX = (startX - 20f).coerceAtLeast(10f)
+        val totalDist = endX - sweepStartX
+        // Moderate speed: ~4ms per pixel, min 1000ms, max 4000ms
+        val duration = (totalDist * 4f).toLong().coerceIn(1000, 4000)
+        Log.d(TAG, "SlowSwipe: (${sweepStartX.toInt()},${startY.toInt()})→(${endX.toInt()},${endY.toInt()}), dur=${duration}ms, totalDist=${totalDist.toInt()}")
 
         val result = CompletableDeferred<String>()
-        service.swipeGesture(startX, startY, endX, endY, duration) { success ->
+        service.swipeGesture(sweepStartX, startY, endX, endY, duration) { success ->
             result.complete(if (success) "completed" else "cancelled")
         }
         return withTimeoutOrNull(duration + 5000) { result.await() } ?: "timeout"

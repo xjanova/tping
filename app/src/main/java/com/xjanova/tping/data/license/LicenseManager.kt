@@ -82,6 +82,9 @@ object LicenseManager {
 
             val machineId = getMachineId(context)
 
+            // Read old machineId BEFORE overwriting — needed for HWID migration detection
+            val oldMachineId = try { prefs?.getString(KEY_MACHINE_ID, "") ?: "" } catch (_: Exception) { "" }
+
             try {
                 prefs?.edit()
                     ?.putString(KEY_DEVICE_ID, displayId)
@@ -134,10 +137,9 @@ object LicenseManager {
             }
 
             // HWID migration: detect if hardware hash changed (e.g. after update from ANDROID_ID to MediaDrm)
-            val oldMachineId = try { prefs?.getString(KEY_MACHINE_ID, "") ?: "" } catch (_: Exception) { "" }
             val hwidChanged = oldMachineId.isNotEmpty() && oldMachineId != machineId
             if (hwidChanged) {
-                Log.i(TAG, "HWID migration detected: old=$oldMachineId, new=$machineId")
+                Log.i(TAG, "HWID migration detected: old=${oldMachineId.take(16)}..., new=${machineId.take(16)}...")
             }
 
             if (licenseKey.isNotEmpty()) {
@@ -166,6 +168,7 @@ object LicenseManager {
 
     /**
      * Validate paid license (with offline cached fallback).
+     * If validation fails due to machine_id mismatch, auto re-activate to rebind HWID.
      */
     private suspend fun validatePaidLicense(
         context: Context,
@@ -201,23 +204,82 @@ object LicenseManager {
                         isLoading = false
                     )
                 } else {
-                    prefs?.edit()?.putString(KEY_LICENSE_STATUS, "expired")?.apply()
-                    _state.value = LicenseState(
-                        status = LicenseStatus.EXPIRED,
-                        licenseType = type,
-                        deviceId = displayId,
-                        isLoading = false,
-                        errorMessage = result.message.ifEmpty { "License หมดอายุ" }
-                    )
+                    // Validate returned is_valid=false — likely machine_id mismatch.
+                    // Try re-activating to rebind HWID (handles migration from ANDROID_ID → MediaDrm)
+                    Log.w(TAG, "Validate failed: ${result.message}, attempting re-activate...")
+                    val reActivated = tryReActivate(context, licenseKey, machineId, displayId)
+                    if (!reActivated) {
+                        prefs?.edit()?.putString(KEY_LICENSE_STATUS, "expired")?.apply()
+                        _state.value = LicenseState(
+                            status = LicenseStatus.EXPIRED,
+                            licenseType = type,
+                            deviceId = displayId,
+                            isLoading = false,
+                            errorMessage = result.message.ifEmpty { "License หมดอายุ" }
+                        )
+                    }
                 }
             } else {
-                // Server returned error — use cached state (paid license only)
-                useCachedState(displayId)
+                // Server returned error — try re-activate, then fall back to cached state
+                Log.w(TAG, "Validate request failed: ${result.message}, attempting re-activate...")
+                val reActivated = tryReActivate(context, licenseKey, machineId, displayId)
+                if (!reActivated) {
+                    useCachedState(displayId)
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "validatePaidLicense failed", e)
             // Network error — use cached state (paid license only)
             useCachedState(displayId)
+        }
+    }
+
+    /**
+     * Try to re-activate license with current machineId.
+     * Used when validate fails (possibly due to HWID migration).
+     * Returns true if re-activation succeeded.
+     */
+    private suspend fun tryReActivate(
+        context: Context,
+        licenseKey: String,
+        machineId: String,
+        displayId: String
+    ): Boolean {
+        return try {
+            val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
+            val result = withContext(Dispatchers.IO) {
+                LicenseApiClient.activateLicense(licenseKey, machineId, hardwareHash)
+            }
+            if (result.success) {
+                val data = result.data.getAsJsonObject("data") ?: result.data
+                val type = data.get("license_type")?.asString ?: "unknown"
+                val expiresAtStr = data.get("expires_at")?.asString
+                val expiresAt = parseIsoTimestamp(expiresAtStr)
+                val daysRemaining = data.get("days_remaining")?.asInt ?: 0
+
+                prefs?.edit()
+                    ?.putString(KEY_LICENSE_TYPE, type)
+                    ?.putString(KEY_LICENSE_STATUS, "active")
+                    ?.putLong(KEY_LICENSE_EXPIRES_AT, expiresAt)
+                    ?.apply()
+
+                _state.value = LicenseState(
+                    status = LicenseStatus.ACTIVE,
+                    licenseType = type,
+                    expiresAt = expiresAt,
+                    remainingDays = daysRemaining,
+                    deviceId = displayId,
+                    isLoading = false
+                )
+                Log.i(TAG, "Re-activate succeeded — HWID rebound to current device")
+                true
+            } else {
+                Log.w(TAG, "Re-activate failed: ${result.message}")
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "tryReActivate failed", e)
+            false
         }
     }
 
