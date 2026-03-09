@@ -39,6 +39,17 @@ fun CloudScreen(
 ) {
     val authState by CloudAuthManager.authState.collectAsState()
     val syncState by CloudSyncManager.syncState.collectAsState()
+    val scope = rememberCoroutineScope()
+    var isAutoAuthenticating by remember { mutableStateOf(false) }
+
+    // Auto device-auth when screen opens and license is active
+    LaunchedEffect(Unit) {
+        if (!authState.isLoggedIn && CloudSyncManager.hasActiveLicense()) {
+            isAutoAuthenticating = true
+            CloudSyncManager.ensureDeviceAuth()
+            isAutoAuthenticating = false
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -55,18 +66,105 @@ fun CloudScreen(
             )
         }
     ) { padding ->
-        if (authState.isLoggedIn) {
-            CloudDashboard(
-                modifier = Modifier.padding(padding),
-                userName = authState.userName,
-                userEmail = authState.userEmail,
-                syncState = syncState
+        when {
+            isAutoAuthenticating -> {
+                // Show loading while auto-authenticating
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        CircularProgressIndicator(color = Color(0xFF06B6D4))
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text("กำลังเชื่อมต่อ Cloud...", fontSize = 14.sp)
+                    }
+                }
+            }
+            authState.isLoggedIn -> {
+                CloudDashboard(
+                    modifier = Modifier.padding(padding),
+                    syncState = syncState
+                )
+            }
+            CloudSyncManager.hasActiveLicense() -> {
+                // License active but auth failed — show retry
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(padding),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.padding(32.dp)
+                    ) {
+                        Icon(Icons.Default.CloudOff, null, tint = Color(0xFFF59E0B), modifier = Modifier.size(48.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
+                        Text("เชื่อมต่อ Cloud ไม่สำเร็จ", fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text("ตรวจสอบการเชื่อมต่ออินเทอร์เน็ต", fontSize = 13.sp, color = Color.Gray)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    isAutoAuthenticating = true
+                                    CloudSyncManager.ensureDeviceAuth()
+                                    isAutoAuthenticating = false
+                                }
+                            },
+                            shape = RoundedCornerShape(12.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF06B6D4))
+                        ) {
+                            Text("ลองอีกครั้ง")
+                        }
+                    }
+                }
+            }
+            else -> {
+                // No active license — need to activate first
+                NoLicenseMessage(modifier = Modifier.padding(padding))
+            }
+        }
+    }
+}
+
+@Composable
+private fun NoLicenseMessage(modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier.fillMaxSize(),
+        contentAlignment = Alignment.Center
+    ) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(32.dp)
+        ) {
+            Icon(
+                Icons.Default.Cloud,
+                contentDescription = null,
+                tint = Color(0xFF06B6D4),
+                modifier = Modifier.size(64.dp)
             )
-        } else {
-            LoginRegisterForm(
-                modifier = Modifier.padding(padding),
-                isLoading = authState.isLoading,
-                errorMessage = authState.errorMessage
+            Spacer(modifier = Modifier.height(16.dp))
+            Text(
+                "Cloud Sync",
+                fontWeight = FontWeight.Bold,
+                fontSize = 20.sp
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "ซิงค์ Workflow และข้อมูลอัตโนมัติ\nเปิดใช้งานเมื่อมี License ที่ Active",
+                fontSize = 14.sp,
+                color = Color.Gray,
+                textAlign = TextAlign.Center
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(
+                "ไม่ต้องสมัครสมาชิก — ใช้ได้ทันทีเมื่อ License Active",
+                fontSize = 12.sp,
+                color = Color(0xFF06B6D4),
+                textAlign = TextAlign.Center
             )
         }
     }
@@ -274,33 +372,10 @@ private fun LoginRegisterForm(
 @Composable
 private fun CloudDashboard(
     modifier: Modifier = Modifier,
-    userName: String,
-    userEmail: String,
     syncState: com.xjanova.tping.data.cloud.SyncState
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
-    var showLogoutConfirm by remember { mutableStateOf(false) }
-
-    if (showLogoutConfirm) {
-        AlertDialog(
-            onDismissRequest = { showLogoutConfirm = false },
-            title = { Text("ออกจากระบบ") },
-            text = { Text("ต้องการออกจากระบบ Cloud Sync?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showLogoutConfirm = false
-                    CloudAuthManager.logout()
-                    Toast.makeText(context, "ออกจากระบบแล้ว", Toast.LENGTH_SHORT).show()
-                }) {
-                    Text("ออกจากระบบ", color = Color(0xFFEF4444))
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showLogoutConfirm = false }) { Text("ยกเลิก") }
-            }
-        )
-    }
 
     LazyColumn(
         modifier = modifier
@@ -308,7 +383,7 @@ private fun CloudDashboard(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // User info card
+        // Cloud connected card
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -324,27 +399,26 @@ private fun CloudDashboard(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Icon(
-                        Icons.Default.AccountCircle,
+                        Icons.Default.CloudDone,
                         contentDescription = null,
                         tint = Color(0xFF06B6D4),
                         modifier = Modifier.size(40.dp)
                     )
                     Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(userName, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                        Text("Cloud เชื่อมต่อแล้ว", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                         Text(
-                            userEmail,
+                            "ซิงค์ข้อมูลอัตโนมัติเมื่อ License Active",
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
                     }
-                    IconButton(onClick = { showLogoutConfirm = true }) {
-                        Icon(
-                            Icons.Default.Logout,
-                            contentDescription = "ออกจากระบบ",
-                            tint = Color(0xFFEF4444)
-                        )
-                    }
+                    Icon(
+                        Icons.Default.CheckCircle,
+                        contentDescription = null,
+                        tint = Color(0xFF22C55E),
+                        modifier = Modifier.size(24.dp)
+                    )
                 }
             }
         }

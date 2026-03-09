@@ -114,6 +114,32 @@ object CloudAuthManager {
         }
     }
 
+    /**
+     * Auto-authenticate using license key + machine ID.
+     * No email/password required — server creates device user automatically.
+     * Returns true if auth succeeded, false otherwise.
+     */
+    suspend fun deviceAuth(licenseKey: String, machineId: String): Boolean = withContext(Dispatchers.IO) {
+        try {
+            val result = CloudApiClient.deviceAuth(licenseKey, machineId)
+            if (result.success && result.data != null) {
+                val token = result.data.get("token")?.asString ?: ""
+                val user = result.data.getAsJsonObject("user")
+                val userId = user?.get("id")?.asLong ?: 0
+                val name = user?.get("name")?.asString ?: ""
+                val email = user?.get("email")?.asString ?: ""
+
+                saveAuth(token, userId, name, email)
+                _authState.value = AuthState(isLoggedIn = true, userId = userId, userName = name, userEmail = email)
+                true
+            } else {
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     fun logout() {
         prefs?.edit()?.clear()?.apply()
         _authState.value = AuthState()

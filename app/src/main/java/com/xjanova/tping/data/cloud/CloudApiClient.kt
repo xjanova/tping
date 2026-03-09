@@ -55,6 +55,14 @@ object CloudApiClient {
         return post("$BASE_URL/auth/register", body)
     }
 
+    fun deviceAuth(licenseKey: String, machineId: String): ApiResult {
+        val body = JsonObject().apply {
+            addProperty("license_key", licenseKey)
+            addProperty("machine_id", machineId)
+        }
+        return post("$BASE_URL/auth/device", body)
+    }
+
     fun logout(token: String): ApiResult {
         return authenticatedPost("$BASE_URL/auth/logout", JsonObject(), token)
     }

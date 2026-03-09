@@ -646,6 +646,16 @@ object LicenseManager {
 
     fun getDeviceId(): String = try { prefs?.getString(KEY_DEVICE_ID, "") ?: "" } catch (_: Exception) { "" }
 
+    fun getLicenseKey(): String? = try {
+        val key = prefs?.getString(KEY_LICENSE_KEY, "") ?: ""
+        key.ifEmpty { null }
+    } catch (_: Exception) { null }
+
+    fun getMachineId(): String? = try {
+        val id = prefs?.getString(KEY_MACHINE_ID, "") ?: ""
+        id.ifEmpty { null }
+    } catch (_: Exception) { null }
+
     // ---- Private helpers ----
 
     /**
