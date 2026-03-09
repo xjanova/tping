@@ -126,6 +126,47 @@ object PuzzleCaptchaAction {
         status("✓ ระบบ gesture พร้อม")
         delay(600)
 
+        // ============================================================
+        // === FOCUS: Tap + micro-swipe on CAPTCHA area to activate WebView ===
+        // ============================================================
+        // WebView needs a real-ish touch at the CAPTCHA area to gain input focus
+        // and initialize CAPTCHA JS event listeners. Without this, dispatchGesture
+        // events are delivered but not forwarded to the web content.
+        status("กำลังเปิดใช้งาน CAPTCHA...")
+
+        // Step 1: Tap on CAPTCHA image area (above slider track) to focus WebView
+        val captchaTapY = (sliderY - 150f).coerceAtLeast(50f)
+        val captchaTapX = sliderX + trackWidth * 0.3f
+        Log.d(TAG, "Focus: tap CAPTCHA image at (${captchaTapX.toInt()}, ${captchaTapY.toInt()})")
+        val focusTap = CompletableDeferred<Boolean>()
+        service.swipeGesture(captchaTapX, captchaTapY, captchaTapX + 1f, captchaTapY, 150) { success ->
+            focusTap.complete(success)
+        }
+        withTimeoutOrNull(3000) { focusTap.await() }
+        delay(400)
+
+        // Step 2: Micro-swipe on slider handle (5px) to trigger touchstart+touchmove+touchend
+        // This initializes the CAPTCHA's drag tracking without actually moving the slider
+        Log.d(TAG, "Focus: micro-swipe at slider (${sliderX.toInt()}, ${sliderY.toInt()})")
+        val microSwipe = CompletableDeferred<Boolean>()
+        service.swipeGesture(sliderX, sliderY, sliderX + 5f, sliderY, 300) { success ->
+            microSwipe.complete(success)
+        }
+        withTimeoutOrNull(3000) { microSwipe.await() }
+        delay(600)
+
+        // Step 3: Second micro-swipe (some CAPTCHAs need multiple touches to activate)
+        Log.d(TAG, "Focus: second micro-swipe at slider")
+        val microSwipe2 = CompletableDeferred<Boolean>()
+        service.swipeGesture(sliderX + 2f, sliderY, sliderX + 8f, sliderY, 400) { success ->
+            microSwipe2.complete(success)
+        }
+        withTimeoutOrNull(3000) { microSwipe2.await() }
+        delay(500)
+
+        DiagnosticReporter.logCaptcha("Focus phase done", "tapAt=(${captchaTapX.toInt()},${captchaTapY.toInt()}), sliderAt=(${sliderX.toInt()},${sliderY.toInt()})")
+        status("✓ CAPTCHA พร้อม")
+
         // === Blind-drag offsets ===
         val blindPercentages = floatArrayOf(0.30f, 0.50f, 0.70f, 0.20f, 0.60f, 0.40f, 0.80f)
         val blindFixedOffsets = intArrayOf(200, 350, 500, 150, 450, 300, 550)
@@ -237,7 +278,7 @@ object PuzzleCaptchaAction {
                 1 -> doSlowSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 2 -> doTapThenSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 else -> doPressHoldDrag(service, sliderX, swipeY, targetX, swipeY,
-                    (dragDist * 2f).toLong().coerceIn(600, 2000))
+                    (dragDist * 5f).toLong().coerceIn(1200, 4000))
             }
 
             Log.d(
@@ -251,7 +292,7 @@ object PuzzleCaptchaAction {
                     "start=(${sliderX.toInt()},${swipeY.toInt()}), end=(${targetX.toInt()},${swipeY.toInt()}), " +
                     "dist=${"%.0f".format(dragDist)}, target=${targetX.toInt()}, " +
                     "trackW=${trackWidth.toInt()}, yOffset=${"%.0f".format(yOffset)}, " +
-                    "dur=${(dragDist * 1.5f).toLong().coerceIn(400, 1500)}ms, " +
+                    "dur=${when(swipeTier) { 1 -> (dragDist * 4f).toLong().coerceIn(800, 3000); 2 -> (dragDist * 3.5f).toLong().coerceIn(700, 2500); else -> (dragDist * 5f).toLong().coerceIn(1200, 4000) }}ms, " +
                     "tier=$swipeTier, funcFails=$functionalFailures"
             )
 
@@ -437,8 +478,8 @@ object PuzzleCaptchaAction {
         // Step 2: Wait for handle to register
         delay(300)
 
-        // Step 3: Swipe from slider to target at natural speed
-        val swipeDuration = (dragDist * 1.5f).toLong().coerceIn(400, 1500)
+        // Step 3: Swipe from slider to target — slow enough for JS to track
+        val swipeDuration = (dragDist * 3.5f).toLong().coerceIn(700, 2500)
         Log.d(TAG, "TapThenSwipe: swipe to (${endX.toInt()},${endY.toInt()}), dur=${swipeDuration}ms")
 
         val result = CompletableDeferred<String>()
@@ -453,9 +494,12 @@ object PuzzleCaptchaAction {
     // ============================================================
 
     /**
-     * Single continuous swipe at natural human speed.
+     * Single continuous swipe at slow human speed with natural path.
      * ACTION_DOWN must land exactly on the slider handle for the CAPTCHA
      * JavaScript to start tracking the drag — never start before the handle.
+     *
+     * Key: duration must be long enough for CAPTCHA JS to track (>1s).
+     * Path includes slight Y jitter and initial "grip" pause to mimic human drag.
      */
     private suspend fun doSlowSwipe(
         service: TpingAccessibilityService,
@@ -463,14 +507,38 @@ object PuzzleCaptchaAction {
         endX: Float, endY: Float,
         dragDist: Float
     ): String {
-        // Natural human drag speed: ~1.5ms per pixel, 400-1500ms
-        val duration = (dragDist * 1.5f).toLong().coerceIn(400, 1500)
+        // Slow human drag: ~4ms per pixel, 800-3000ms
+        // (1.5ms was too fast — CAPTCHA JS couldn't track the drag)
+        val duration = (dragDist * 4f).toLong().coerceIn(800, 3000)
+
+        // Build human-like path: initial grip + gradual drag with Y jitter
+        val path = android.graphics.Path().apply {
+            moveTo(startX, startY)
+            // Phase 1: "grip" — tiny movements near start (~15% of path)
+            lineTo(startX + 2f, startY + 1f)
+            lineTo(startX + 5f, startY - 0.5f)
+            lineTo(startX + 8f, startY + 0.5f)
+            // Phase 2: drag to target with slight sine-wave Y jitter
+            val dragStart = startX + 8f
+            val remaining = endX - dragStart
+            val steps = 8
+            for (i in 1..steps) {
+                val t = i.toFloat() / steps
+                val x = dragStart + remaining * t
+                val yJitter = (kotlin.math.sin(t * Math.PI * 2.5) * 2.0).toFloat()
+                lineTo(x, startY + yJitter)
+            }
+        }
         Log.d(TAG, "SlowSwipe: (${startX.toInt()},${startY.toInt()})→(${endX.toInt()},${endY.toInt()}), dur=${duration}ms, dist=${dragDist.toInt()}")
 
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
+            .build()
         val result = CompletableDeferred<String>()
-        service.swipeGesture(startX, startY, endX, endY, duration) { success ->
-            result.complete(if (success) "completed" else "cancelled")
-        }
+        service.dispatchGesture(gesture, object : android.accessibilityservice.AccessibilityService.GestureResultCallback() {
+            override fun onCompleted(g: GestureDescription?) { result.complete("completed") }
+            override fun onCancelled(g: GestureDescription?) { result.complete("cancelled") }
+        }, null)
         return withTimeoutOrNull(duration + 5000) { result.await() } ?: "timeout"
     }
 
