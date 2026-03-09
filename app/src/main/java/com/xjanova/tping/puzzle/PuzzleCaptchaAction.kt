@@ -14,19 +14,22 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Puzzle CAPTCHA solver — v1.2.29
+ * Puzzle CAPTCHA solver — v1.2.30
  *
  * Slide strategy (3 tiers):
- *   1. PRIMARY: Tap slider handle → delay → slow swipe to target
- *      - Tap "activates" the slider handle (ACTION_DOWN + UP)
- *      - 300ms delay lets the handle register
- *      - Slow swipe (long duration) drags to target
- *   2. FALLBACK: Very slow single swipe (no pre-tap)
- *      - Extra-long duration so the slider has time to register the initial touch
+ *   1. PRIMARY: Direct slow swipe from slider to target
+ *      - Single continuous gesture, long duration so slider registers initial touch
+ *      - Most reliable for WebView-based CAPTCHAs
+ *   2. FALLBACK: Tap slider handle → delay → slow swipe to target
+ *      - Tap "activates" the slider handle first
+ *      - Only used if direct swipe fails
  *   3. LAST RESORT: Press-hold-drag (continuation chains)
  *      - Phase 1: hold finger at slider 300ms (willContinue=true)
  *      - Phase 2: drag to target (willContinue=false)
  *      - Only used if both tier 1 and 2 fail
+ *
+ * Escalation: tiers escalate on "functional failure" — when gesture completes
+ * but the slider didn't actually move (gap position unchanged).
  */
 object PuzzleCaptchaAction {
 
@@ -128,7 +131,8 @@ object PuzzleCaptchaAction {
         val blindFixedOffsets = intArrayOf(200, 350, 500, 150, 450, 300, 550)
         var blindIndex = 0
         var consecutiveGestureFailures = 0
-        var swipeTier = 1  // 1=tap+swipe, 2=slow swipe, 3=press-hold-drag
+        var functionalFailures = 0  // gesture "completed" but slider didn't move
+        var swipeTier = 1  // 1=slow-swipe, 2=tap+swipe, 3=press-hold-drag
 
         // ============================================================
         // === MAIN SOLVING LOOP ===
@@ -200,15 +204,15 @@ object PuzzleCaptchaAction {
 
             // === Execute swipe ===
             val swipeModeName = when (swipeTier) {
-                1 -> "tap+swipe"
-                2 -> "slow-swipe"
+                1 -> "slow-swipe"
+                2 -> "tap+swipe"
                 else -> "press-hold-drag"
             }
             status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode+$swipeModeName, ${dragDist.toInt()}px)...")
 
             val swipeResult: String = when (swipeTier) {
-                1 -> doTapThenSwipe(service, sliderX, sliderY, targetX, sliderY, dragDist)
-                2 -> doSlowSwipe(service, sliderX, sliderY, targetX, sliderY, dragDist)
+                1 -> doSlowSwipe(service, sliderX, sliderY, targetX, sliderY, dragDist)
+                2 -> doTapThenSwipe(service, sliderX, sliderY, targetX, sliderY, dragDist)
                 else -> doPressHoldDrag(service, sliderX, sliderY, targetX, sliderY,
                     (dragDist * 3f).toLong().coerceIn(800, 3000))
             }
@@ -237,7 +241,8 @@ object PuzzleCaptchaAction {
                 if (consecutiveGestureFailures >= 2 && swipeTier < 3) {
                     swipeTier++
                     consecutiveGestureFailures = 0
-                    status("🔄 เปลี่ยนเป็นโหมด ${when(swipeTier) { 2 -> "slow-swipe"; else -> "press-hold-drag" }}...")
+                    functionalFailures = 0
+                    status("🔄 เปลี่ยนเป็นโหมด ${when(swipeTier) { 2 -> "tap+swipe"; else -> "press-hold-drag" }}...")
                     doWarmupTap(service, screenW, screenH)
                     delay(300)
                     continue
@@ -283,6 +288,25 @@ object PuzzleCaptchaAction {
                             "Not solved",
                             "attempt=$attempt, remainGapX=$remainGapX, target=${targetX.toInt()}"
                         )
+
+                        // Functional failure: gesture "completed" but slider didn't move
+                        // (gap is still near the target position = slider never dragged)
+                        val gapDelta = kotlin.math.abs(remainGapX - targetX).toInt()
+                        if (gapDelta < 30) {
+                            functionalFailures++
+                            DiagnosticReporter.logCaptcha(
+                                "Functional failure",
+                                "tier=$swipeTier, funcFails=$functionalFailures, gapDelta=$gapDelta"
+                            )
+                            // Escalate tier if gesture keeps "completing" but slider doesn't move
+                            if (functionalFailures >= 2 && swipeTier < 3) {
+                                swipeTier++
+                                functionalFailures = 0
+                                status("🔄 สไลด์ไม่ขยับ — เปลี่ยนโหมดเป็น ${when(swipeTier) { 2 -> "tap+swipe"; else -> "press-hold-drag" }}")
+                                doWarmupTap(service, screenW, screenH)
+                                delay(300)
+                            }
+                        }
                     }
                 }
             }
@@ -350,15 +374,18 @@ object PuzzleCaptchaAction {
     }
 
     // ============================================================
-    // === TIER 1: TAP-THEN-SWIPE (Primary) ===
+    // === TIER 2: TAP-THEN-SWIPE (Fallback) ===
     // ============================================================
 
     /**
      * Tap the slider handle first to "activate" it, then slow swipe to target.
      *
-     * Many slider CAPTCHAs need the handle to register ACTION_DOWN before
+     * Some slider CAPTCHAs need the handle to register ACTION_DOWN before
      * they start tracking drag. A quick tap wakes up the handle, then
      * the slow swipe drags it to the target position.
+     *
+     * NOTE: The pre-tap can interfere with some CAPTCHAs (touchUp releases handle).
+     * Use direct slow swipe (tier 1) as primary approach.
      */
     private suspend fun doTapThenSwipe(
         service: TpingAccessibilityService,
@@ -394,13 +421,14 @@ object PuzzleCaptchaAction {
     }
 
     // ============================================================
-    // === TIER 2: VERY SLOW SWIPE (Fallback) ===
+    // === TIER 1: DIRECT SLOW SWIPE (Primary) ===
     // ============================================================
 
     /**
      * Single continuous swipe with extra-long duration.
      * The slow speed gives the slider time to register the initial touch
-     * and start tracking the drag, even without a pre-tap.
+     * and start tracking the drag. Most reliable for WebView-based CAPTCHAs
+     * because the finger never lifts (no touchUp until the end).
      */
     private suspend fun doSlowSwipe(
         service: TpingAccessibilityService,
