@@ -14,7 +14,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
- * Puzzle CAPTCHA solver — v1.2.30
+ * Puzzle CAPTCHA solver — v1.2.32
  *
  * Slide strategy (3 tiers):
  *   1. PRIMARY: Direct slow swipe from slider to target
@@ -219,6 +219,13 @@ object PuzzleCaptchaAction {
             }
 
             // === Execute swipe ===
+            // Small Y jitter on retries to improve slider handle hit detection
+            val yOffset = when {
+                functionalFailures == 1 -> -4f
+                functionalFailures >= 2 -> 4f
+                else -> 0f
+            }
+            val swipeY = sliderY + yOffset
             val swipeModeName = when (swipeTier) {
                 1 -> "slow-swipe"
                 2 -> "tap+swipe"
@@ -227,10 +234,10 @@ object PuzzleCaptchaAction {
             status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode+$swipeModeName, ${dragDist.toInt()}px)...")
 
             val swipeResult: String = when (swipeTier) {
-                1 -> doSlowSwipe(service, sliderX, sliderY, targetX, sliderY, dragDist)
-                2 -> doTapThenSwipe(service, sliderX, sliderY, targetX, sliderY, dragDist)
-                else -> doPressHoldDrag(service, sliderX, sliderY, targetX, sliderY,
-                    (dragDist * 3f).toLong().coerceIn(800, 3000))
+                1 -> doSlowSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
+                2 -> doTapThenSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
+                else -> doPressHoldDrag(service, sliderX, swipeY, targetX, swipeY,
+                    (dragDist * 2f).toLong().coerceIn(600, 2000))
             }
 
             Log.d(
@@ -427,9 +434,8 @@ object PuzzleCaptchaAction {
         // Step 2: Wait for handle to register
         delay(300)
 
-        // Step 3: Slow swipe from slider to target
-        // Use long duration: ~4ms per pixel, min 1500ms, max 4000ms
-        val swipeDuration = (dragDist * 4f).toLong().coerceIn(1500, 4000)
+        // Step 3: Swipe from slider to target at natural speed
+        val swipeDuration = (dragDist * 1.5f).toLong().coerceIn(400, 1500)
         Log.d(TAG, "TapThenSwipe: swipe to (${endX.toInt()},${endY.toInt()}), dur=${swipeDuration}ms")
 
         val result = CompletableDeferred<String>()
@@ -444,11 +450,9 @@ object PuzzleCaptchaAction {
     // ============================================================
 
     /**
-     * Single continuous swipe with moderate duration.
-     * Starts 20px BEFORE the slider handle and sweeps through to the target.
-     * This "sweep-through" approach helps the gesture register on the slider
-     * instead of landing exactly on a WebView element that might cancel it.
-     * The finger never lifts (no touchUp until the end).
+     * Single continuous swipe at natural human speed.
+     * ACTION_DOWN must land exactly on the slider handle for the CAPTCHA
+     * JavaScript to start tracking the drag — never start before the handle.
      */
     private suspend fun doSlowSwipe(
         service: TpingAccessibilityService,
@@ -456,15 +460,12 @@ object PuzzleCaptchaAction {
         endX: Float, endY: Float,
         dragDist: Float
     ): String {
-        // Start 20px before slider to sweep through the handle
-        val sweepStartX = (startX - 20f).coerceAtLeast(10f)
-        val totalDist = endX - sweepStartX
-        // Moderate speed: ~4ms per pixel, min 1000ms, max 4000ms
-        val duration = (totalDist * 4f).toLong().coerceIn(1000, 4000)
-        Log.d(TAG, "SlowSwipe: (${sweepStartX.toInt()},${startY.toInt()})→(${endX.toInt()},${endY.toInt()}), dur=${duration}ms, totalDist=${totalDist.toInt()}")
+        // Natural human drag speed: ~1.5ms per pixel, 400-1500ms
+        val duration = (dragDist * 1.5f).toLong().coerceIn(400, 1500)
+        Log.d(TAG, "SlowSwipe: (${startX.toInt()},${startY.toInt()})→(${endX.toInt()},${endY.toInt()}), dur=${duration}ms, dist=${dragDist.toInt()}")
 
         val result = CompletableDeferred<String>()
-        service.swipeGesture(sweepStartX, startY, endX, endY, duration) { success ->
+        service.swipeGesture(startX, startY, endX, endY, duration) { success ->
             result.complete(if (success) "completed" else "cancelled")
         }
         return withTimeoutOrNull(duration + 5000) { result.await() } ?: "timeout"

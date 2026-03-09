@@ -115,6 +115,7 @@ object CloudApiClient {
         return try {
             val request = Request.Builder()
                 .url(url)
+                .addHeader("Accept", "application/json")
                 .post(gson.toJson(body).toRequestBody(JSON_TYPE))
                 .build()
             executeRequest(request)
@@ -127,6 +128,7 @@ object CloudApiClient {
         return try {
             val request = Request.Builder()
                 .url(url)
+                .addHeader("Accept", "application/json")
                 .addHeader("Authorization", "Bearer $token")
                 .post(gson.toJson(body).toRequestBody(JSON_TYPE))
                 .build()
@@ -140,6 +142,7 @@ object CloudApiClient {
         return try {
             val request = Request.Builder()
                 .url(url)
+                .addHeader("Accept", "application/json")
                 .addHeader("Authorization", "Bearer $token")
                 .get()
                 .build()
@@ -153,6 +156,7 @@ object CloudApiClient {
         return try {
             val request = Request.Builder()
                 .url(url)
+                .addHeader("Accept", "application/json")
                 .addHeader("Authorization", "Bearer $token")
                 .put(gson.toJson(body).toRequestBody(JSON_TYPE))
                 .build()
@@ -166,6 +170,7 @@ object CloudApiClient {
         return try {
             val request = Request.Builder()
                 .url(url)
+                .addHeader("Accept", "application/json")
                 .addHeader("Authorization", "Bearer $token")
                 .delete()
                 .build()

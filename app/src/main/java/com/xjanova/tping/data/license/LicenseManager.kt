@@ -344,11 +344,25 @@ object LicenseManager {
         displayId: String
     ): Boolean {
         return try {
+            Log.d(TAG, "checkMachine: machineId=${machineId.take(16)}... (${machineId.length} chars)")
+            try {
+                com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                    "license", "checkMachine start",
+                    "machineId=${machineId.take(16)}..., len=${machineId.length}"
+                )
+            } catch (_: Exception) {}
             val result = withContext(Dispatchers.IO) {
                 LicenseApiClient.checkMachine(machineId)
             }
             if (result.success) {
                 val hasLicense = result.data.get("has_license")?.asBoolean ?: false
+                Log.d(TAG, "checkMachine: hasLicense=$hasLicense")
+                try {
+                    com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                        "license", "checkMachine result",
+                        "hasLicense=$hasLicense, status=${result.statusCode}"
+                    )
+                } catch (_: Exception) {}
                 if (hasLicense) {
                     val data = result.data.getAsJsonObject("data") ?: return false
                     val key = data.get("license_key")?.asString ?: return false
@@ -376,9 +390,11 @@ object LicenseManager {
                     Log.d(TAG, "Auto-activated license from HWID: $key")
                     true
                 } else {
+                    Log.d(TAG, "checkMachine: no license for this HWID on server")
                     false
                 }
             } else {
+                Log.w(TAG, "checkMachine failed: ${result.statusCode} ${result.message}")
                 false // Server error — fall through to demo check
             }
         } catch (e: Exception) {

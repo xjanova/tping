@@ -121,6 +121,7 @@ object CloudAuthManager {
      */
     suspend fun deviceAuth(licenseKey: String, machineId: String): Boolean = withContext(Dispatchers.IO) {
         try {
+            android.util.Log.d("CloudAuth", "deviceAuth: key=${licenseKey.take(8)}..., machineId=${machineId.take(16)}...")
             val result = CloudApiClient.deviceAuth(licenseKey, machineId)
             if (result.success && result.data != null) {
                 val token = result.data.get("token")?.asString ?: ""
@@ -131,11 +132,14 @@ object CloudAuthManager {
 
                 saveAuth(token, userId, name, email)
                 _authState.value = AuthState(isLoggedIn = true, userId = userId, userName = name, userEmail = email)
+                android.util.Log.d("CloudAuth", "deviceAuth succeeded: userId=$userId")
                 true
             } else {
+                android.util.Log.w("CloudAuth", "deviceAuth failed: ${result.message}")
                 false
             }
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            android.util.Log.e("CloudAuth", "deviceAuth exception: ${e.message}")
             false
         }
     }
