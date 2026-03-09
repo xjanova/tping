@@ -133,9 +133,22 @@ object LicenseManager {
                 ""
             }
 
+            // HWID migration: detect if hardware hash changed (e.g. after update from ANDROID_ID to MediaDrm)
+            val oldMachineId = try { prefs?.getString(KEY_MACHINE_ID, "") ?: "" } catch (_: Exception) { "" }
+            val hwidChanged = oldMachineId.isNotEmpty() && oldMachineId != machineId
+            if (hwidChanged) {
+                Log.i(TAG, "HWID migration detected: old=$oldMachineId, new=$machineId")
+            }
+
             if (licenseKey.isNotEmpty()) {
-                // Has license key — validate with server (paid license)
-                validatePaidLicense(context, licenseKey, machineId, displayId)
+                if (hwidChanged) {
+                    // HWID changed but we have a license key — re-activate to bind new HWID
+                    Log.i(TAG, "Re-activating license with new HWID")
+                    migrateHwid(context, licenseKey, machineId, displayId)
+                } else {
+                    // Has license key — validate with server (paid license)
+                    validatePaidLicense(context, licenseKey, machineId, displayId)
+                }
             } else {
                 // No saved key — check if this machine already has a license on server (HWID auto-check)
                 val found = checkMachineForExistingLicense(context, machineId, displayId)
@@ -205,6 +218,57 @@ object LicenseManager {
             Log.e(TAG, "validatePaidLicense failed", e)
             // Network error — use cached state (paid license only)
             useCachedState(displayId)
+        }
+    }
+
+    /**
+     * Migrate HWID: re-activate the stored license key with the new machine ID.
+     * This handles the transition from ANDROID_ID-based HWID to MediaDrm-based HWID.
+     * If re-activation fails, fall back to normal validation with the new HWID.
+     */
+    private suspend fun migrateHwid(
+        context: Context,
+        licenseKey: String,
+        newMachineId: String,
+        displayId: String
+    ) {
+        try {
+            val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
+            val result = withContext(Dispatchers.IO) {
+                LicenseApiClient.activateLicense(licenseKey, newMachineId, hardwareHash)
+            }
+            if (result.success) {
+                val data = result.data.getAsJsonObject("data") ?: result.data
+                val type = data.get("license_type")?.asString ?: "unknown"
+                val expiresAtStr = data.get("expires_at")?.asString
+                val expiresAt = parseIsoTimestamp(expiresAtStr)
+                val daysRemaining = data.get("days_remaining")?.asInt ?: 0
+
+                prefs?.edit()
+                    ?.putString(KEY_MACHINE_ID, newMachineId)
+                    ?.putString(KEY_LICENSE_TYPE, type)
+                    ?.putString(KEY_LICENSE_STATUS, "active")
+                    ?.putLong(KEY_LICENSE_EXPIRES_AT, expiresAt)
+                    ?.apply()
+
+                _state.value = LicenseState(
+                    status = LicenseStatus.ACTIVE,
+                    licenseType = type,
+                    expiresAt = expiresAt,
+                    remainingDays = daysRemaining,
+                    deviceId = displayId,
+                    isLoading = false
+                )
+                Log.i(TAG, "HWID migration successful — license re-bound to new HWID")
+            } else {
+                Log.w(TAG, "HWID migration failed: ${result.message}, falling back to validate")
+                // Migration failed — try normal validation (server may already accept new HWID)
+                validatePaidLicense(context, licenseKey, newMachineId, displayId)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "migrateHwid failed", e)
+            // Network error — try normal validation which has offline cache fallback
+            validatePaidLicense(context, licenseKey, newMachineId, displayId)
         }
     }
 
