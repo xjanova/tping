@@ -292,6 +292,22 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         try { windowManager?.updateViewLayout(overlayView, params) } catch (_: Exception) {}
     }
 
+    /**
+     * Make overlay completely transparent to touch events (for CAPTCHA solving).
+     * When passthrough=true, FLAG_NOT_TOUCHABLE is set so the overlay window
+     * cannot intercept ANY touch events, eliminating FLAG_WINDOW_IS_PARTIALLY_OBSCURED
+     * on MotionEvents reaching the app underneath.
+     */
+    fun setTouchPassthrough(passthrough: Boolean) {
+        val params = overlayParams ?: return
+        if (passthrough) {
+            params.flags = params.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        } else {
+            params.flags = params.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+        }
+        try { windowManager?.updateViewLayout(overlayView, params) } catch (_: Exception) {}
+    }
+
     // ====== Recording Controls ======
 
     private fun startRecording() {

@@ -2,34 +2,41 @@ package com.xjanova.tping.puzzle
 
 import android.accessibilityservice.GestureDescription
 import android.os.Build
+import android.os.Bundle
 import android.util.Log
+import android.view.accessibility.AccessibilityNodeInfo
 import com.google.gson.Gson
 import com.xjanova.tping.data.diagnostic.DiagnosticReporter
 import com.xjanova.tping.data.entity.RecordedAction
+import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.service.TpingAccessibilityService
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.36
+ * Puzzle CAPTCHA solver — v1.2.37
  *
- * Slide strategy (3 tiers):
- *   1. PRIMARY: Direct slow swipe from slider to target
- *      - Single continuous gesture, long duration so slider registers initial touch
- *      - Most reliable for WebView-based CAPTCHAs
- *   2. FALLBACK: Tap slider handle → delay → slow swipe to target
- *      - Tap "activates" the slider handle first
- *      - Only used if direct swipe fails
- *   3. LAST RESORT: Press-hold-drag (continuation chains)
- *      - Phase 1: hold finger at slider 300ms (willContinue=true)
- *      - Phase 2: drag to target (willContinue=false)
- *      - Only used if both tier 1 and 2 fail
+ * Slide strategy (4 tiers):
+ *   0. SHELL INPUT: Uses `input swipe` shell command for hardware-level
+ *      touch events (isTrusted=true). Requires shell/root permission.
+ *      Tested first; if it works, all other tiers are skipped.
+ *   1. ACCESSIBILITY SCROLL: Finds slider node in WebView accessibility tree
+ *      and uses performAction(ACTION_SCROLL_FORWARD/RIGHT) to move it.
+ *      Bypasses isTrusted check since it's not a touch event.
+ *   2. DISPATCH GESTURE: Direct slow swipe via dispatchGesture (fallback).
+ *   3. TAP+SWIPE: Tap slider handle, delay, then swipe (fallback).
  *
- * Escalation: tiers escalate on "functional failure" — when gesture completes
- * but the slider didn't actually move (gap position unchanged).
+ * Key insight (v1.2.36 diagnostics): dispatchGesture events complete
+ * successfully but WebView marks them isTrusted=false in JavaScript,
+ * causing CAPTCHA to reject them. Shell input creates real hardware events.
+ *
+ * Also hides overlay during CAPTCHA (FLAG_NOT_TOUCHABLE) to prevent
+ * FLAG_WINDOW_IS_PARTIALLY_OBSCURED on MotionEvents.
  */
 object PuzzleCaptchaAction {
 
@@ -127,41 +134,43 @@ object PuzzleCaptchaAction {
         delay(600)
 
         // ============================================================
-        // === FOCUS + ACTIVATION: Wake up WebView for gesture input ===
+        // === HIDE OVERLAY: Prevent FLAG_WINDOW_IS_PARTIALLY_OBSCURED ===
         // ============================================================
-        // Problem: dispatchGesture touch events don't reach CAPTCHA JavaScript.
-        // User confirmed: manual finger touch first → bot works after.
-        // v1.2.36: Enhanced activation:
-        //   1. Search ALL windows for WebView (not just active window)
-        //   2. Log WebView details + children for diagnostics
-        //   3. Sequential activation taps, each FULLY AWAITED before next
-        //      (v1.2.35 bug: focus tap got stuck → Tier 1 CANCELLED)
-        status("กำลังเปิดใช้งาน CAPTCHA...")
+        try {
+            FloatingOverlayService.instance?.setTouchPassthrough(true)
+        } catch (_: Exception) {}
 
-        // Step 1: Focus WebView via AccessibilityNodeInfo (search all windows)
+        // ============================================================
+        // === FOCUS + PROBE: Determine best swipe method ===
+        // ============================================================
+        // v1.2.37: dispatchGesture events have isTrusted=false in WebView JS.
+        // CAPTCHA rejects them. Solution priority:
+        //   1. Shell "input swipe" (hardware-level, isTrusted=true)
+        //   2. Accessibility scroll actions on slider node
+        //   3. dispatchGesture as last fallback
+        status("กำลังตรวจสอบระบบ CAPTCHA...")
+
+        // Step 1: Focus WebView
         val focusResult = focusWebViewAtSlider(service, sliderX, sliderY)
-        DiagnosticReporter.logCaptcha("Focus phase", "method=$focusResult, sliderAt=(${sliderX.toInt()},${sliderY.toInt()})")
+        DiagnosticReporter.logCaptcha("Focus phase", "method=$focusResult")
         delay(300)
 
-        // Step 2: Activation taps — wake up WebView touch handling
-        // Each tap is fully dispatched + awaited (no overlapping gestures!)
-        val activationResults = mutableListOf<String>()
+        // Step 2: Scan WebView nodes for slider element
+        val sliderNodeInfo = scanForSliderNode(service, sliderX, sliderY, trackWidth)
+        DiagnosticReporter.logCaptcha("Slider scan", sliderNodeInfo.take(300))
+        delay(200)
 
-        // Tap 1: CAPTCHA image area (dismiss any "click to start" overlay)
-        val imgTapX = sliderX + (if (trackWidth > 50) trackWidth * 0.4f else 150f)
-        val imgTapY = (sliderY - 180f).coerceAtLeast(100f)
-        activationResults.add("img:" + doActivationTap(service, imgTapX, imgTapY, 250))
-        delay(350)
-
-        // Tap 2: Directly on slider handle (300ms press to trigger touch init)
-        activationResults.add("handle:" + doActivationTap(service, sliderX, sliderY, 300))
-        delay(350)
-
-        // Tap 3: Slightly right of handle (redundancy)
-        activationResults.add("handle2:" + doActivationTap(service, sliderX + 15f, sliderY, 200))
+        // Step 3: Test shell "input swipe" (most reliable if available)
+        status("ทดสอบระบบสัมผัส...")
+        val shellTestResult = testShellInput(sliderX, sliderY)
+        DiagnosticReporter.logCaptcha("Shell test", shellTestResult)
+        val useShellSwipe = shellTestResult.startsWith("ok")
+        if (useShellSwipe) {
+            status("✓ ใช้ระบบสัมผัสจริง (shell)")
+        } else {
+            status("⚠ ใช้ระบบ accessibility gesture")
+        }
         delay(300)
-
-        DiagnosticReporter.logCaptcha("Activation taps", activationResults.joinToString(", "))
         status("✓ CAPTCHA พร้อม")
 
         // === Blind-drag offsets ===
@@ -170,7 +179,7 @@ object PuzzleCaptchaAction {
         var blindIndex = 0
         var consecutiveGestureFailures = 0
         var functionalFailures = 0  // gesture "completed" but slider didn't move
-        var swipeTier = 1  // 1=slow-swipe, 2=tap+swipe, 3=press-hold-drag
+        var swipeTier = if (useShellSwipe) 0 else 1  // 0=shell, 1=slow-swipe, 2=tap+swipe, 3=press-hold-drag
 
         // ============================================================
         // === MAIN SOLVING LOOP ===
@@ -265,13 +274,16 @@ object PuzzleCaptchaAction {
             }
             val swipeY = sliderY + yOffset
             val swipeModeName = when (swipeTier) {
+                0 -> "shell"
                 1 -> "slow-swipe"
                 2 -> "tap+swipe"
                 else -> "press-hold-drag"
             }
             status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode+$swipeModeName, ${dragDist.toInt()}px)...")
 
+            val swipeDuration = (dragDist * 4f).toLong().coerceIn(1000, 4000)
             val swipeResult: String = when (swipeTier) {
+                0 -> doShellSwipe(sliderX, swipeY, targetX, swipeY, swipeDuration)
                 1 -> doSlowSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 2 -> doTapThenSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 else -> doPressHoldDrag(service, sliderX, swipeY, targetX, swipeY,
@@ -289,8 +301,7 @@ object PuzzleCaptchaAction {
                     "start=(${sliderX.toInt()},${swipeY.toInt()}), end=(${targetX.toInt()},${swipeY.toInt()}), " +
                     "dist=${"%.0f".format(dragDist)}, target=${targetX.toInt()}, " +
                     "trackW=${trackWidth.toInt()}, yOffset=${"%.0f".format(yOffset)}, " +
-                    "dur=${when(swipeTier) { 1 -> (dragDist * 4f).toLong().coerceIn(800, 3000); 2 -> (dragDist * 3.5f).toLong().coerceIn(700, 2500); else -> (dragDist * 5f).toLong().coerceIn(1200, 4000) }}ms, " +
-                    "tier=$swipeTier, funcFails=$functionalFailures"
+                    "dur=${swipeDuration}ms, tier=$swipeTier, funcFails=$functionalFailures"
             )
 
             if (swipeResult != "completed") {
@@ -309,7 +320,7 @@ object PuzzleCaptchaAction {
                     swipeTier++
                     consecutiveGestureFailures = 0
                     functionalFailures = 0
-                    status("🔄 เปลี่ยนเป็นโหมด ${when(swipeTier) { 2 -> "tap+swipe"; else -> "press-hold-drag" }}...")
+                    status("🔄 เปลี่ยนเป็นโหมด ${when(swipeTier) { 0 -> "shell"; 1 -> "slow-swipe"; 2 -> "tap+swipe"; else -> "press-hold-drag" }}...")
                     doWarmupTap(service, screenW, screenH)
                     delay(300)
                     continue
@@ -345,8 +356,9 @@ object PuzzleCaptchaAction {
                         status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt)")
                         DiagnosticReporter.logCaptcha(
                             "Solved",
-                            "attempt=$attempt, mode=$dragMode+$swipeModeName"
+                            "attempt=$attempt, mode=$dragMode+$swipeModeName, shell=$useShellSwipe"
                         )
+                        try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
                         autoSendDiagnostics()
                         return
                     } else {
@@ -369,7 +381,7 @@ object PuzzleCaptchaAction {
                             if (functionalFailures >= 2 && swipeTier < 3) {
                                 swipeTier++
                                 functionalFailures = 0
-                                status("🔄 สไลด์ไม่ขยับ — เปลี่ยนโหมดเป็น ${when(swipeTier) { 2 -> "tap+swipe"; else -> "press-hold-drag" }}")
+                                status("🔄 สไลด์ไม่ขยับ — เปลี่ยนโหมดเป็น ${when(swipeTier) { 1 -> "slow-swipe"; 2 -> "tap+swipe"; else -> "press-hold-drag" }}")
                                 doWarmupTap(service, screenW, screenH)
                                 delay(300)
                             }
@@ -381,9 +393,14 @@ object PuzzleCaptchaAction {
             // === Refresh ===
             if (attempt < config.maxRetries && hasRefresh) {
                 status("🔄 กดรีเฟรช...")
-                val tapDone = CompletableDeferred<Unit>()
-                service.tapAtCoordinates(refreshX, refreshY) { tapDone.complete(Unit) }
-                withTimeoutOrNull(3000) { tapDone.await() }
+                if (useShellSwipe) {
+                    // Use shell tap for refresh button too (isTrusted=true)
+                    doShellTap(refreshX, refreshY)
+                } else {
+                    val tapDone = CompletableDeferred<Unit>()
+                    service.tapAtCoordinates(refreshX, refreshY) { tapDone.complete(Unit) }
+                    withTimeoutOrNull(3000) { tapDone.await() }
+                }
                 delay(2000)
             }
         }
@@ -392,8 +409,12 @@ object PuzzleCaptchaAction {
         DiagnosticReporter.logCaptcha(
             "All attempts done",
             "maxRetries=${config.maxRetries}, opencv=$opencvOk, " +
-                "hasTrack=$hasTrack, tier=$swipeTier"
+                "hasTrack=$hasTrack, tier=$swipeTier, shell=$useShellSwipe"
         )
+        // Restore overlay touch handling
+        try {
+            FloatingOverlayService.instance?.setTouchPassthrough(false)
+        } catch (_: Exception) {}
         autoSendDiagnostics()
     }
 
@@ -627,6 +648,158 @@ object PuzzleCaptchaAction {
             val offset = fixedOffsets[index % fixedOffsets.size]
             val target = (sliderX + offset).coerceAtMost(screenW - 50f)
             target to "blind(${offset}px)"
+        }
+    }
+
+    // ============================================================
+    // === SHELL INPUT: Hardware-level touch events ===
+    // ============================================================
+
+    /**
+     * Test if shell `input` command works on this device.
+     * The `input` command creates hardware-level events (isTrusted=true).
+     * Returns "ok" if working, or error description.
+     */
+    private suspend fun testShellInput(testX: Float, testY: Float): String {
+        return withContext(Dispatchers.IO) {
+            // Try without root first
+            val result = tryShellCommand("input tap ${testX.toInt()} ${testY.toInt()}")
+            if (result == "ok") return@withContext "ok(sh)"
+
+            // Try with su (root)
+            val suResult = tryShellCommand("su -c 'input tap ${testX.toInt()} ${testY.toInt()}'")
+            if (suResult == "ok") return@withContext "ok(su)"
+
+            "fail(sh=$result, su=$suResult)"
+        }
+    }
+
+    /**
+     * Execute shell command and return result.
+     */
+    private fun tryShellCommand(cmd: String): String {
+        return try {
+            val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+            val exited = process.waitFor(5, TimeUnit.SECONDS)
+            if (!exited) {
+                process.destroy()
+                return "timeout"
+            }
+            val exitCode = process.exitValue()
+            if (exitCode == 0) {
+                "ok"
+            } else {
+                val err = process.errorStream.bufferedReader().readText().take(80)
+                "exit$exitCode:$err"
+            }
+        } catch (e: Exception) {
+            "error:${e.message?.take(40)}"
+        }
+    }
+
+    /**
+     * Shell-based swipe (creates hardware-level isTrusted=true events).
+     */
+    private suspend fun doShellSwipe(
+        startX: Float, startY: Float,
+        endX: Float, endY: Float,
+        durationMs: Long
+    ): String {
+        return withContext(Dispatchers.IO) {
+            val cmd = "input swipe ${startX.toInt()} ${startY.toInt()} ${endX.toInt()} ${endY.toInt()} $durationMs"
+            Log.d(TAG, "ShellSwipe: $cmd")
+            val result = tryShellCommand(cmd)
+            if (result == "ok") {
+                // Try with su if normal shell fails
+                return@withContext "completed"
+            }
+            val suCmd = "su -c '$cmd'"
+            val suResult = tryShellCommand(suCmd)
+            if (suResult == "ok") return@withContext "completed"
+            "shell_failed($result)"
+        }
+    }
+
+    /**
+     * Shell-based tap for refresh button etc.
+     */
+    private suspend fun doShellTap(x: Float, y: Float) {
+        withContext(Dispatchers.IO) {
+            val cmd = "input tap ${x.toInt()} ${y.toInt()}"
+            val result = tryShellCommand(cmd)
+            if (result != "ok") {
+                tryShellCommand("su -c '$cmd'")
+            }
+        }
+    }
+
+    // ============================================================
+    // === SLIDER NODE SCAN (Accessibility-based slider control) ===
+    // ============================================================
+
+    /**
+     * Scan WebView accessibility tree for slider-like elements.
+     * If found, try to move the slider via accessibility actions
+     * (bypasses isTrusted check since these aren't touch events).
+     */
+    private fun scanForSliderNode(
+        service: TpingAccessibilityService,
+        sliderX: Float, sliderY: Float,
+        trackWidth: Float
+    ): String {
+        try {
+            val root = service.rootInActiveWindow ?: return "no-root"
+            val webView = findWebView(root) ?: run { root.recycle(); return "no-webview" }
+
+            val results = StringBuilder()
+            val childCount = webView.childCount
+            results.append("children=$childCount; ")
+
+            // Scan children for nodes near slider Y coordinate
+            for (i in 0 until minOf(childCount, 15)) {
+                val child = try { webView.getChild(i) } catch (_: Exception) { null } ?: continue
+                val bounds = android.graphics.Rect()
+                child.getBoundsInScreen(bounds)
+                val className = child.className?.toString()?.substringAfterLast('.') ?: ""
+                val desc = child.contentDescription?.toString()?.take(15) ?: ""
+                val rangeInfo = child.rangeInfo
+                val actions = child.actionList?.map { it.id }?.joinToString(",") ?: ""
+
+                // Log nodes near slider Y (±50px)
+                if (kotlin.math.abs(bounds.centerY() - sliderY.toInt()) < 50) {
+                    results.append("[$i]$className(${bounds})range=${rangeInfo?.current}/${rangeInfo?.max},act=$actions,$desc; ")
+
+                    // Try to move slider via accessibility actions
+                    if (rangeInfo != null) {
+                        // Node has range info — try ACTION_SET_PROGRESS
+                        val targetProgress = rangeInfo.min +
+                            (rangeInfo.max - rangeInfo.min) * 0.5f // Try 50%
+                        val args = Bundle().apply {
+                            putFloat(AccessibilityNodeInfo.ACTION_ARGUMENT_PROGRESS_VALUE, targetProgress)
+                        }
+                        val setOk = child.performAction(
+                            AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id, args)
+                        results.append("SET_PROGRESS=$setOk; ")
+                    }
+
+                    // Try scroll actions
+                    val scrollFwd = child.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+                    if (scrollFwd) results.append("SCROLL_FWD=true; ")
+
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        val scrollRight = child.performAction(
+                            AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id)
+                        if (scrollRight) results.append("SCROLL_RIGHT=true; ")
+                    }
+                }
+                child.recycle()
+            }
+
+            webView.recycle()
+            root.recycle()
+            return results.toString()
+        } catch (e: Exception) {
+            return "error:${e.message?.take(50)}"
         }
     }
 
