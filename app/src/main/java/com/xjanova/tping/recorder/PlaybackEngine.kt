@@ -60,13 +60,14 @@ class PlaybackEngine {
             dataFieldSets
         }
 
-        playbackJob = scope.launch(Dispatchers.Main) {
-            _state.value = PlaybackState(
-                isPlaying = true,
-                totalSteps = actions.size,
-                totalLoops = loopCount
-            )
+        // Set state synchronously BEFORE launching coroutine so observer sees isPlaying=true
+        _state.value = PlaybackState(
+            isPlaying = true,
+            totalSteps = actions.size,
+            totalLoops = loopCount
+        )
 
+        playbackJob = scope.launch(Dispatchers.Main) {
             try {
                 for (loop in 1..loopCount) {
                     _state.value = _state.value.copy(currentLoop = loop)

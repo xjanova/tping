@@ -69,6 +69,7 @@ fun FloatingOverlayContent(
     onShowPlayDialog: () -> Unit,
     onDismissPlayDialog: () -> Unit,
     onStartPlayback: (Long, String, Int, Boolean) -> Unit,
+    onDeleteWorkflow: (Long) -> Unit = {},
     onPause: () -> Unit,
     onResume: () -> Unit,
     onStop: () -> Unit,
@@ -123,6 +124,7 @@ fun FloatingOverlayContent(
                         workflows = state.workflowItems,
                         categories = state.profileCategories,
                         onStart = onStartPlayback,
+                        onDelete = onDeleteWorkflow,
                         onDismiss = onDismissPlayDialog
                     )
                 }
@@ -471,6 +473,7 @@ fun PlaySelectDialog(
     workflows: List<WorkflowItem>,
     categories: List<ProfileCategoryItem>,
     onStart: (Long, String, Int, Boolean) -> Unit,
+    onDelete: (Long) -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var selectedWorkflowId by remember { mutableStateOf<Long?>(null) }
@@ -543,7 +546,7 @@ fun PlaySelectDialog(
                                 .clip(RoundedCornerShape(8.dp))
                                 .background(if (isSelected) PlayColor.copy(alpha = 0.2f) else Color.Transparent)
                                 .clickable { selectedWorkflowId = wf.id }
-                                .padding(horizontal = 10.dp, vertical = 8.dp),
+                                .padding(start = 10.dp, top = 8.dp, bottom = 8.dp, end = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             if (isSelected) {
@@ -565,6 +568,16 @@ fun PlaySelectDialog(
                                     }
                                 }
                             }
+                            Icon(
+                                Icons.Default.Delete, "ลบ",
+                                tint = Color(0xFF666666),
+                                modifier = Modifier
+                                    .size(20.dp)
+                                    .clickable {
+                                        if (selectedWorkflowId == wf.id) selectedWorkflowId = null
+                                        onDelete(wf.id)
+                                    }
+                            )
                         }
                     }
                 }

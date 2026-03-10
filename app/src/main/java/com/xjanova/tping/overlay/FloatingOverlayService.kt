@@ -254,6 +254,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     onStartPlayback = { workflowId, category, loops, shuffle ->
                         startPlaybackFromOverlay(workflowId, category, loops, shuffle)
                     },
+                    onDeleteWorkflow = { workflowId -> deleteWorkflow(workflowId) },
                     onPause = { pausePlayback() },
                     onResume = { resumePlayback() },
                     onStop = { stopPlayback() },
@@ -327,9 +328,11 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         service.getRecorder().startRecording()
         TpingAccessibilityService.setRecording(true)
         _overlayState.value = _overlayState.value.copy(
+            showRecordModeDialog = false,
             mode = "recording", stepCount = 0, statusText = "กำลังบันทึก...",
             targetAppName = "", recordingDone = false
         )
+        setOverlayFocusable(false)
         recordingObserverJob?.cancel()
         recordingObserverJob = serviceScope.launch {
             service.getRecorder().actionCount.collect { count ->
@@ -699,6 +702,23 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         }
     }
 
+    // ====== Delete Workflow ======
+
+    private fun deleteWorkflow(workflowId: Long) {
+        serviceScope.launch {
+            try {
+                val db = (application as TpingApplication).database
+                val workflow = db.workflowDao().getById(workflowId) ?: return@launch
+                db.workflowDao().delete(workflow)
+                _overlayState.value = _overlayState.value.copy(
+                    statusText = "ลบแล้ว"
+                )
+            } catch (_: Exception) {
+                _overlayState.value = _overlayState.value.copy(statusText = "เกิดข้อผิดพลาด")
+            }
+        }
+    }
+
     // ====== Playback from Overlay ======
 
     private fun startPlaybackFromOverlay(workflowId: Long, category: String, loops: Int, shuffleData: Boolean) {
@@ -740,8 +760,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     }
                 } else emptyList()
 
-                if (playbackEngine == null) playbackEngine = PlaybackEngine()
-                observePlaybackState()
+                playbackEngine = PlaybackEngine()
                 playbackEngine?.play(
                     actions = actions,
                     dataFieldSets = dataFieldSets,
@@ -749,6 +768,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     shuffleData = shuffleData,
                     scope = serviceScope
                 )
+                observePlaybackState()
             } catch (e: Exception) {
                 _overlayState.value = _overlayState.value.copy(mode = "idle", statusText = "เกิดข้อผิดพลาด")
             }
