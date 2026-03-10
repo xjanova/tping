@@ -16,7 +16,7 @@ android {
 
         // === Semantic Versioning (source of truth) ===
         // Change this string to bump version. CI reads it for GitHub releases.
-        val versionStr = "1.2.39"
+        val versionStr = "1.2.40"
         val parts = versionStr.split(".")
         versionCode = parts[0].toInt() * 10000 + parts[1].toInt() * 100 + parts[2].toInt()
         versionName = versionStr
@@ -103,6 +103,10 @@ dependencies {
 
     // OpenCV for slide puzzle CAPTCHA solving
     implementation("org.opencv:opencv:4.9.0")
+
+    // Shizuku for ADB-level shell commands without root (CAPTCHA touch injection)
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 
     // ML Kit Barcode Scanning (QR Code scanner for license key)
     implementation("com.google.mlkit:barcode-scanning:17.3.0")

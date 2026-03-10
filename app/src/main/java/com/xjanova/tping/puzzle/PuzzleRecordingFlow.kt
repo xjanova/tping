@@ -7,7 +7,7 @@ import com.xjanova.tping.data.entity.RecordedAction
 enum class PuzzleRecordingStep {
     IDLE,
     SELECT_SLIDER_BUTTON,
-    SELECT_SLIDER_TRACK_END,
+    SELECT_SLIDER_TRACK_END, // kept for backward compat; skipped in new 2-point flow
     SELECT_REFRESH_BUTTON,
     DONE
 }
@@ -16,7 +16,7 @@ data class PuzzleRecordingState(
     val step: PuzzleRecordingStep = PuzzleRecordingStep.IDLE,
     val sliderButtonX: Int = 0,
     val sliderButtonY: Int = 0,
-    val sliderTrackEndX: Int = 0,
+    val sliderTrackEndX: Int = 0, // 0 = auto-detect (new 2-point flow)
     val sliderTrackEndY: Int = 0,
     val refreshButtonX: Int = 0,
     val refreshButtonY: Int = 0

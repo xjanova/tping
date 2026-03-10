@@ -33,7 +33,8 @@ object LicenseApiClient {
         machineName: String,
         osVersion: String,
         appVersion: String,
-        hardwareHash: String = ""
+        hardwareHash: String = "",
+        drmId: String = ""
     ): ApiResult {
         val body = JsonObject().apply {
             addProperty("machine_id", machineId)
@@ -41,6 +42,7 @@ object LicenseApiClient {
             addProperty("os_version", osVersion)
             addProperty("app_version", appVersion)
             if (hardwareHash.isNotEmpty()) addProperty("hardware_hash", hardwareHash)
+            if (drmId.isNotEmpty()) addProperty("drm_id", drmId)
         }
         return post("$BASE_URL/register-device", body)
     }
@@ -50,11 +52,13 @@ object LicenseApiClient {
      */
     fun startDemo(
         machineId: String,
-        hardwareHash: String = ""
+        hardwareHash: String = "",
+        drmId: String = ""
     ): ApiResult {
         val body = JsonObject().apply {
             addProperty("machine_id", machineId)
             if (hardwareHash.isNotEmpty()) addProperty("hardware_hash", hardwareHash)
+            if (drmId.isNotEmpty()) addProperty("drm_id", drmId)
         }
         return post("$BASE_URL/demo", body)
     }
@@ -75,12 +79,14 @@ object LicenseApiClient {
     fun activateLicense(
         licenseKey: String,
         machineId: String,
-        machineFingerprint: String
+        machineFingerprint: String,
+        drmId: String = ""
     ): ApiResult {
         val body = JsonObject().apply {
             addProperty("license_key", licenseKey)
             addProperty("machine_id", machineId)
             addProperty("machine_fingerprint", machineFingerprint)
+            if (drmId.isNotEmpty()) addProperty("drm_id", drmId)
         }
         return post("$BASE_URL/activate", body)
     }
@@ -88,10 +94,12 @@ object LicenseApiClient {
     /**
      * Check if this machine already has an active license (HWID auto-check).
      * Used on first launch when no license_key is saved locally.
+     * Sends drm_id as secondary lookup key for cross-HWID migration.
      */
-    fun checkMachine(machineId: String): ApiResult {
+    fun checkMachine(machineId: String, drmId: String = ""): ApiResult {
         val body = JsonObject().apply {
             addProperty("machine_id", machineId)
+            if (drmId.isNotEmpty()) addProperty("drm_id", drmId)
         }
         return post("$BASE_URL/check-machine", body)
     }

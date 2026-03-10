@@ -98,18 +98,29 @@ object PuzzleCaptchaAction {
 
         val sliderX = config.sliderButtonX * scaleX
         val sliderY = config.sliderButtonY * scaleY
-        val trackEndX = config.sliderTrackEndX * scaleX
         val refreshX = config.refreshButtonX * scaleX
         val refreshY = config.refreshButtonY * scaleY
         val hasRefresh = config.refreshButtonX > 0 && config.refreshButtonY > 0
         val hasTrack = config.hasTrackInfo
-        val trackWidth = if (hasTrack) (trackEndX - sliderX) else 0f
+
+        // Auto-detect track width for 2-point recordings (sliderTrackEndX == 0)
+        // Estimate: track extends from slider to ~90% of screen width
+        // (most CAPTCHA sliders span 60-80% of the screen)
+        val trackEndX: Float
+        val trackWidth: Float
+        if (hasTrack) {
+            trackEndX = config.sliderTrackEndX * scaleX
+            trackWidth = trackEndX - sliderX
+        } else {
+            trackEndX = screenW * 0.90f
+            trackWidth = trackEndX - sliderX
+        }
 
         val info = "slider=(${sliderX.toInt()},${sliderY.toInt()}), " +
             "trackEnd=${trackEndX.toInt()}, trackW=${trackWidth.toInt()}, " +
             "screen=${screenW}x$screenH, " +
             "scale=${"%.2f".format(scaleX)}x${"%.2f".format(scaleY)}, " +
-            "hasTrack=$hasTrack, recorded=${action.screenWidth}x${action.screenHeight}"
+            "hasTrack=$hasTrack(auto=${!hasTrack}), recorded=${action.screenWidth}x${action.screenHeight}"
         Log.d(TAG, info)
         DiagnosticReporter.logCaptcha("Captcha start", info)
 
@@ -162,13 +173,25 @@ object PuzzleCaptchaAction {
 
         // Step 3: Test shell "input swipe" (most reliable if available)
         status("ทดสอบระบบสัมผัส...")
+        val shizukuDetail = ShizukuHelper.getDetailedStatus()
+        DiagnosticReporter.logCaptcha("Shizuku status", shizukuDetail)
         val shellTestResult = testShellInput(sliderX, sliderY)
-        DiagnosticReporter.logCaptcha("Shell test", shellTestResult)
+        DiagnosticReporter.logCaptcha("Shell test", "result=$shellTestResult, shizuku=$shizukuDetail")
         val useShellSwipe = shellTestResult.startsWith("ok")
         if (useShellSwipe) {
-            status("✓ ใช้ระบบสัมผัสจริง (shell)")
+            val method = when {
+                shellTestResult.contains("shizuku") -> "Shizuku"
+                shellTestResult.contains("su") -> "root"
+                else -> "shell"
+            }
+            status("✓ ใช้ระบบสัมผัสจริง ($method)")
         } else {
-            status("⚠ ใช้ระบบ accessibility gesture")
+            status("⚠ ไม่มี Shizuku/Root — สไลด์ CAPTCHA จะไม่ทำงาน!")
+            DiagnosticReporter.logCaptcha(
+                "WARNING: No shell access",
+                "CAPTCHA will likely fail. Install Shizuku for isTrusted=true events. " +
+                    "shizuku=$shizukuDetail, shellResult=$shellTestResult"
+            )
         }
         delay(300)
         status("✓ CAPTCHA พร้อม")
@@ -199,10 +222,10 @@ object PuzzleCaptchaAction {
                     screenshot.recycle()
                     if (gap != null) {
                         val gapCenterX = (gap.left + gap.right) / 2f
-                        if (hasTrack && trackWidth > 50) {
+                        if (trackWidth > 50) {
                             val dragDistance = gapCenterX - sliderX
                             targetX = sliderX + dragDistance.coerceIn(20f, trackWidth - 10f)
-                            dragMode = "smart-track"
+                            dragMode = if (hasTrack) "smart-track" else "smart-auto"
                             val pct = ((dragDistance / trackWidth) * 100).toInt()
                             status("ครั้งที่ $attempt: พบช่องว่าง track=$pct%")
                         } else {
@@ -246,7 +269,7 @@ object PuzzleCaptchaAction {
                     "mode=$dragMode, too short (<40px)"
                 )
                 // If OpenCV found gap too close to slider, use blind target instead
-                if (dragMode.startsWith("smart") && hasTrack && trackWidth > 50) {
+                if (dragMode.startsWith("smart") && trackWidth > 50) {
                     val result = getBlindTarget(
                         hasTrack, trackWidth, sliderX, trackEndX, screenW,
                         blindPercentages, blindFixedOffsets, blindIndex
@@ -409,7 +432,8 @@ object PuzzleCaptchaAction {
         DiagnosticReporter.logCaptcha(
             "All attempts done",
             "maxRetries=${config.maxRetries}, opencv=$opencvOk, " +
-                "hasTrack=$hasTrack, tier=$swipeTier, shell=$useShellSwipe"
+                "hasTrack=$hasTrack(auto=${!hasTrack}), tier=$swipeTier, " +
+                "shell=$useShellSwipe, shizuku=${ShizukuHelper.getDetailedStatus()}"
         )
         // Restore overlay touch handling
         try {
@@ -640,10 +664,12 @@ object PuzzleCaptchaAction {
         fixedOffsets: IntArray,
         index: Int
     ): Pair<Float, String> {
-        return if (hasTrack && trackWidth > 50) {
+        // Always use track-based targeting (trackWidth is auto-detected for 2-point recordings)
+        return if (trackWidth > 50) {
             val pct = percentages[index % percentages.size]
             val target = (sliderX + trackWidth * pct).coerceAtMost(trackEndX - 10f)
-            target to "blind-track(${(pct * 100).toInt()}%)"
+            val label = if (hasTrack) "blind-track" else "blind-auto"
+            target to "$label(${(pct * 100).toInt()}%)"
         } else {
             val offset = fixedOffsets[index % fixedOffsets.size]
             val target = (sliderX + offset).coerceAtMost(screenW - 50f)
@@ -658,19 +684,39 @@ object PuzzleCaptchaAction {
     /**
      * Test if shell `input` command works on this device.
      * The `input` command creates hardware-level events (isTrusted=true).
+     * Priority: Shizuku → direct shell → su (root)
      * Returns "ok" if working, or error description.
      */
     private suspend fun testShellInput(testX: Float, testY: Float): String {
         return withContext(Dispatchers.IO) {
-            // Try without root first
+            Log.d(TAG, "testShellInput: testing at ($testX, $testY)")
+
+            // Try Shizuku first (ADB-level without root)
+            val shizukuAvail = ShizukuHelper.isAvailable()
+            Log.d(TAG, "testShellInput: shizuku available=$shizukuAvail")
+            if (shizukuAvail) {
+                val shizukuResult = ShizukuHelper.inputTap(testX.toInt(), testY.toInt())
+                Log.d(TAG, "testShellInput: shizuku result=$shizukuResult")
+                if (shizukuResult == "ok") return@withContext "ok(shizuku)"
+                Log.w(TAG, "Shizuku tap failed: $shizukuResult")
+            }
+
+            // Try without root (will fail on Android 10+ for regular apps)
             val result = tryShellCommand("input tap ${testX.toInt()} ${testY.toInt()}")
+            Log.d(TAG, "testShellInput: sh result=$result")
             if (result == "ok") return@withContext "ok(sh)"
 
             // Try with su (root)
             val suResult = tryShellCommand("su -c 'input tap ${testX.toInt()} ${testY.toInt()}'")
+            Log.d(TAG, "testShellInput: su result=$suResult")
             if (suResult == "ok") return@withContext "ok(su)"
 
-            "fail(sh=$result, su=$suResult)"
+            val shizukuState = when {
+                ShizukuHelper.isRunning() && !ShizukuHelper.hasPermission() -> "running_no_perm"
+                ShizukuHelper.isRunning() -> "running_has_perm_but_exec_failed"
+                else -> "not_running"
+            }
+            "fail(shizuku=$shizukuState, sh=$result, su=$suResult)"
         }
     }
 
@@ -699,6 +745,7 @@ object PuzzleCaptchaAction {
 
     /**
      * Shell-based swipe (creates hardware-level isTrusted=true events).
+     * Priority: Shizuku → direct shell → su (root)
      */
     private suspend fun doShellSwipe(
         startX: Float, startY: Float,
@@ -706,13 +753,21 @@ object PuzzleCaptchaAction {
         durationMs: Long
     ): String {
         return withContext(Dispatchers.IO) {
+            // Try Shizuku first (ADB-level without root)
+            if (ShizukuHelper.isAvailable()) {
+                val result = ShizukuHelper.inputSwipe(
+                    startX.toInt(), startY.toInt(),
+                    endX.toInt(), endY.toInt(), durationMs
+                )
+                if (result == "ok") return@withContext "completed"
+                Log.w(TAG, "Shizuku swipe failed: $result")
+            }
+
             val cmd = "input swipe ${startX.toInt()} ${startY.toInt()} ${endX.toInt()} ${endY.toInt()} $durationMs"
             Log.d(TAG, "ShellSwipe: $cmd")
             val result = tryShellCommand(cmd)
-            if (result == "ok") {
-                // Try with su if normal shell fails
-                return@withContext "completed"
-            }
+            if (result == "ok") return@withContext "completed"
+
             val suCmd = "su -c '$cmd'"
             val suResult = tryShellCommand(suCmd)
             if (suResult == "ok") return@withContext "completed"
@@ -722,9 +777,16 @@ object PuzzleCaptchaAction {
 
     /**
      * Shell-based tap for refresh button etc.
+     * Priority: Shizuku → direct shell → su (root)
      */
     private suspend fun doShellTap(x: Float, y: Float) {
         withContext(Dispatchers.IO) {
+            // Try Shizuku first
+            if (ShizukuHelper.isAvailable()) {
+                val result = ShizukuHelper.inputTap(x.toInt(), y.toInt())
+                if (result == "ok") return@withContext
+            }
+
             val cmd = "input tap ${x.toInt()} ${y.toInt()}"
             val result = tryShellCommand(cmd)
             if (result != "ok") {

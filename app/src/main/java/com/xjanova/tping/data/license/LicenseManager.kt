@@ -65,6 +65,19 @@ object LicenseManager {
     }
 
     /**
+     * Get raw DRM ID (Widevine) for server-side device lookup.
+     * This is stable across reinstall & factory reset, sent as secondary identifier.
+     */
+    private fun getDrmId(): String {
+        return try {
+            DeviceManager.getDrmId() ?: ""
+        } catch (e: Exception) {
+            Log.e(TAG, "getDrmId failed", e)
+            ""
+        }
+    }
+
+    /**
      * Initialize on app start. Must be called from MainActivity LaunchedEffect.
      * NEVER throws — all errors are caught and handled gracefully.
      */
@@ -269,8 +282,9 @@ object LicenseManager {
     ): Boolean {
         return try {
             val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
+            val drmId = getDrmId()
             val result = withContext(Dispatchers.IO) {
-                LicenseApiClient.activateLicense(licenseKey, machineId, hardwareHash)
+                LicenseApiClient.activateLicense(licenseKey, machineId, hardwareHash, drmId)
             }
             if (result.success) {
                 val data = result.data.getAsJsonObject("data") ?: result.data
@@ -334,8 +348,9 @@ object LicenseManager {
     ) {
         try {
             val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
+            val drmId = getDrmId()
             val result = withContext(Dispatchers.IO) {
-                LicenseApiClient.activateLicense(licenseKey, newMachineId, hardwareHash)
+                LicenseApiClient.activateLicense(licenseKey, newMachineId, hardwareHash, drmId)
             }
             if (result.success) {
                 val data = result.data.getAsJsonObject("data") ?: result.data
@@ -400,8 +415,9 @@ object LicenseManager {
                     "machineId=${machineId.take(16)}..., len=${machineId.length}"
                 )
             } catch (_: Exception) {}
+            val drmId = getDrmId()
             val result = withContext(Dispatchers.IO) {
-                LicenseApiClient.checkMachine(machineId)
+                LicenseApiClient.checkMachine(machineId, drmId)
             }
             if (result.success) {
                 val hasLicense = result.data.get("has_license")?.asBoolean ?: false
@@ -538,6 +554,7 @@ object LicenseManager {
         displayId: String
     ) {
         try {
+            val drmId = getDrmId()
             // Register device first
             withContext(Dispatchers.IO) {
                 val deviceName = DeviceManager.getDeviceName()
@@ -550,13 +567,14 @@ object LicenseManager {
                     machineName = deviceName,
                     osVersion = osVersion,
                     appVersion = appVersion,
-                    hardwareHash = hardwareHash
+                    hardwareHash = hardwareHash,
+                    drmId = drmId
                 )
             }
 
             // Start demo
             val demoResult = withContext(Dispatchers.IO) {
-                LicenseApiClient.startDemo(machineId = machineId)
+                LicenseApiClient.startDemo(machineId = machineId, drmId = drmId)
             }
 
             if (demoResult.success) {
@@ -693,12 +711,13 @@ object LicenseManager {
         val machineId = getMachineId(context)
         val displayId = try { DeviceManager.getDeviceId(context) } catch (_: Exception) { "unknown" }
         val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
+        val drmId = getDrmId()
 
         _state.value = _state.value.copy(isLoading = true)
 
         return try {
             val result = withContext(Dispatchers.IO) {
-                LicenseApiClient.activateLicense(key, machineId, hardwareHash)
+                LicenseApiClient.activateLicense(key, machineId, hardwareHash, drmId)
             }
             if (result.success) {
                 val data = result.data.getAsJsonObject("data") ?: result.data

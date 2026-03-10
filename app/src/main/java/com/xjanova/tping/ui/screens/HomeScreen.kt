@@ -50,6 +50,7 @@ import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.service.TpingAccessibilityService
 import com.xjanova.tping.ui.components.LicenseKeyField
 import com.xjanova.tping.ui.components.QrScannerDialog
+import com.xjanova.tping.puzzle.ShizukuHelper
 import com.xjanova.tping.ui.viewmodel.MainViewModel
 import com.xjanova.tping.util.PermissionHelper
 
@@ -774,6 +775,148 @@ fun HomeScreen(
                     }
                 }
             }
+            }
+
+            // === Shizuku Status (for CAPTCHA) ===
+            item(key = "shizuku_status") {
+                var shizukuRunning by remember { mutableStateOf(ShizukuHelper.isRunning()) }
+                var shizukuPermission by remember { mutableStateOf(ShizukuHelper.hasPermission()) }
+                var shizukuAvailable by remember { mutableStateOf(ShizukuHelper.isAvailable()) }
+
+                fun refreshShizuku() {
+                    shizukuRunning = ShizukuHelper.isRunning()
+                    shizukuPermission = ShizukuHelper.hasPermission()
+                    shizukuAvailable = ShizukuHelper.isAvailable()
+                }
+
+                // Re-check Shizuku state when screen resumes
+                LaunchedEffect(lifecycleOwner) {
+                    lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                        refreshShizuku()
+                    }
+                }
+
+                // Auto-detect Shizuku binder changes (start/stop)
+                DisposableEffect(Unit) {
+                    val binderListener = rikka.shizuku.Shizuku.OnBinderReceivedListener {
+                        refreshShizuku()
+                    }
+                    val deadListener = rikka.shizuku.Shizuku.OnBinderDeadListener {
+                        refreshShizuku()
+                    }
+                    val permListener = rikka.shizuku.Shizuku.OnRequestPermissionResultListener { _, grantResult ->
+                        shizukuPermission = grantResult == android.content.pm.PackageManager.PERMISSION_GRANTED
+                        shizukuAvailable = ShizukuHelper.isAvailable()
+                    }
+                    try {
+                        rikka.shizuku.Shizuku.addBinderReceivedListenerSticky(binderListener)
+                        rikka.shizuku.Shizuku.addBinderDeadListener(deadListener)
+                        rikka.shizuku.Shizuku.addRequestPermissionResultListener(permListener)
+                    } catch (_: Exception) {}
+
+                    onDispose {
+                        try {
+                            rikka.shizuku.Shizuku.removeBinderReceivedListener(binderListener)
+                            rikka.shizuku.Shizuku.removeBinderDeadListener(deadListener)
+                            rikka.shizuku.Shizuku.removeRequestPermissionResultListener(permListener)
+                        } catch (_: Exception) {}
+                    }
+                }
+
+                val shizukuColor = when {
+                    shizukuAvailable -> Color(0xFF22C55E)
+                    shizukuRunning -> Color(0xFFF59E0B)
+                    else -> Color(0xFFEF4444)
+                }
+
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = CardDefaults.cardColors(containerColor = shizukuColor.copy(alpha = 0.08f))
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                if (shizukuAvailable) Icons.Default.TouchApp else Icons.Default.Warning,
+                                null, tint = shizukuColor, modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                "Shizuku (CAPTCHA)",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 14.sp,
+                                color = shizukuColor
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            ShizukuHelper.getStatusText(),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                        )
+                        if (!shizukuAvailable) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                if (!shizukuRunning)
+                                    "จำเป็นสำหรับแก้ Captcha สไลด์:\n" +
+                                    "1. ติดตั้ง Shizuku จาก Play Store\n" +
+                                    "2. เปิด Developer Options → Wireless Debugging\n" +
+                                    "3. เปิดแอป Shizuku → Start via Wireless Debugging"
+                                else
+                                    "กดปุ่มด้านล่างเพื่ออนุญาตสิทธิ์",
+                                fontSize = 11.sp,
+                                lineHeight = 16.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row {
+                                if (!shizukuRunning) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            try {
+                                                val intent = context.packageManager.getLaunchIntentForPackage(
+                                                    ShizukuHelper.SHIZUKU_PACKAGE
+                                                )
+                                                if (intent != null) {
+                                                    context.startActivity(intent)
+                                                } else {
+                                                    // Open Play Store for Shizuku
+                                                    val storeIntent = Intent(
+                                                        Intent.ACTION_VIEW,
+                                                        Uri.parse("market://details?id=${ShizukuHelper.SHIZUKU_PACKAGE}")
+                                                    )
+                                                    context.startActivity(storeIntent)
+                                                }
+                                            } catch (_: Exception) {
+                                                Toast.makeText(context, "ไม่สามารถเปิดได้", Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Text("เปิด Shizuku", fontSize = 12.sp)
+                                    }
+                                } else if (!shizukuPermission) {
+                                    OutlinedButton(
+                                        onClick = {
+                                            ShizukuHelper.requestPermission()
+                                            // Permission result will auto-refresh via listener
+                                        },
+                                        modifier = Modifier.height(32.dp)
+                                    ) {
+                                        Text("อนุญาตสิทธิ์", fontSize = 12.sp)
+                                    }
+                                }
+                                Spacer(modifier = Modifier.weight(1f))
+                                TextButton(
+                                    onClick = { refreshShizuku() },
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Text("รีเฟรช", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // === Main Actions ===

@@ -592,14 +592,17 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             PuzzleRecordingStep.SELECT_SLIDER_BUTTON -> {
                 puzzleRecordingState = puzzleRecordingState.copy(
                     sliderButtonX = x, sliderButtonY = y,
-                    step = PuzzleRecordingStep.SELECT_SLIDER_TRACK_END
+                    // v1.2.40: Skip track end — 2-point flow (slider + refresh only)
+                    // Track width auto-detected during execution
+                    step = PuzzleRecordingStep.SELECT_REFRESH_BUTTON
                 )
                 _overlayState.value = _overlayState.value.copy(
-                    statusText = "กดที่ปลายทาง slider (ขวาสุด)"
+                    statusText = "กดที่ปุ่มรีเฟรช Puzzle"
                 )
                 showCrosshair(ActionType.CLICK, "puzzle")
             }
             PuzzleRecordingStep.SELECT_SLIDER_TRACK_END -> {
+                // Legacy 3-point flow support (old recordings)
                 puzzleRecordingState = puzzleRecordingState.copy(
                     sliderTrackEndX = x, sliderTrackEndY = y,
                     step = PuzzleRecordingStep.SELECT_REFRESH_BUTTON
