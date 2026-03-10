@@ -88,10 +88,13 @@ object CloudSyncManager {
     // ========================== Upload ==========================
 
     suspend fun uploadAllWorkflows(): Int = withContext(Dispatchers.IO) {
-        requireAuth()
-        val token = CloudAuthManager.getToken()!!
+        val token = requireAuthToken()
         val db = TpingApplication.instance.database
         val workflows = db.workflowDao().getAll().first()
+        if (workflows.isEmpty()) {
+            Log.d(TAG, "No workflows to upload")
+            return@withContext 0
+        }
 
         val jsonArray = JsonArray()
         for (wf in workflows) {
@@ -104,16 +107,30 @@ object CloudSyncManager {
             })
         }
 
-        val result = CloudApiClient.bulkImportWorkflows(token, jsonArray)
-        if (!result.success) throw Exception(result.message ?: "อัพโหลด workflow ไม่สำเร็จ")
-        result.data?.getAsJsonObject("data")?.get("imported")?.asInt ?: workflows.size
+        Log.d(TAG, "Uploading ${workflows.size} workflows...")
+        var result = CloudApiClient.bulkImportWorkflows(token, jsonArray)
+
+        // Retry once with fresh token on 401
+        if (result.httpCode == 401) {
+            Log.w(TAG, "Upload workflows got 401, refreshing token...")
+            val newToken = refreshAuth() ?: throw Exception("Token หมดอายุ ไม่สามารถเข้าสู่ระบบใหม่ได้")
+            result = CloudApiClient.bulkImportWorkflows(newToken, jsonArray)
+        }
+
+        if (!result.success) throw Exception(result.message ?: "อัพโหลด workflow ไม่สำเร็จ (HTTP ${result.httpCode})")
+        val imported = result.data?.getAsJsonObject("data")?.get("imported")?.asInt
+        Log.d(TAG, "Upload workflows result: imported=$imported")
+        imported ?: throw Exception("Server returned unexpected response format")
     }
 
     suspend fun uploadAllProfiles(): Int = withContext(Dispatchers.IO) {
-        requireAuth()
-        val token = CloudAuthManager.getToken()!!
+        val token = requireAuthToken()
         val db = TpingApplication.instance.database
         val profiles = db.dataProfileDao().getAll().first()
+        if (profiles.isEmpty()) {
+            Log.d(TAG, "No profiles to upload")
+            return@withContext 0
+        }
 
         val jsonArray = JsonArray()
         for (p in profiles) {
@@ -125,24 +142,46 @@ object CloudSyncManager {
             })
         }
 
-        val result = CloudApiClient.bulkImportProfiles(token, jsonArray)
-        if (!result.success) throw Exception(result.message ?: "อัพโหลด profile ไม่สำเร็จ")
-        result.data?.getAsJsonObject("data")?.get("imported")?.asInt ?: profiles.size
+        Log.d(TAG, "Uploading ${profiles.size} profiles...")
+        var result = CloudApiClient.bulkImportProfiles(token, jsonArray)
+
+        // Retry once with fresh token on 401
+        if (result.httpCode == 401) {
+            Log.w(TAG, "Upload profiles got 401, refreshing token...")
+            val newToken = refreshAuth() ?: throw Exception("Token หมดอายุ ไม่สามารถเข้าสู่ระบบใหม่ได้")
+            result = CloudApiClient.bulkImportProfiles(newToken, jsonArray)
+        }
+
+        if (!result.success) throw Exception(result.message ?: "อัพโหลด profile ไม่สำเร็จ (HTTP ${result.httpCode})")
+        val imported = result.data?.getAsJsonObject("data")?.get("imported")?.asInt
+        Log.d(TAG, "Upload profiles result: imported=$imported")
+        imported ?: throw Exception("Server returned unexpected response format")
     }
 
     // ========================== Download with Dedup ==========================
 
     suspend fun downloadAllWorkflows(): Int = withContext(Dispatchers.IO) {
-        requireAuth()
-        val token = CloudAuthManager.getToken()!!
+        var token = requireAuthToken()
         val db = TpingApplication.instance.database
         val dao = db.workflowDao()
 
-        val result = CloudApiClient.getWorkflows(token)
-        if (!result.success) throw Exception(result.message ?: "ดาวน์โหลด workflow ไม่สำเร็จ")
+        Log.d(TAG, "Downloading workflows...")
+        var result = CloudApiClient.getWorkflows(token)
+
+        // Retry once with fresh token on 401
+        if (result.httpCode == 401) {
+            Log.w(TAG, "Download workflows got 401, refreshing token...")
+            token = refreshAuth() ?: throw Exception("Token หมดอายุ ไม่สามารถเข้าสู่ระบบใหม่ได้")
+            result = CloudApiClient.getWorkflows(token)
+        }
+
+        if (!result.success) throw Exception(result.message ?: "ดาวน์โหลด workflow ไม่สำเร็จ (HTTP ${result.httpCode})")
 
         val dataArray = result.data?.getAsJsonObject("data")?.getAsJsonArray("data")
-            ?: return@withContext 0
+        if (dataArray == null) {
+            Log.d(TAG, "No workflows on server")
+            return@withContext 0
+        }
 
         var imported = 0
         var updated = 0
@@ -153,10 +192,8 @@ object CloudSyncManager {
             val pkg = obj.get("target_app_package")?.asString ?: ""
             val appName = obj.get("target_app_name")?.asString ?: ""
 
-            // Dedup: check if workflow with same name+package exists locally
             val existing = dao.findByNameAndPackage(name, pkg)
             if (existing != null) {
-                // Update existing — cloud data takes precedence
                 dao.update(existing.copy(
                     stepsJson = stepsJson,
                     targetAppName = appName
@@ -177,16 +214,27 @@ object CloudSyncManager {
     }
 
     suspend fun downloadAllProfiles(): Int = withContext(Dispatchers.IO) {
-        requireAuth()
-        val token = CloudAuthManager.getToken()!!
+        var token = requireAuthToken()
         val db = TpingApplication.instance.database
         val dao = db.dataProfileDao()
 
-        val result = CloudApiClient.getDataProfiles(token)
-        if (!result.success) throw Exception(result.message ?: "ดาวน์โหลด profile ไม่สำเร็จ")
+        Log.d(TAG, "Downloading profiles...")
+        var result = CloudApiClient.getDataProfiles(token)
+
+        // Retry once with fresh token on 401
+        if (result.httpCode == 401) {
+            Log.w(TAG, "Download profiles got 401, refreshing token...")
+            token = refreshAuth() ?: throw Exception("Token หมดอายุ ไม่สามารถเข้าสู่ระบบใหม่ได้")
+            result = CloudApiClient.getDataProfiles(token)
+        }
+
+        if (!result.success) throw Exception(result.message ?: "ดาวน์โหลด profile ไม่สำเร็จ (HTTP ${result.httpCode})")
 
         val dataArray = result.data?.getAsJsonObject("data")?.getAsJsonArray("data")
-            ?: return@withContext 0
+        if (dataArray == null) {
+            Log.d(TAG, "No profiles on server")
+            return@withContext 0
+        }
 
         var imported = 0
         var updated = 0
@@ -196,10 +244,8 @@ object CloudSyncManager {
             val fieldsJson = obj.get("fields_json")?.asString ?: continue
             val category = obj.get("category")?.asString ?: ""
 
-            // Dedup: check if profile with same name+category exists locally
             val existing = dao.findByNameAndCategory(name, category)
             if (existing != null) {
-                // Update existing — cloud data takes precedence
                 dao.update(existing.copy(fieldsJson = fieldsJson))
                 updated++
             } else {
@@ -226,12 +272,20 @@ object CloudSyncManager {
         try {
             // Ensure device auth before sync
             if (!ensureDeviceAuth()) {
-                _syncState.value = SyncState(error = "ไม่สามารถยืนยันตัวตนได้ — ตรวจสอบไลเซนส์")
+                val key = LicenseManager.getLicenseKey()
+                val machineId = LicenseManager.getMachineId()
+                val detail = when {
+                    !hasActiveLicense() -> "ไม่มี License ที่ Active"
+                    key.isNullOrEmpty() -> "ไม่พบ License Key"
+                    machineId.isNullOrEmpty() -> "ไม่พบ Machine ID"
+                    else -> "เซิร์ฟเวอร์ปฏิเสธ — ตรวจสอบไลเซนส์"
+                }
+                _syncState.value = SyncState(error = "เข้าสู่ระบบไม่ได้: $detail")
                 return
             }
-            _syncState.value = _syncState.value.copy(message = "กำลังอัพโหลด...")
+            _syncState.value = _syncState.value.copy(message = "กำลังอัพโหลด Workflow...")
             val wfUp = uploadAllWorkflows()
-            _syncState.value = _syncState.value.copy(message = "อัพโหลด workflow $wfUp รายการ...")
+            _syncState.value = _syncState.value.copy(message = "กำลังอัพโหลด Profile...")
 
             val pfUp = uploadAllProfiles()
             _syncState.value = _syncState.value.copy(message = "กำลังดาวน์โหลด...")
@@ -243,10 +297,10 @@ object CloudSyncManager {
                 lastSyncAt = System.currentTimeMillis(),
                 message = "ซิงค์สำเร็จ (ส่ง: $wfUp wf + $pfUp pf | รับ: $wfDown wf + $pfDown pf)"
             )
-            Log.d(TAG, "Full sync completed")
+            Log.d(TAG, "Full sync completed: up($wfUp wf, $pfUp pf) down($wfDown wf, $pfDown pf)")
         } catch (e: Exception) {
             Log.e(TAG, "Full sync failed", e)
-            _syncState.value = SyncState(error = e.message ?: "ซิงค์ไม่สำเร็จ")
+            _syncState.value = SyncState(error = "ซิงค์ไม่สำเร็จ: ${e.message}")
         }
     }
 
@@ -291,9 +345,27 @@ object CloudSyncManager {
 
     // ========================== Helpers ==========================
 
-    private fun requireAuth() {
-        if (CloudAuthManager.getToken().isNullOrEmpty()) {
-            throw Exception("ยังไม่ได้เข้าสู่ระบบ")
+    private fun requireAuthToken(): String {
+        val token = CloudAuthManager.getToken()
+        if (token.isNullOrEmpty()) {
+            throw Exception("ยังไม่ได้เข้าสู่ระบบ Cloud")
         }
+        return token
+    }
+
+    /**
+     * Force re-authenticate using device auth. Returns new token or null.
+     */
+    private suspend fun refreshAuth(): String? {
+        Log.d(TAG, "Refreshing auth token via device auth...")
+        CloudAuthManager.logout() // Clear stale token
+        val licenseKey = LicenseManager.getLicenseKey()
+        val machineId = LicenseManager.getMachineId()
+        if (licenseKey.isNullOrEmpty() || machineId.isNullOrEmpty()) {
+            Log.w(TAG, "Cannot refresh auth: missing license key or machine ID")
+            return null
+        }
+        val ok = CloudAuthManager.deviceAuth(licenseKey, machineId)
+        return if (ok) CloudAuthManager.getToken() else null
     }
 }

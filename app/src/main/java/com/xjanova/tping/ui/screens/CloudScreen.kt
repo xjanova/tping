@@ -565,13 +565,14 @@ private fun CloudDashboard(
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
         }
 
-        // Open dashboard links
+        // Open dashboard links (with auto-login)
         item {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
                     onClick = {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://xman4289.com/my-account/tping-workflows"))
-                        context.startActivity(intent)
+                        scope.launch {
+                            openWebDashboard(context, "/my-account/tping-workflows")
+                        }
                     },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
@@ -582,8 +583,9 @@ private fun CloudDashboard(
                 }
                 OutlinedButton(
                     onClick = {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://xman4289.com/my-account/tping-data-profiles"))
-                        context.startActivity(intent)
+                        scope.launch {
+                            openWebDashboard(context, "/my-account/tping-data-profiles")
+                        }
                     },
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
@@ -715,6 +717,33 @@ private fun CloudDashboard(
             )
         }
     }
+}
+
+/**
+ * Get a one-time auto-login URL and open the web dashboard in browser.
+ * Falls back to direct URL if token generation fails.
+ */
+private suspend fun openWebDashboard(context: android.content.Context, path: String) {
+    val baseUrl = "https://xman4289.com"
+    try {
+        val token = CloudAuthManager.getToken()
+        if (token != null) {
+            val result = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                com.xjanova.tping.data.cloud.CloudApiClient.getWebLoginToken(token)
+            }
+            if (result.success) {
+                val url = result.data?.getAsJsonObject("data")?.get("url")?.asString
+                if (!url.isNullOrEmpty()) {
+                    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                    return
+                }
+            }
+        }
+    } catch (e: Exception) {
+        android.util.Log.w("CloudScreen", "Auto-login failed: ${e.message}")
+    }
+    // Fallback: open direct URL (user may need to log in manually)
+    context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("$baseUrl$path")))
 }
 
 @Composable

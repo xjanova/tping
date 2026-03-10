@@ -13,7 +13,8 @@ import java.util.concurrent.TimeUnit
 data class ApiResult(
     val success: Boolean,
     val data: JsonObject? = null,
-    val message: String? = null
+    val message: String? = null,
+    val httpCode: Int = 0
 )
 
 /**
@@ -65,6 +66,13 @@ object CloudApiClient {
 
     fun logout(token: String): ApiResult {
         return authenticatedPost("$BASE_URL/auth/logout", JsonObject(), token)
+    }
+
+    /**
+     * Get a one-time web login URL for accessing the web dashboard.
+     */
+    fun getWebLoginToken(token: String): ApiResult {
+        return authenticatedPost("$BASE_URL/auth/web-login-token", JsonObject(), token)
     }
 
     // ===== Workflows =====
@@ -184,18 +192,19 @@ object CloudApiClient {
         val response = client.newCall(request).execute()
         val responseBody = response.body?.string() ?: "{}"
         val url = request.url.encodedPath
-        android.util.Log.d("CloudAPI", "$url → ${response.code} (${responseBody.take(200)})")
+        val code = response.code
+        android.util.Log.d("CloudAPI", "$url → $code (${responseBody.take(200)})")
         return try {
             val json = gson.fromJson(responseBody, JsonObject::class.java)
             val success = json?.get("success")?.asBoolean ?: response.isSuccessful
             val message = json?.get("message")?.asString
             if (!success) {
-                android.util.Log.w("CloudAPI", "$url FAILED: code=${response.code}, msg=$message, body=${responseBody.take(300)}")
+                android.util.Log.w("CloudAPI", "$url FAILED: code=$code, msg=$message, body=${responseBody.take(300)}")
             }
-            ApiResult(success, json, message)
+            ApiResult(success, json, message, code)
         } catch (e: Exception) {
             android.util.Log.e("CloudAPI", "$url parse error: ${e.message}, body=${responseBody.take(300)}")
-            ApiResult(response.isSuccessful, message = responseBody)
+            ApiResult(false, message = "Server returned invalid response (HTTP $code)", httpCode = code)
         }
     }
 }
