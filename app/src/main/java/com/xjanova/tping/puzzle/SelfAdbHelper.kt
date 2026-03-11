@@ -182,6 +182,44 @@ object SelfAdbHelper {
     }
 
     /**
+     * Execute `input draganddrop` via ADB shell.
+     * Unlike `input swipe`, draganddrop has a built-in long press (~500ms)
+     * before starting the drag, which is required by many puzzle CAPTCHAs.
+     * Available on Android 7.0+ (API 24).
+     * Returns "ok" on success.
+     */
+    suspend fun inputDragAndDrop(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long): String {
+        val result = execCommand("input draganddrop $x1 $y1 $x2 $y2 $durationMs")
+        return if (result.isEmpty() || result == "" || !result.startsWith("error")) "ok" else result
+    }
+
+    /**
+     * Execute a shell command via ADB and return the actual stdout output.
+     * Unlike execCommand which returns the raw output, this is explicitly
+     * for commands where we need to parse the output (e.g., getevent -pl).
+     * Returns null on failure.
+     */
+    suspend fun execCommandWithOutput(cmd: String): String? {
+        return withContext(Dispatchers.IO) {
+            try {
+                val mgr = manager
+                if (mgr == null || !isConnected) return@withContext null
+
+                Log.d(TAG, "ExecWithOutput: $cmd")
+                val stream = mgr.openStream("shell:$cmd")
+                val input = stream.openInputStream()
+                val output = input.bufferedReader().use { it.readText() }
+                stream.close()
+                output.trim().ifEmpty { null }
+            } catch (e: Exception) {
+                Log.e(TAG, "ExecWithOutput failed: ${e.message}", e)
+                isConnected = false
+                null
+            }
+        }
+    }
+
+    /**
      * Execute `input tap` via ADB shell.
      * Returns "ok" on success.
      */

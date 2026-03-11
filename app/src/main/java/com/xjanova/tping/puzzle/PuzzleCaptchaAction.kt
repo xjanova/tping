@@ -19,25 +19,25 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.41
+ * Puzzle CAPTCHA solver — v1.2.43
  *
  * Slide strategy (4 tiers):
- *   0. SHELL INPUT: Uses `input swipe` shell command for hardware-level
- *      touch events (isTrusted=true). Requires shell/root permission.
- *      Priority: SelfAdb (Wireless ADB built-in) → Shizuku → sh → su
- *      Tested first; if it works, all other tiers are skipped.
- *   1. ACCESSIBILITY SCROLL: Finds slider node in WebView accessibility tree
- *      and uses performAction(ACTION_SCROLL_FORWARD/RIGHT) to move it.
- *      Bypasses isTrusted check since it's not a touch event.
+ *   0. SHELL INPUT: Hardware-level touch events (isTrusted=true).
+ *      Priority: SelfAdb → Shizuku → sh → su
+ *      Three sub-strategies tried in order:
+ *        a) sendevent: Individual touch events (DOWN→hold→MOVE with easing→UP)
+ *           Most human-like: press-and-hold, ease-out curve, Y jitter
+ *        b) input draganddrop: Built-in long press (~500ms) + linear drag
+ *        c) input swipe: Direct swipe (no hold, last resort)
+ *   1. ACCESSIBILITY SCROLL: performAction(ACTION_SCROLL_FORWARD/RIGHT)
  *   2. DISPATCH GESTURE: Direct slow swipe via dispatchGesture (fallback).
  *   3. TAP+SWIPE: Tap slider handle, delay, then swipe (fallback).
  *
- * Key insight (v1.2.36 diagnostics): dispatchGesture events complete
- * successfully but WebView marks them isTrusted=false in JavaScript,
- * causing CAPTCHA to reject them. Shell input creates real hardware events.
- *
- * v1.2.41: Added SelfAdb (Wireless Debugging ADB) as highest priority shell
- * method — no Shizuku app needed, just Wireless Debugging enabled + paired.
+ * Key insight (v1.2.36): dispatchGesture → isTrusted=false → CAPTCHA rejects.
+ * v1.2.41: SelfAdb (Wireless ADB) as top priority shell method.
+ * v1.2.43: Press-hold-drag via sendevent for realistic human behavior.
+ *   CAPTCHA sliders need: touchDown → hold 300ms → slow drag → release.
+ *   `input swipe` skips the hold phase. sendevent gives full control.
  *
  * Also hides overlay during CAPTCHA (FLAG_NOT_TOUCHABLE) to prevent
  * FLAG_WINDOW_IS_PARTIALLY_OBSCURED on MotionEvents.
@@ -315,7 +315,7 @@ object PuzzleCaptchaAction {
 
             val swipeDuration = (dragDist * 4f).toLong().coerceIn(1000, 4000)
             val swipeResult: String = when (swipeTier) {
-                0 -> doShellSwipe(sliderX, swipeY, targetX, swipeY, swipeDuration)
+                0 -> doShellDrag(sliderX, swipeY, targetX, swipeY, swipeDuration, screenW, screenH)
                 1 -> doSlowSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 2 -> doTapThenSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 else -> doPressHoldDrag(service, sliderX, swipeY, targetX, swipeY,
@@ -697,6 +697,19 @@ object PuzzleCaptchaAction {
     // ============================================================
 
     /**
+     * Touch device info for sendevent-based drag.
+     * Cached after first detection.
+     */
+    private data class TouchDeviceInfo(
+        val devicePath: String,
+        val xMax: Int,
+        val yMax: Int
+    )
+
+    @Volatile
+    private var cachedTouchDevice: TouchDeviceInfo? = null
+
+    /**
      * Test if shell `input` command works on this device.
      * The `input` command creates hardware-level events (isTrusted=true).
      * Priority: Shizuku → direct shell → su (root)
@@ -769,44 +782,342 @@ object PuzzleCaptchaAction {
     }
 
     /**
-     * Shell-based swipe (creates hardware-level isTrusted=true events).
-     * Priority: SelfAdb (built-in Wireless ADB) → Shizuku → direct shell → su (root)
+     * Execute shell command and return stdout output.
+     * Tries SelfAdb → Shizuku → direct shell.
+     * Returns null on failure.
      */
-    private suspend fun doShellSwipe(
+    private suspend fun execShellWithOutput(cmd: String): String? {
+        return withContext(Dispatchers.IO) {
+            // SelfAdb
+            if (SelfAdbHelper.isAvailable()) {
+                val result = SelfAdbHelper.execCommandWithOutput(cmd)
+                if (result != null) return@withContext result
+            }
+            // Shizuku
+            if (ShizukuHelper.isAvailable()) {
+                val result = ShizukuHelper.execCommandWithOutput(cmd)
+                if (result != null) return@withContext result
+            }
+            // Direct shell (limited on Android 10+)
+            try {
+                val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
+                val output = process.inputStream.bufferedReader().readText()
+                val exited = process.waitFor(5, TimeUnit.SECONDS)
+                if (exited && process.exitValue() == 0 && output.isNotEmpty()) output.trim()
+                else null
+            } catch (_: Exception) { null }
+        }
+    }
+
+    /**
+     * Execute a shell command via any available method (SelfAdb → Shizuku → sh → su).
+     * Returns "ok" on success, or error string.
+     */
+    private suspend fun execShellAny(cmd: String): String {
+        return withContext(Dispatchers.IO) {
+            if (SelfAdbHelper.isAvailable()) {
+                val result = SelfAdbHelper.execCommand(cmd)
+                if (!result.startsWith("error")) return@withContext "ok"
+            }
+            if (ShizukuHelper.isAvailable()) {
+                val result = ShizukuHelper.execCommand(cmd)
+                if (result == "ok") return@withContext "ok"
+            }
+            val result = tryShellCommand(cmd)
+            if (result == "ok") return@withContext "ok"
+            val suResult = tryShellCommand("su -c '$cmd'")
+            if (suResult == "ok") return@withContext "ok"
+            "fail(sh=$result,su=$suResult)"
+        }
+    }
+
+    // ============================================================
+    // === TIER 0: SHELL DRAG (Press-Hold-Drag) ===
+    // ============================================================
+
+    /**
+     * Human-like press-hold-drag using shell commands.
+     *
+     * Three sub-strategies (most realistic → simplest):
+     *   a) sendevent: Individual touch events with hold + easing curve
+     *   b) input draganddrop: Built-in long press (~500ms) + linear drag
+     *   c) input swipe: Direct swipe (no hold, last resort)
+     *
+     * Each strategy tries: SelfAdb → Shizuku → sh → su
+     */
+    private suspend fun doShellDrag(
         startX: Float, startY: Float,
         endX: Float, endY: Float,
+        durationMs: Long,
+        screenW: Int, screenH: Int
+    ): String {
+        return withContext(Dispatchers.IO) {
+            val x1 = startX.toInt()
+            val y1 = startY.toInt()
+            val x2 = endX.toInt()
+            val y2 = endY.toInt()
+
+            // --- Strategy A: sendevent press-hold-drag (most human-like) ---
+            val sendeventResult = trySendeventDrag(x1, y1, x2, y2, screenW, screenH, durationMs)
+            if (sendeventResult == "completed") {
+                Log.d(TAG, "ShellDrag: sendevent succeeded")
+                DiagnosticReporter.logCaptcha("ShellDrag", "sendevent OK")
+                return@withContext "completed"
+            }
+            Log.d(TAG, "ShellDrag: sendevent=$sendeventResult, trying draganddrop...")
+
+            // --- Strategy B: input draganddrop (built-in long press) ---
+            val dragDropResult = tryDragAndDrop(x1, y1, x2, y2, durationMs)
+            if (dragDropResult == "completed") {
+                Log.d(TAG, "ShellDrag: draganddrop succeeded")
+                DiagnosticReporter.logCaptcha("ShellDrag", "draganddrop OK")
+                return@withContext "completed"
+            }
+            Log.d(TAG, "ShellDrag: draganddrop=$dragDropResult, trying input swipe...")
+
+            // --- Strategy C: input swipe (no hold, fallback) ---
+            val swipeResult = tryInputSwipe(x1, y1, x2, y2, durationMs)
+            if (swipeResult == "completed") {
+                Log.d(TAG, "ShellDrag: input swipe succeeded (fallback)")
+                DiagnosticReporter.logCaptcha("ShellDrag", "swipe OK (fallback)")
+                return@withContext "completed"
+            }
+
+            DiagnosticReporter.logCaptcha(
+                "ShellDrag FAILED",
+                "se=$sendeventResult, dd=$dragDropResult, sw=$swipeResult"
+            )
+            "shell_failed(se=$sendeventResult, dd=$dragDropResult, sw=$swipeResult)"
+        }
+    }
+
+    /**
+     * Detect the touchscreen input device path and coordinate ranges.
+     * Parses `getevent -pl` output to find ABS_MT_POSITION_X/Y device.
+     * Result is cached for subsequent calls.
+     */
+    private suspend fun detectTouchDevice(): TouchDeviceInfo? {
+        cachedTouchDevice?.let { return it }
+
+        val output = execShellWithOutput("getevent -pl 2>/dev/null") ?: return null
+
+        var currentDevice = ""
+        var xMax = 0
+        var yMax = 0
+        var foundX = false
+        var foundY = false
+
+        for (line in output.lines()) {
+            val trimmed = line.trim()
+
+            if (trimmed.startsWith("add device")) {
+                // If previous device already had both X and Y, we're done
+                if (foundX && foundY && currentDevice.isNotEmpty()) break
+                // Parse device path: "add device N: /dev/input/eventN"
+                val pathStart = trimmed.indexOf("/dev/input/")
+                currentDevice = if (pathStart >= 0) trimmed.substring(pathStart).trim() else ""
+                foundX = false
+                foundY = false
+            }
+
+            if (trimmed.contains("ABS_MT_POSITION_X")) {
+                val maxMatch = Regex("max\\s+(\\d+)").find(trimmed)
+                xMax = maxMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                foundX = xMax > 0
+            }
+
+            if (trimmed.contains("ABS_MT_POSITION_Y")) {
+                val maxMatch = Regex("max\\s+(\\d+)").find(trimmed)
+                yMax = maxMatch?.groupValues?.get(1)?.toIntOrNull() ?: 0
+                foundY = yMax > 0
+            }
+        }
+
+        if (foundX && foundY && currentDevice.isNotEmpty()) {
+            val info = TouchDeviceInfo(currentDevice, xMax, yMax)
+            cachedTouchDevice = info
+            Log.d(TAG, "Touch device: $currentDevice, xMax=$xMax, yMax=$yMax")
+            DiagnosticReporter.logCaptcha("TouchDevice", "path=$currentDevice, x=0..$xMax, y=0..$yMax")
+            return info
+        }
+
+        Log.w(TAG, "Touch device not found in getevent output")
+        return null
+    }
+
+    /**
+     * Build a shell script that uses sendevent to simulate human press-hold-drag.
+     *
+     * Sequence:
+     *   1. Touch DOWN at start position
+     *   2. Hold for holdMs (finger stationary, like grabbing the slider)
+     *   3. MOVE with ease-out-cubic curve + small Y jitter (human-like)
+     *   4. Pause 100ms (verify position)
+     *   5. Touch UP
+     *
+     * Each sendevent is a separate binary call within a single sh -c invocation.
+     * Process spawn overhead (~5-15ms per call) adds natural timing variation.
+     */
+    private fun buildSendeventScript(
+        dev: String,
+        rawX1: Int, rawY1: Int,
+        rawX2: Int, rawY2: Int,
+        holdMs: Int, dragMs: Int, steps: Int
+    ): String {
+        val sb = StringBuilder()
+
+        // Touch DOWN
+        sb.append("sendevent $dev 3 47 0;")   // ABS_MT_SLOT = 0
+        sb.append("sendevent $dev 3 57 0;")   // ABS_MT_TRACKING_ID = 0
+        sb.append("sendevent $dev 3 53 $rawX1;") // ABS_MT_POSITION_X
+        sb.append("sendevent $dev 3 54 $rawY1;") // ABS_MT_POSITION_Y
+        sb.append("sendevent $dev 3 48 5;")   // ABS_MT_TOUCH_MAJOR
+        sb.append("sendevent $dev 1 330 1;")  // BTN_TOUCH = 1
+        sb.append("sendevent $dev 0 0 0;")    // SYN_REPORT
+
+        // Hold (press and wait for CAPTCHA to register the grab)
+        val holdSec = holdMs / 1000.0
+        sb.append("sleep ${"%.3f".format(holdSec)};")
+
+        // Move with ease-out-cubic curve
+        val baseStepDelayMs = dragMs / steps
+        for (i in 1..steps) {
+            val t = i.toFloat() / steps
+            // Ease-out-cubic: fast initial movement, gradually slowing down
+            val eased = 1f - (1f - t).let { it * it * it }
+
+            val rawX = rawX1 + ((rawX2 - rawX1) * eased).toInt()
+            // Small Y jitter (±1 raw unit every few steps) for human-like behavior
+            val yJitter = when {
+                i % 7 == 0 -> 1
+                i % 5 == 0 -> -1
+                else -> 0
+            }
+            val rawY = rawY1 + ((rawY2 - rawY1) * eased).toInt() + yJitter
+
+            sb.append("sendevent $dev 3 53 $rawX;")
+            sb.append("sendevent $dev 3 54 $rawY;")
+            sb.append("sendevent $dev 0 0 0;")
+
+            // Variable delay: slower at start and end (more human)
+            if (i < steps) {
+                val speedFactor = when {
+                    i <= (steps * 0.15).toInt() -> 1.8 // slow start (grabbing)
+                    i >= (steps * 0.85).toInt() -> 1.4  // slow end (positioning)
+                    else -> 0.7                          // faster middle
+                }
+                val delayMs = (baseStepDelayMs * speedFactor).toInt().coerceAtLeast(15)
+                val delaySec = delayMs / 1000.0
+                sb.append("sleep ${"%.3f".format(delaySec)};")
+            }
+        }
+
+        // Small pause before release (human verifying position)
+        sb.append("sleep 0.100;")
+
+        // Touch UP
+        sb.append("sendevent $dev 3 57 -1;")  // ABS_MT_TRACKING_ID = -1 (finger up)
+        sb.append("sendevent $dev 1 330 0;")  // BTN_TOUCH = 0
+        sb.append("sendevent $dev 0 0 0")     // SYN_REPORT
+
+        return sb.toString()
+    }
+
+    /**
+     * Try sendevent-based press-hold-drag.
+     * Returns "completed" on success, error string on failure.
+     */
+    private suspend fun trySendeventDrag(
+        x1: Int, y1: Int, x2: Int, y2: Int,
+        screenW: Int, screenH: Int,
+        durationMs: Long
+    ): String {
+        val device = detectTouchDevice() ?: return "no_device"
+
+        // Map screen coordinates to raw device coordinates
+        val rawX1 = (x1.toLong() * device.xMax / screenW).toInt()
+        val rawY1 = (y1.toLong() * device.yMax / screenH).toInt()
+        val rawX2 = (x2.toLong() * device.xMax / screenW).toInt()
+        val rawY2 = (y2.toLong() * device.yMax / screenH).toInt()
+
+        val holdMs = 350
+        val steps = 25
+        val dragMs = durationMs.toInt().coerceIn(800, 3000)
+
+        Log.d(TAG, "SendeventDrag: dev=${device.devicePath}, " +
+            "raw=($rawX1,$rawY1)→($rawX2,$rawY2), hold=${holdMs}ms, drag=${dragMs}ms, steps=$steps")
+
+        val script = buildSendeventScript(
+            device.devicePath, rawX1, rawY1, rawX2, rawY2,
+            holdMs, dragMs, steps
+        )
+
+        // Execute the script as a single shell invocation
+        val result = execShellAny("sh -c '$script'")
+        return if (result == "ok") "completed" else "sendevent_$result"
+    }
+
+    /**
+     * Try input draganddrop (has built-in ~500ms long press before drag).
+     * Priority: SelfAdb → Shizuku → sh → su
+     */
+    private suspend fun tryDragAndDrop(
+        x1: Int, y1: Int, x2: Int, y2: Int,
         durationMs: Long
     ): String {
         return withContext(Dispatchers.IO) {
-            // Try SelfAdb first (Wireless Debugging ADB — no Shizuku needed)
+            // SelfAdb
             if (SelfAdbHelper.isAvailable()) {
-                val result = SelfAdbHelper.inputSwipe(
-                    startX.toInt(), startY.toInt(),
-                    endX.toInt(), endY.toInt(), durationMs
-                )
+                val result = SelfAdbHelper.inputDragAndDrop(x1, y1, x2, y2, durationMs)
+                if (result == "ok") return@withContext "completed"
+                Log.w(TAG, "SelfAdb draganddrop failed: $result")
+            }
+            // Shizuku
+            if (ShizukuHelper.isAvailable()) {
+                val result = ShizukuHelper.inputDragAndDrop(x1, y1, x2, y2, durationMs)
+                if (result == "ok") return@withContext "completed"
+                Log.w(TAG, "Shizuku draganddrop failed: $result")
+            }
+            // sh
+            val cmd = "input draganddrop $x1 $y1 $x2 $y2 $durationMs"
+            val result = tryShellCommand(cmd)
+            if (result == "ok") return@withContext "completed"
+            // su
+            val suResult = tryShellCommand("su -c '$cmd'")
+            if (suResult == "ok") return@withContext "completed"
+            "dd_fail(sh=$result,su=$suResult)"
+        }
+    }
+
+    /**
+     * Try input swipe (no hold phase, original approach).
+     * Priority: SelfAdb → Shizuku → sh → su
+     */
+    private suspend fun tryInputSwipe(
+        x1: Int, y1: Int, x2: Int, y2: Int,
+        durationMs: Long
+    ): String {
+        return withContext(Dispatchers.IO) {
+            // SelfAdb
+            if (SelfAdbHelper.isAvailable()) {
+                val result = SelfAdbHelper.inputSwipe(x1, y1, x2, y2, durationMs)
                 if (result == "ok") return@withContext "completed"
                 Log.w(TAG, "SelfAdb swipe failed: $result")
             }
-
-            // Try Shizuku (ADB-level without root — requires Shizuku app)
+            // Shizuku
             if (ShizukuHelper.isAvailable()) {
-                val result = ShizukuHelper.inputSwipe(
-                    startX.toInt(), startY.toInt(),
-                    endX.toInt(), endY.toInt(), durationMs
-                )
+                val result = ShizukuHelper.inputSwipe(x1, y1, x2, y2, durationMs)
                 if (result == "ok") return@withContext "completed"
                 Log.w(TAG, "Shizuku swipe failed: $result")
             }
-
-            val cmd = "input swipe ${startX.toInt()} ${startY.toInt()} ${endX.toInt()} ${endY.toInt()} $durationMs"
-            Log.d(TAG, "ShellSwipe: $cmd")
+            // sh
+            val cmd = "input swipe $x1 $y1 $x2 $y2 $durationMs"
             val result = tryShellCommand(cmd)
             if (result == "ok") return@withContext "completed"
-
-            val suCmd = "su -c '$cmd'"
-            val suResult = tryShellCommand(suCmd)
+            // su
+            val suResult = tryShellCommand("su -c '$cmd'")
             if (suResult == "ok") return@withContext "completed"
-            "shell_failed($result)"
+            "swipe_fail(sh=$result,su=$suResult)"
         }
     }
 

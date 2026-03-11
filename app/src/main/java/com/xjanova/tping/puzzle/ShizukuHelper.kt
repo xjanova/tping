@@ -207,10 +207,58 @@ object ShizukuHelper {
     }
 
     /**
+     * Execute `input draganddrop` via Shizuku.
+     * Unlike `input swipe`, draganddrop has a built-in long press (~500ms)
+     * before starting the drag, required by many puzzle CAPTCHAs.
+     */
+    fun inputDragAndDrop(x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Long): String {
+        Log.d(TAG, "inputDragAndDrop: ($x1,$y1)->($x2,$y2) ${durationMs}ms")
+        return execCommand("input draganddrop $x1 $y1 $x2 $y2 $durationMs")
+    }
+
+    /**
      * Execute `input tap` via Shizuku.
      */
     fun inputTap(x: Int, y: Int): String {
         Log.d(TAG, "inputTap: ($x,$y)")
         return execCommand("input tap $x $y")
+    }
+
+    /**
+     * Execute shell command via Shizuku and return stdout output.
+     * Unlike execCommand which returns "ok"/"error", this returns the actual
+     * command output for commands like `getevent -pl`.
+     * Returns null on failure.
+     */
+    fun execCommandWithOutput(cmd: String): String? {
+        return try {
+            if (!isAvailable()) return null
+
+            val method = getNewProcessMethod()
+            val process = method.invoke(
+                null,
+                arrayOf("sh", "-c", cmd),
+                null as Array<String>?,
+                null as String?
+            ) as Process
+
+            val stdout = process.inputStream.bufferedReader().readText()
+
+            val exited = if (process is ShizukuRemoteProcess) {
+                process.waitForTimeout(10, TimeUnit.SECONDS)
+            } else {
+                process.waitFor(10, TimeUnit.SECONDS)
+            }
+
+            if (!exited) {
+                process.destroy()
+                return null
+            }
+
+            if (process.exitValue() == 0) stdout.trim().ifEmpty { null } else null
+        } catch (e: Exception) {
+            Log.e(TAG, "execCommandWithOutput error: ${e.message}")
+            null
+        }
     }
 }
