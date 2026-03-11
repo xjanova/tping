@@ -35,7 +35,8 @@ import java.util.Locale
 
 @Composable
 fun CloudScreen(
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onNavigateToExport: () -> Unit = {}
 ) {
     val authState by CloudAuthManager.authState.collectAsState()
     val syncState by CloudSyncManager.syncState.collectAsState()
@@ -85,7 +86,8 @@ fun CloudScreen(
             authState.isLoggedIn -> {
                 CloudDashboard(
                     modifier = Modifier.padding(padding),
-                    syncState = syncState
+                    syncState = syncState,
+                    onNavigateToExport = onNavigateToExport
                 )
             }
             CloudSyncManager.hasActiveLicense() -> {
@@ -372,7 +374,8 @@ private fun LoginRegisterForm(
 @Composable
 private fun CloudDashboard(
     modifier: Modifier = Modifier,
-    syncState: com.xjanova.tping.data.cloud.SyncState
+    syncState: com.xjanova.tping.data.cloud.SyncState,
+    onNavigateToExport: () -> Unit = {}
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -593,6 +596,50 @@ private fun CloudDashboard(
                     Icon(Icons.Default.OpenInBrowser, contentDescription = null)
                     Spacer(modifier = Modifier.width(8.dp))
                     Text("Data Profile Dashboard บนเว็บ", fontWeight = FontWeight.Medium)
+                }
+            }
+        }
+
+        // Export / Import card
+        item {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = Color(0xFFF59E0B).copy(alpha = 0.08f)
+                ),
+                onClick = onNavigateToExport
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        Icons.Default.SwapHoriz,
+                        contentDescription = null,
+                        tint = Color(0xFFF59E0B),
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            "Import / Export โฟล & ไอดี",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp
+                        )
+                        Text(
+                            "ส่งออก/นำเข้าโฟลและข้อมูลเป็นไฟล์ JSON เพื่อใช้บนเครื่องอื่น",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                    Icon(
+                        Icons.Default.ChevronRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.3f)
+                    )
                 }
             }
         }

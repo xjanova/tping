@@ -127,7 +127,8 @@ fun TpingApp() {
         }
         composable("cloud") {
             CloudScreen(
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                onNavigateToExport = { navController.navigate("export") { launchSingleTop = true } }
             )
         }
     }
