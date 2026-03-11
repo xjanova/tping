@@ -245,11 +245,23 @@ object LicenseManager {
                         isLoading = false
                     )
                 } else {
-                    // Validate returned is_valid=false — likely machine_id mismatch.
-                    // Try re-activating to rebind HWID (handles migration from ANDROID_ID → MediaDrm)
-                    Log.w(TAG, "Validate failed: ${result.message}, attempting re-activate...")
-                    val reActivated = tryReActivate(context, licenseKey, machineId, displayId)
-                    if (!reActivated) {
+                    // Validate returned is_valid=false
+                    // Only try re-activate if DRM ID is available (same physical device, HWID migration)
+                    val drmId = getDrmId()
+                    if (drmId.isNotEmpty()) {
+                        Log.w(TAG, "Validate failed: ${result.message}, attempting HWID migration re-activate...")
+                        val reActivated = tryReActivate(context, licenseKey, machineId, displayId)
+                        if (!reActivated) {
+                            prefs?.edit()?.putString(KEY_LICENSE_STATUS, "expired")?.apply()
+                            _state.value = LicenseState(
+                                status = LicenseStatus.EXPIRED,
+                                licenseType = type,
+                                deviceId = displayId,
+                                isLoading = false,
+                                errorMessage = result.message.ifEmpty { "License หมดอายุ" }
+                            )
+                        }
+                    } else {
                         prefs?.edit()?.putString(KEY_LICENSE_STATUS, "expired")?.apply()
                         _state.value = LicenseState(
                             status = LicenseStatus.EXPIRED,
@@ -261,11 +273,32 @@ object LicenseManager {
                     }
                 }
             } else {
-                // Server returned error — try re-activate, then fall back to cached state
-                Log.w(TAG, "Validate request failed: ${result.message}, attempting re-activate...")
-                val reActivated = tryReActivate(context, licenseKey, machineId, displayId)
-                if (!reActivated) {
-                    useCachedState(displayId)
+                // Server returned error — check if it's a different-device block
+                val errorCode = try { result.data.get("error_code")?.asString ?: "" } catch (_: Exception) { "" }
+                if (errorCode == "ALREADY_ACTIVATED_OTHER_DEVICE" || result.statusCode == 403) {
+                    // Hard block — different device
+                    prefs?.edit()
+                        ?.remove(KEY_LICENSE_KEY)
+                        ?.putString(KEY_LICENSE_STATUS, "blocked")
+                        ?.apply()
+                    _state.value = LicenseState(
+                        status = LicenseStatus.EXPIRED,
+                        deviceId = displayId,
+                        isLoading = false,
+                        errorMessage = "License นี้ถูกใช้งานบนเครื่องอื่นแล้ว\nกรุณาติดต่อแอดมินเพื่อย้ายเครื่อง"
+                    )
+                } else {
+                    // Other error — try re-activate (HWID migration), then fall back to cached state
+                    Log.w(TAG, "Validate request failed: ${result.message}, attempting re-activate...")
+                    val drmId = getDrmId()
+                    if (drmId.isNotEmpty()) {
+                        val reActivated = tryReActivate(context, licenseKey, machineId, displayId)
+                        if (!reActivated) {
+                            useCachedState(displayId)
+                        }
+                    } else {
+                        useCachedState(displayId)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -322,11 +355,30 @@ object LicenseManager {
                 } catch (_: Exception) {}
                 true
             } else {
-                Log.w(TAG, "Re-activate failed: ${result.message}")
+                // Check for "already activated on other device" — hard block
+                val errorCode = try { result.data.get("error_code")?.asString ?: "" } catch (_: Exception) { "" }
+                val isOtherDevice = errorCode == "ALREADY_ACTIVATED_OTHER_DEVICE" || result.statusCode == 403
+                Log.w(TAG, "Re-activate failed: ${result.message} (code=$errorCode, otherDevice=$isOtherDevice)")
+
+                if (isOtherDevice) {
+                    // Different device — BLOCK completely, clear saved key
+                    prefs?.edit()
+                        ?.remove(KEY_LICENSE_KEY)
+                        ?.putString(KEY_LICENSE_STATUS, "blocked")
+                        ?.apply()
+                    _state.value = LicenseState(
+                        status = LicenseStatus.EXPIRED,
+                        deviceId = displayId,
+                        isLoading = false,
+                        errorMessage = "License นี้ถูกใช้งานบนเครื่องอื่นแล้ว\nกรุณาติดต่อแอดมินเพื่อย้ายเครื่อง"
+                    )
+                }
+
                 try {
                     com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
                         "license", "tryReActivate FAILED",
-                        "status=${result.statusCode}, msg=${result.message}"
+                        "status=${result.statusCode}, msg=${result.message}, " +
+                            "errorCode=$errorCode, isOtherDevice=$isOtherDevice"
                     )
                 } catch (_: Exception) {}
                 false
@@ -756,8 +808,17 @@ object LicenseManager {
                 )
                 Result.success(getLicenseTypeDisplay(type))
             } else {
-                _state.value = _state.value.copy(isLoading = false, errorMessage = result.message)
-                Result.failure(Exception(result.message.ifEmpty { "ไม่สามารถเปิดใช้งานคีย์ได้" }))
+                // Check for "already activated on other device" — hard block
+                val errorCode = try { result.data.get("error_code")?.asString ?: "" } catch (_: Exception) { "" }
+                val errorMsg = when (errorCode) {
+                    "ALREADY_ACTIVATED_OTHER_DEVICE" ->
+                        "License นี้ถูกใช้งานบนเครื่องอื่นแล้ว\nกรุณาติดต่อแอดมินเพื่อย้ายเครื่อง"
+                    "LICENSE_REVOKED" -> "License ถูกยกเลิกแล้ว กรุณาติดต่อแอดมิน"
+                    "LICENSE_EXPIRED" -> "License หมดอายุแล้ว กรุณาต่ออายุ"
+                    else -> result.message.ifEmpty { "ไม่สามารถเปิดใช้งานคีย์ได้" }
+                }
+                _state.value = _state.value.copy(isLoading = false, errorMessage = errorMsg)
+                Result.failure(Exception(errorMsg))
             }
         } catch (e: Exception) {
             Log.e(TAG, "activateKey failed", e)
