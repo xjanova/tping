@@ -40,17 +40,6 @@ fun CloudScreen(
 ) {
     val authState by CloudAuthManager.authState.collectAsState()
     val syncState by CloudSyncManager.syncState.collectAsState()
-    val scope = rememberCoroutineScope()
-    var isAutoAuthenticating by remember { mutableStateOf(false) }
-
-    // Auto device-auth when screen opens and license is active
-    LaunchedEffect(Unit) {
-        if (!authState.isLoggedIn && CloudSyncManager.hasActiveLicense()) {
-            isAutoAuthenticating = true
-            CloudSyncManager.ensureDeviceAuth()
-            isAutoAuthenticating = false
-        }
-    }
 
     Scaffold(
         topBar = {
@@ -67,110 +56,23 @@ fun CloudScreen(
             )
         }
     ) { padding ->
-        when {
-            isAutoAuthenticating -> {
-                // Show loading while auto-authenticating
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator(color = Color(0xFF06B6D4))
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text("กำลังเชื่อมต่อ Cloud...", fontSize = 14.sp)
-                    }
-                }
-            }
-            authState.isLoggedIn -> {
-                CloudDashboard(
-                    modifier = Modifier.padding(padding),
-                    syncState = syncState,
-                    onNavigateToExport = onNavigateToExport
-                )
-            }
-            CloudSyncManager.hasActiveLicense() -> {
-                // License active but auth failed — show retry
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(padding),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Column(
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.padding(32.dp)
-                    ) {
-                        Icon(Icons.Default.CloudOff, null, tint = Color(0xFFF59E0B), modifier = Modifier.size(48.dp))
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text("เชื่อมต่อ Cloud ไม่สำเร็จ", fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("ตรวจสอบการเชื่อมต่ออินเทอร์เน็ต", fontSize = 13.sp, color = Color.Gray)
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    isAutoAuthenticating = true
-                                    CloudSyncManager.ensureDeviceAuth()
-                                    isAutoAuthenticating = false
-                                }
-                            },
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF06B6D4))
-                        ) {
-                            Text("ลองอีกครั้ง")
-                        }
-                    }
-                }
-            }
-            else -> {
-                // No active license — need to activate first
-                NoLicenseMessage(modifier = Modifier.padding(padding))
-            }
+        if (authState.isLoggedIn) {
+            CloudDashboard(
+                modifier = Modifier.padding(padding),
+                syncState = syncState,
+                onNavigateToExport = onNavigateToExport
+            )
+        } else {
+            // Not logged in — show login/register form
+            LoginRegisterForm(
+                modifier = Modifier.padding(padding),
+                isLoading = authState.isLoading,
+                errorMessage = authState.errorMessage
+            )
         }
     }
 }
 
-@Composable
-private fun NoLicenseMessage(modifier: Modifier = Modifier) {
-    Box(
-        modifier = modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center
-    ) {
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.padding(32.dp)
-        ) {
-            Icon(
-                Icons.Default.Cloud,
-                contentDescription = null,
-                tint = Color(0xFF06B6D4),
-                modifier = Modifier.size(64.dp)
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                "Cloud Sync",
-                fontWeight = FontWeight.Bold,
-                fontSize = 20.sp
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                "ซิงค์ Workflow และข้อมูลอัตโนมัติ\nเปิดใช้งานเมื่อมี License ที่ Active",
-                fontSize = 14.sp,
-                color = Color.Gray,
-                textAlign = TextAlign.Center
-            )
-            Spacer(modifier = Modifier.height(8.dp))
-            Text(
-                "ไม่ต้องสมัครสมาชิก — ใช้ได้ทันทีเมื่อ License Active",
-                fontSize = 12.sp,
-                color = Color(0xFF06B6D4),
-                textAlign = TextAlign.Center
-            )
-        }
-    }
-}
 
 @Composable
 private fun LoginRegisterForm(

@@ -7,8 +7,6 @@ import com.google.gson.JsonObject
 import com.xjanova.tping.TpingApplication
 import com.xjanova.tping.data.entity.DataProfile
 import com.xjanova.tping.data.entity.Workflow
-import com.xjanova.tping.data.license.LicenseManager
-import com.xjanova.tping.data.license.LicenseStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,12 +23,9 @@ data class SyncState(
 /**
  * Orchestrates upload/download of workflows and data profiles to/from xmanstudio.
  *
- * v1.2.30 improvements:
- * - License-based device auth: auto-authenticate using license key + machine ID
- * - No user login/register required — just active license
- * - Sync stops when license expires
+ * Requires user login (email/password) — no auto device auth.
  * - Download deduplication (checks by name before inserting)
- * - Auto-sync on startup when licensed
+ * - Auto-sync on startup when logged in
  * - Bidirectional full sync (upload then download)
  */
 object CloudSyncManager {
@@ -41,48 +36,10 @@ object CloudSyncManager {
     private val gson = Gson()
 
     /**
-     * Check if user has an active license (eligible for cloud sync).
-     * No login check required — device auth handles authentication automatically.
-     */
-    fun hasActiveLicense(): Boolean {
-        return try {
-            val status = LicenseManager.state.value.status
-            status == LicenseStatus.ACTIVE || status == LicenseStatus.TRIAL
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    /**
-     * Legacy compat — checks both auth and license.
+     * Check if user can sync — requires user login.
      */
     fun canSync(): Boolean {
-        if (!hasActiveLicense()) return false
         return CloudAuthManager.isLoggedIn()
-    }
-
-    /**
-     * Ensure device is authenticated for cloud sync.
-     * Uses license key + machine ID for automatic device auth.
-     * Returns true if authenticated (already or newly), false if failed.
-     */
-    suspend fun ensureDeviceAuth(): Boolean {
-        // Already authenticated
-        if (CloudAuthManager.isLoggedIn()) return true
-
-        // Need active license to authenticate
-        if (!hasActiveLicense()) return false
-
-        // Get license key and machine ID from LicenseManager
-        val licenseKey = LicenseManager.getLicenseKey()
-        val machineId = LicenseManager.getMachineId()
-        if (licenseKey.isNullOrEmpty() || machineId.isNullOrEmpty()) {
-            Log.w(TAG, "Cannot device-auth: missing license key or machine ID")
-            return false
-        }
-
-        Log.d(TAG, "Attempting device auth with license key...")
-        return CloudAuthManager.deviceAuth(licenseKey, machineId)
     }
 
     // ========================== Upload ==========================
@@ -265,22 +222,13 @@ object CloudSyncManager {
 
     /**
      * Full bidirectional sync: upload local changes then download cloud changes.
-     * Auto-authenticates with device auth if needed.
+     * Requires user to be logged in first (email/password).
      */
     suspend fun fullSync() {
         _syncState.value = SyncState(isSyncing = true, message = "กำลังเชื่อมต่อ...")
         try {
-            // Ensure device auth before sync
-            if (!ensureDeviceAuth()) {
-                val key = LicenseManager.getLicenseKey()
-                val machineId = LicenseManager.getMachineId()
-                val detail = when {
-                    !hasActiveLicense() -> "ไม่มี License ที่ Active"
-                    key.isNullOrEmpty() -> "ไม่พบ License Key"
-                    machineId.isNullOrEmpty() -> "ไม่พบ Machine ID"
-                    else -> "เซิร์ฟเวอร์ปฏิเสธ — ตรวจสอบไลเซนส์"
-                }
-                _syncState.value = SyncState(error = "เข้าสู่ระบบไม่ได้: $detail")
+            if (!CloudAuthManager.isLoggedIn()) {
+                _syncState.value = SyncState(error = "กรุณาเข้าสู่ระบบก่อนซิงค์")
                 return
             }
             _syncState.value = _syncState.value.copy(message = "กำลังอัพโหลด Workflow...")
@@ -307,19 +255,13 @@ object CloudSyncManager {
     // ========================== Auto-Sync ==========================
 
     /**
-     * Called on app startup — auto-sync if license is active.
-     * Automatically authenticates using device auth (no login needed).
+     * Called on app startup — auto-sync if user is logged in.
+     * Requires user login (email/password) — no auto device auth.
      * Silently fails without showing errors to user.
      */
     suspend fun autoSyncIfEligible() {
-        if (!hasActiveLicense()) {
-            Log.d(TAG, "Auto-sync skipped: no active license")
-            return
-        }
-
-        // Ensure device is authenticated (auto device-auth if needed)
-        if (!ensureDeviceAuth()) {
-            Log.d(TAG, "Auto-sync skipped: device auth failed")
+        if (!CloudAuthManager.isLoggedIn()) {
+            Log.d(TAG, "Auto-sync skipped: not logged in")
             return
         }
 
@@ -354,18 +296,11 @@ object CloudSyncManager {
     }
 
     /**
-     * Force re-authenticate using device auth. Returns new token or null.
+     * Token expired — clear and require re-login. Returns null (cannot auto-refresh).
      */
     private suspend fun refreshAuth(): String? {
-        Log.d(TAG, "Refreshing auth token via device auth...")
-        CloudAuthManager.logout() // Clear stale token
-        val licenseKey = LicenseManager.getLicenseKey()
-        val machineId = LicenseManager.getMachineId()
-        if (licenseKey.isNullOrEmpty() || machineId.isNullOrEmpty()) {
-            Log.w(TAG, "Cannot refresh auth: missing license key or machine ID")
-            return null
-        }
-        val ok = CloudAuthManager.deviceAuth(licenseKey, machineId)
-        return if (ok) CloudAuthManager.getToken() else null
+        Log.w(TAG, "Auth token expired — user must re-login")
+        CloudAuthManager.logout()
+        return null
     }
 }
