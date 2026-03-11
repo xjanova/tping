@@ -32,30 +32,11 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Restore debug keystore from cache
-        id: restore-keystore
-        uses: actions/cache/restore@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: debug-keystore-v1
-
-      - name: Generate debug keystore
-        if: steps.restore-keystore.outputs.cache-hit != 'true'
+      - name: Decode release keystore
         run: |
-          mkdir -p ~/.android
-          keytool -genkeypair -v \
-            -keystore ~/.android/debug.keystore \
-            -alias androiddebugkey \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass android -keypass android \
-            -dname "CN=Xman Studio, OU=Dev, O=Xman Studio, L=Bangkok, S=BKK, C=TH"
-
-      - name: Save debug keystore to cache
-        if: steps.restore-keystore.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: ~/.android/debug.keystore
-          key: debug-keystore-v1
+          mkdir -p keystore
+          echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore/release.keystore
+          echo "✅ Release keystore decoded"
 
       - name: Auto-bump version if tag exists
         run: |
@@ -90,6 +71,9 @@ jobs:
           echo "📦 Version: v${VERSION} (versionCode: ${VERSION_CODE})"
 
       - name: Build Release APK
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./gradlew assembleRelease
 
       - name: Verify APK is signed

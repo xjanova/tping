@@ -27,12 +27,26 @@ android {
         }
 
         // APK signing cert SHA-256 for runtime integrity verification.
-        // Current value: debug keystore. Update when switching to release signing.
+        // Must match the release keystore used for signing.
         buildConfigField(
             "String",
             "EXPECTED_SIGNING_CERT_HASH",
-            "\"d1b1e9b7e9b223b66a800d38d1ac0f401ae01c8855625f32105aa6369384a6c3\""
+            "\"76e40e5c5193cd0c0b38ae8b7a1fd5f514bb55c95820b1d5ac7414966029caa7\""
         )
+    }
+
+    signingConfigs {
+        create("release") {
+            // Local: keystore/release.keystore
+            // CI: decoded from KEYSTORE_BASE64 secret to same path
+            val keystorePath = rootProject.file("keystore/release.keystore")
+            if (keystorePath.exists()) {
+                storeFile = keystorePath
+                storePassword = System.getenv("KEYSTORE_PASSWORD") ?: "TpingXman2024"
+                keyAlias = "tping-release"
+                keyPassword = System.getenv("KEY_PASSWORD") ?: "TpingXman2024"
+            }
+        }
     }
 
     buildTypes {
@@ -43,8 +57,10 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
-            // Use debug signing so release APK is always signed & installable
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName("release")
+        }
+        debug {
+            signingConfig = signingConfigs.getByName("release")
         }
     }
     compileOptions {

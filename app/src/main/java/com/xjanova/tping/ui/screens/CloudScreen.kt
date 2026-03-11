@@ -602,13 +602,9 @@ private fun CloudDashboard(
             HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
         }
 
-        // GitHub Token for auto-update (private repo)
+        // Check for update button
         item {
-            var githubToken by remember {
-                mutableStateOf(UpdateChecker.getGitHubToken(context) ?: "")
-            }
-            var showTokenField by remember { mutableStateOf(false) }
-
+            val updateInfo by UpdateChecker.updateInfo.collectAsState()
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
@@ -630,75 +626,36 @@ private fun CloudDashboard(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                "เช็คอัพเดทอัตโนมัติ",
+                                "เช็คอัพเดท",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
                             )
                             Text(
-                                if (githubToken.isNotBlank()) "GitHub Token: ตั้งค่าแล้ว"
-                                else "ใส่ GitHub Token สำหรับ private repo",
+                                "เวอร์ชันปัจจุบัน: ${updateInfo.currentVersion}",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                             )
                         }
-                        TextButton(onClick = { showTokenField = !showTokenField }) {
-                            Text(
-                                if (showTokenField) "ซ่อน" else "ตั้งค่า",
-                                fontSize = 12.sp,
-                                color = Color(0xFF8B5CF6)
-                            )
-                        }
-                    }
-
-                    if (showTokenField) {
-                        Spacer(modifier = Modifier.height(10.dp))
-                        OutlinedTextField(
-                            value = githubToken,
-                            onValueChange = { githubToken = it },
-                            label = { Text("GitHub Personal Access Token", fontSize = 12.sp) },
-                            placeholder = { Text("ghp_...", fontSize = 12.sp) },
-                            singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            shape = RoundedCornerShape(10.dp),
-                            textStyle = androidx.compose.ui.text.TextStyle(fontSize = 13.sp),
-                            visualTransformation = PasswordVisualTransformation()
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(
-                                onClick = {
-                                    UpdateChecker.setGitHubToken(context, githubToken)
-                                    Toast.makeText(context, "บันทึก Token แล้ว", Toast.LENGTH_SHORT).show()
-                                    scope.launch {
-                                        UpdateChecker.checkForUpdate(context, shouldThrottle = false)
-                                    }
-                                },
-                                enabled = githubToken.isNotBlank(),
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6)),
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text("บันทึก & เช็คอัพเดท", fontSize = 13.sp)
-                            }
-                            if (githubToken.isNotBlank()) {
-                                OutlinedButton(
-                                    onClick = {
-                                        githubToken = ""
-                                        UpdateChecker.clearGitHubToken(context)
-                                        Toast.makeText(context, "ลบ Token แล้ว", Toast.LENGTH_SHORT).show()
-                                    },
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text("ลบ", fontSize = 13.sp, color = Color(0xFFEF4444))
+                        Button(
+                            onClick = {
+                                scope.launch {
+                                    UpdateChecker.checkForUpdate(context, shouldThrottle = false)
                                 }
+                            },
+                            enabled = !updateInfo.isChecking,
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6))
+                        ) {
+                            if (updateInfo.isChecking) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    color = Color.White,
+                                    strokeWidth = 2.dp
+                                )
+                            } else {
+                                Text("เช็คเลย", fontSize = 12.sp)
                             }
                         }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            "Token ต้องมีสิทธิ์ repo (read) สำหรับ private repo",
-                            fontSize = 10.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
-                        )
                     }
                 }
             }

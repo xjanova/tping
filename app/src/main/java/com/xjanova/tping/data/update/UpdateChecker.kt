@@ -7,7 +7,6 @@ import android.os.Environment
 import android.util.Log
 import androidx.core.content.FileProvider
 import com.google.gson.Gson
-import com.google.gson.JsonArray
 import com.google.gson.JsonObject
 import com.xjanova.tping.BuildConfig
 import kotlinx.coroutines.Dispatchers
@@ -34,23 +33,22 @@ data class UpdateInfo(
 )
 
 /**
- * Checks for app updates from GitHub Releases.
+ * Checks for app updates from xman4289.com.
  *
- * Supports both public and private repositories:
- * - Public: uses unauthenticated GitHub API
- * - Private: uses GitHub Personal Access Token (PAT)
- *
- * GitHub repo: xjanova/tping
+ * API: GET https://xman4289.com/api/v1/product/tping/update/check?current_version=X.Y.Z
+ * Response: {
+ *   "has_update": true,
+ *   "latest_version": "1.2.47",
+ *   "download_url": "https://xman4289.com/downloads/tping/Tping-v1.2.47.apk",
+ *   "changelog": "..."
+ * }
  */
 object UpdateChecker {
 
     private const val TAG = "UpdateChecker"
-    private const val GITHUB_OWNER = "xjanova"
-    private const val GITHUB_REPO = "tping"
-    private const val GITHUB_API_URL = "https://api.github.com/repos/$GITHUB_OWNER/$GITHUB_REPO/releases/latest"
+    private const val UPDATE_CHECK_URL = "https://xman4289.com/api/v1/product/tping/update/check"
 
     private const val PREFS_NAME = "tping_update"
-    private const val KEY_GITHUB_TOKEN = "github_pat"
     private const val KEY_LAST_CHECK = "last_check_at"
     private const val KEY_DISMISSED_VERSION = "dismissed_version"
 
@@ -70,27 +68,6 @@ object UpdateChecker {
     private val gson = Gson()
 
     /**
-     * Save a GitHub PAT for accessing private repos.
-     */
-    fun setGitHubToken(context: Context, token: String) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit()
-            .putString(KEY_GITHUB_TOKEN, token.trim())
-            .apply()
-        Log.d(TAG, "GitHub token saved (length: ${token.trim().length})")
-    }
-
-    fun getGitHubToken(context: Context): String? {
-        return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .getString(KEY_GITHUB_TOKEN, null)
-    }
-
-    fun clearGitHubToken(context: Context) {
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-            .edit().remove(KEY_GITHUB_TOKEN).apply()
-    }
-
-    /**
      * Dismiss a specific version update notification.
      */
     fun dismissVersion(context: Context, version: String) {
@@ -105,7 +82,7 @@ object UpdateChecker {
     }
 
     /**
-     * Check for updates from GitHub releases.
+     * Check for updates from xman4289.com.
      * If shouldThrottle is true, will skip if checked recently.
      */
     suspend fun checkForUpdate(
@@ -125,55 +102,28 @@ object UpdateChecker {
         _updateInfo.value = _updateInfo.value.copy(isChecking = true, error = "")
 
         try {
-            val token = getGitHubToken(context)
+            val currentVersion = BuildConfig.VERSION_NAME
+            val url = "$UPDATE_CHECK_URL?current_version=$currentVersion"
 
-            val requestBuilder = Request.Builder()
-                .url(GITHUB_API_URL)
-                .addHeader("Accept", "application/vnd.github.v3+json")
-                .addHeader("User-Agent", "Tping-Android/${BuildConfig.VERSION_NAME}")
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Accept", "application/json")
+                .addHeader("User-Agent", "Tping-Android/$currentVersion")
+                .build()
 
-            // Add auth token for private repos
-            if (!token.isNullOrBlank()) {
-                requestBuilder.addHeader("Authorization", "token $token")
-            }
-
-            val response = client.newCall(requestBuilder.build()).execute()
+            val response = client.newCall(request).execute()
             val body = response.body?.string() ?: "{}"
 
             if (!response.isSuccessful) {
-                val errorMsg = when (response.code) {
-                    401 -> "GitHub Token ไม่ถูกต้อง"
-                    403 -> if (token.isNullOrBlank()) "Repo เป็น private — ต้องใส่ GitHub Token" else "Token หมดสิทธิ์หรือ rate limit"
-                    404 -> if (token.isNullOrBlank()) "ไม่พบ release (Repo อาจเป็น private)" else "ไม่พบ release"
-                    else -> "HTTP ${response.code}"
-                }
-                _updateInfo.value = UpdateInfo(error = errorMsg)
+                _updateInfo.value = UpdateInfo(error = "เช็คอัพเดทไม่ได้: HTTP ${response.code}")
                 return@withContext
             }
 
             val json = gson.fromJson(body, JsonObject::class.java)
-            val tagName = json.get("tag_name")?.asString ?: ""
-            val latestVersion = tagName.removePrefix("v")
-            val releaseBody = json.get("body")?.asString ?: ""
-
-            // Find APK asset
-            val assets = json.getAsJsonArray("assets") ?: JsonArray()
-            var apkUrl = ""
-            var apkName = ""
-            for (asset in assets) {
-                val assetObj = asset.asJsonObject
-                val name = assetObj.get("name")?.asString ?: ""
-                if (name.endsWith(".apk")) {
-                    // For private repos, we need the browser_download_url with token
-                    // or the url (API endpoint) with Accept header
-                    apkUrl = assetObj.get("browser_download_url")?.asString ?: ""
-                    apkName = name
-                    break
-                }
-            }
-
-            // Compare versions
-            val hasUpdate = isNewerVersion(latestVersion, BuildConfig.VERSION_NAME)
+            val hasUpdate = json.get("has_update")?.asBoolean ?: false
+            val latestVersion = json.get("latest_version")?.asString ?: ""
+            val downloadUrl = json.get("download_url")?.asString ?: ""
+            val changelog = json.get("changelog")?.asString ?: ""
 
             // Save last check time
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -186,13 +136,13 @@ object UpdateChecker {
             _updateInfo.value = UpdateInfo(
                 hasUpdate = showUpdate,
                 latestVersion = latestVersion,
-                currentVersion = BuildConfig.VERSION_NAME,
-                downloadUrl = apkUrl,
-                releaseNotes = releaseBody,
-                fileName = apkName
+                currentVersion = currentVersion,
+                downloadUrl = downloadUrl,
+                releaseNotes = changelog,
+                fileName = "Tping-v${latestVersion}.apk"
             )
 
-            Log.d(TAG, "Update check: current=${BuildConfig.VERSION_NAME} latest=$latestVersion hasUpdate=$hasUpdate apk=$apkName")
+            Log.d(TAG, "Update check: current=$currentVersion latest=$latestVersion hasUpdate=$hasUpdate")
 
         } catch (e: Exception) {
             Log.e(TAG, "Update check failed", e)
@@ -201,8 +151,7 @@ object UpdateChecker {
     }
 
     /**
-     * Download APK and trigger install.
-     * For private repos, uses the GitHub token for authentication.
+     * Download APK from xman4289.com and trigger install.
      */
     suspend fun downloadAndInstall(context: Context) = withContext(Dispatchers.IO) {
         val info = _updateInfo.value
@@ -214,19 +163,12 @@ object UpdateChecker {
         _updateInfo.value = info.copy(isDownloading = true, downloadProgress = 0, error = "")
 
         try {
-            val token = getGitHubToken(context)
-
-            val requestBuilder = Request.Builder()
+            val request = Request.Builder()
                 .url(info.downloadUrl)
                 .addHeader("User-Agent", "Tping-Android/${BuildConfig.VERSION_NAME}")
+                .build()
 
-            // For private repo assets, need token auth
-            if (!token.isNullOrBlank()) {
-                requestBuilder.addHeader("Authorization", "token $token")
-                requestBuilder.addHeader("Accept", "application/octet-stream")
-            }
-
-            val response = client.newCall(requestBuilder.build()).execute()
+            val response = client.newCall(request).execute()
 
             if (!response.isSuccessful) {
                 _updateInfo.value = _updateInfo.value.copy(
@@ -297,7 +239,6 @@ object UpdateChecker {
             context.startActivity(intent)
         } catch (e: Exception) {
             Log.e(TAG, "Install APK failed", e)
-            // Fallback: try opening directly
             try {
                 val intent = Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(Uri.fromFile(apkFile), "application/vnd.android.package-archive")
@@ -309,26 +250,5 @@ object UpdateChecker {
                 _updateInfo.value = _updateInfo.value.copy(error = "เปิดตัวติดตั้งไม่ได้")
             }
         }
-    }
-
-    /**
-     * Semantic version comparison.
-     * Returns true if `latest` is newer than `current`.
-     */
-    private fun isNewerVersion(latest: String, current: String): Boolean {
-        try {
-            val latestParts = latest.split(".").map { it.toIntOrNull() ?: 0 }
-            val currentParts = current.split(".").map { it.toIntOrNull() ?: 0 }
-
-            for (i in 0 until maxOf(latestParts.size, currentParts.size)) {
-                val l = latestParts.getOrElse(i) { 0 }
-                val c = currentParts.getOrElse(i) { 0 }
-                if (l > c) return true
-                if (l < c) return false
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Version comparison failed: $latest vs $current", e)
-        }
-        return false
     }
 }
