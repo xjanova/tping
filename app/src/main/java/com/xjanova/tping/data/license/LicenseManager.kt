@@ -86,14 +86,17 @@ object LicenseManager {
             appContext = context.applicationContext
             prefs = getPrefs(context)
 
+            // Stable display ID — based on DRM, survives reinstall
             val displayId = try {
-                DeviceManager.getDeviceId(context)
+                DeviceManager.getStableDisplayId(context)
             } catch (e: Exception) {
-                Log.e(TAG, "getDeviceId failed", e)
+                Log.e(TAG, "getStableDisplayId failed", e)
                 "unknown"
             }
 
             val machineId = getMachineId(context)
+            val drmId = getDrmId()
+            val androidId = try { DeviceManager.getAndroidId(context) } catch (_: Exception) { "" }
 
             // Read old machineId BEFORE overwriting — needed for HWID migration detection
             val oldMachineId = try { prefs?.getString(KEY_MACHINE_ID, "") ?: "" } catch (_: Exception) { "" }
@@ -106,6 +109,9 @@ object LicenseManager {
             } catch (e: Exception) {
                 Log.e(TAG, "prefs write failed", e)
             }
+
+            Log.d(TAG, "init: displayId=$displayId, machineId=${machineId.take(16)}..., " +
+                "drmId=${drmId.take(16).ifEmpty { "NONE" }}..., androidId=${androidId.take(8)}...")
 
             // Set loading state
             _state.value = LicenseState(
@@ -283,7 +289,7 @@ object LicenseManager {
         return try {
             val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
             val drmId = getDrmId()
-            val androidId = try { DeviceManager.getDeviceId(context) } catch (_: Exception) { "" }
+            val androidId = try { DeviceManager.getAndroidId(context) } catch (_: Exception) { "" }
             val result = withContext(Dispatchers.IO) {
                 LicenseApiClient.activateLicense(licenseKey, machineId, hardwareHash, drmId, androidId)
             }
@@ -350,7 +356,7 @@ object LicenseManager {
         try {
             val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
             val drmId = getDrmId()
-            val androidId = try { DeviceManager.getDeviceId(context) } catch (_: Exception) { "" }
+            val androidId = try { DeviceManager.getAndroidId(context) } catch (_: Exception) { "" }
             val result = withContext(Dispatchers.IO) {
                 LicenseApiClient.activateLicense(licenseKey, newMachineId, hardwareHash, drmId, androidId)
             }
@@ -402,6 +408,7 @@ object LicenseManager {
 
     /**
      * Check if this machine already has an active license on server (HWID auto-check).
+     * Sends machine_id + drm_id + android_id for maximum cross-reference ability.
      * Returns true if license found and auto-activated, false otherwise.
      */
     private suspend fun checkMachineForExistingLicense(
@@ -410,17 +417,18 @@ object LicenseManager {
         displayId: String
     ): Boolean {
         return try {
-            Log.d(TAG, "checkMachine: machineId=${machineId.take(16)}... (${machineId.length} chars)")
+            val drmId = getDrmId()
+            val androidId = try { DeviceManager.getAndroidId(context) } catch (_: Exception) { "" }
+            Log.d(TAG, "checkMachine: machineId=${machineId.take(16)}..., drmId=${drmId.take(16).ifEmpty { "NONE" }}..., androidId=${androidId.take(8)}...")
             try {
                 com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
                     "license", "checkMachine start",
-                    "machineId=${machineId.take(16)}..., len=${machineId.length}"
+                    "machineId=${machineId.take(16)}..., len=${machineId.length}, hasDrm=${drmId.isNotEmpty()}"
                 )
             } catch (_: Exception) {}
-            val drmId = getDrmId()
-            // Also send ANDROID_ID for server-side cross-reference lookup after reinstall
+            // Send all 3 IDs for server-side cross-reference lookup after reinstall
             val result = withContext(Dispatchers.IO) {
-                LicenseApiClient.checkMachine(machineId, drmId, androidId = displayId)
+                LicenseApiClient.checkMachine(machineId, drmId, androidId)
             }
             if (result.success) {
                 val hasLicense = result.data.get("has_license")?.asBoolean ?: false
@@ -480,8 +488,9 @@ object LicenseManager {
         displayId: String
     ) {
         try {
+            val drmId = getDrmId()
             val checkResult = withContext(Dispatchers.IO) {
-                LicenseApiClient.checkDemo(machineId)
+                LicenseApiClient.checkDemo(machineId, drmId)
             }
 
             if (!checkResult.success) {
@@ -712,10 +721,10 @@ object LicenseManager {
      */
     suspend fun activateKey(context: Context, key: String): Result<String> {
         val machineId = getMachineId(context)
-        val displayId = try { DeviceManager.getDeviceId(context) } catch (_: Exception) { "unknown" }
+        val stableDisplayId = try { DeviceManager.getStableDisplayId(context) } catch (_: Exception) { "unknown" }
         val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
         val drmId = getDrmId()
-        val androidId = if (displayId != "unknown") displayId else ""
+        val androidId = try { DeviceManager.getAndroidId(context) } catch (_: Exception) { "" }
 
         _state.value = _state.value.copy(isLoading = true)
 
@@ -742,7 +751,7 @@ object LicenseManager {
                     licenseType = type,
                     expiresAt = expiresAt,
                     remainingDays = daysRemaining,
-                    deviceId = displayId,
+                    deviceId = stableDisplayId,
                     isLoading = false
                 )
                 Result.success(getLicenseTypeDisplay(type))
@@ -794,7 +803,13 @@ object LicenseManager {
         }
     }
 
-    fun getDeviceId(): String = try { prefs?.getString(KEY_DEVICE_ID, "") ?: "" } catch (_: Exception) { "" }
+    fun getDeviceId(): String = try {
+        val saved = prefs?.getString(KEY_DEVICE_ID, "") ?: ""
+        saved.ifEmpty {
+            // Fallback: compute stable ID if prefs lost
+            appContext?.let { DeviceManager.getStableDisplayId(it) } ?: ""
+        }
+    } catch (_: Exception) { "" }
 
     fun getLicenseKey(): String? = try {
         val key = prefs?.getString(KEY_LICENSE_KEY, "") ?: ""

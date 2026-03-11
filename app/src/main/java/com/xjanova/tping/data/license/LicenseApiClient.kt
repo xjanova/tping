@@ -65,10 +65,12 @@ object LicenseApiClient {
 
     /**
      * Check demo/trial status.
+     * Sends drm_id for cross-reference lookup after reinstall.
      */
-    fun checkDemo(machineId: String): ApiResult {
+    fun checkDemo(machineId: String, drmId: String = ""): ApiResult {
         val body = JsonObject().apply {
             addProperty("machine_id", machineId)
+            if (drmId.isNotEmpty()) addProperty("drm_id", drmId)
         }
         return post("$BASE_URL/demo/check", body)
     }

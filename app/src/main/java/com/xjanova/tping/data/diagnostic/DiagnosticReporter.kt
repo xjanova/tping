@@ -152,13 +152,12 @@ object DiagnosticReporter {
             return SendResult(true, "ไม่มีรายงานที่ต้องส่ง")
         }
 
-        val deviceId = DeviceManager.getDeviceId(ctx)
+        val hardwareHash = DeviceManager.getHardwareHash(ctx)
         val deviceName = DeviceManager.getDeviceName()
         val osVersion = DeviceManager.getOsVersion()
-        val hardwareHash = DeviceManager.getHardwareHash(ctx)
 
         val body = JsonObject().apply {
-            addProperty("machine_id", deviceId)
+            addProperty("machine_id", hardwareHash)
             addProperty("machine_name", deviceName)
             addProperty("os_version", osVersion)
             addProperty("hardware_hash", hardwareHash)

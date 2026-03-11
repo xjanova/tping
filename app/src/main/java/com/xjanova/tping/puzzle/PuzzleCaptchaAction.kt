@@ -321,6 +321,20 @@ object PuzzleCaptchaAction {
         delay(300)
         status("✓ CAPTCHA พร้อม")
 
+        // === Pre-verification: tap refresh button to verify coordinates ===
+        if (hasRefresh && useShellSwipe) {
+            status("ทดสอบตำแหน่ง refresh...")
+            Log.d(TAG, "PRE-VERIFY: tapping refresh at (${refreshX.toInt()},${refreshY.toInt()})")
+            DiagnosticReporter.logCaptcha("Pre-verify tap",
+                "refresh=(${refreshX.toInt()},${refreshY.toInt()}), " +
+                "config=(${config.refreshButtonX},${config.refreshButtonY}), " +
+                "scale=${"%.3f".format(scaleX)}x${"%.3f".format(scaleY)}, " +
+                "screen=${screenW}x${screenH}, recorded=${action.screenWidth}x${action.screenHeight}")
+            doShellTap(refreshX, refreshY)
+            delay(2000)
+            status("✓ ทดสอบเสร็จ — เริ่มแก้ Captcha")
+        }
+
         // === Blind-drag offsets ===
         val blindPercentages = floatArrayOf(0.30f, 0.50f, 0.70f, 0.20f, 0.60f, 0.40f, 0.80f)
         val blindFixedOffsets = intArrayOf(200, 350, 500, 150, 450, 300, 550)
@@ -1292,10 +1306,13 @@ object PuzzleCaptchaAction {
      * Priority: SelfAdb (built-in Wireless ADB) → Shizuku → direct shell → su (root)
      */
     private suspend fun doShellTap(x: Float, y: Float) {
+        Log.d(TAG, "doShellTap: (${x.toInt()}, ${y.toInt()})")
+        DiagnosticReporter.logCaptcha("ShellTap", "pos=(${x.toInt()},${y.toInt()})")
         withContext(Dispatchers.IO) {
             // Try SelfAdb first (Wireless Debugging ADB — no Shizuku needed)
             if (SelfAdbHelper.isAvailable()) {
                 val result = SelfAdbHelper.inputTap(x.toInt(), y.toInt())
+                Log.d(TAG, "doShellTap SelfAdb: $result at (${x.toInt()}, ${y.toInt()})")
                 if (result == "ok") return@withContext
                 Log.w(TAG, "SelfAdb tap failed: $result")
             }
@@ -1303,12 +1320,15 @@ object PuzzleCaptchaAction {
             // Try Shizuku
             if (ShizukuHelper.isAvailable()) {
                 val result = ShizukuHelper.inputTap(x.toInt(), y.toInt())
+                Log.d(TAG, "doShellTap Shizuku: $result at (${x.toInt()}, ${y.toInt()})")
                 if (result == "ok") return@withContext
             }
 
             val cmd = "input tap ${x.toInt()} ${y.toInt()}"
+            Log.d(TAG, "doShellTap direct: $cmd")
             val result = tryShellCommand(cmd)
             if (result != "ok") {
+                Log.d(TAG, "doShellTap su: $cmd (sh=$result)")
                 tryShellCommand("su -c '$cmd'")
             }
         }

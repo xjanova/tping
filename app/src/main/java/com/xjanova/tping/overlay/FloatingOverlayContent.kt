@@ -18,6 +18,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -35,7 +36,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -1010,7 +1013,28 @@ fun CrosshairOverlay(
 ) {
     val density = LocalDensity.current
 
-    // Crosshair position state — start at center
+    // Detect overlay window's screen offset (status bar, etc.)
+    // The overlay may not start at screen (0,0) even with FLAG_LAYOUT_IN_SCREEN.
+    val view = LocalView.current
+    var screenOffsetX by remember { mutableIntStateOf(0) }
+    var screenOffsetY by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        view.post {
+            val location = IntArray(2)
+            view.getLocationOnScreen(location)
+            screenOffsetX = location[0]
+            screenOffsetY = location[1]
+            android.util.Log.d("CrosshairOverlay",
+                "Window offset: ($screenOffsetX, $screenOffsetY), " +
+                "passed screenSize=${screenWidth}x${screenHeight}")
+        }
+    }
+
+    // Actual layout dimensions (may differ from screenWidth/screenHeight)
+    var layoutWidth by remember { mutableIntStateOf(screenWidth) }
+    var layoutHeight by remember { mutableIntStateOf(screenHeight) }
+
+    // Crosshair position state — start at center of ACTUAL layout
     var crosshairX by remember { mutableFloatStateOf(screenWidth / 2f) }
     var crosshairY by remember { mutableFloatStateOf(screenHeight / 2f) }
 
@@ -1018,11 +1042,22 @@ fun CrosshairOverlay(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black.copy(alpha = 0.3f))
-            .pointerInput(Unit) {
+            .onGloballyPositioned { coordinates ->
+                val w = coordinates.size.width
+                val h = coordinates.size.height
+                if (w != layoutWidth || h != layoutHeight) {
+                    android.util.Log.d("CrosshairOverlay",
+                        "Layout size: ${w}x${h}, expected: ${screenWidth}x${screenHeight}")
+                    layoutWidth = w
+                    layoutHeight = h
+                }
+            }
+            .pointerInput(layoutWidth, layoutHeight) {
                 detectDragGestures { change, dragAmount ->
                     change.consume()
-                    crosshairX = (crosshairX + dragAmount.x).coerceIn(0f, screenWidth.toFloat())
-                    crosshairY = (crosshairY + dragAmount.y).coerceIn(0f, screenHeight.toFloat())
+                    // Use ACTUAL layout dimensions for constraints
+                    crosshairX = (crosshairX + dragAmount.x).coerceIn(0f, layoutWidth.toFloat())
+                    crosshairY = (crosshairY + dragAmount.y).coerceIn(0f, layoutHeight.toFloat())
                 }
             }
     ) {
@@ -1056,7 +1091,13 @@ fun CrosshairOverlay(
                         .clip(RoundedCornerShape(8.dp))
                         .background(GameColor)
                         .clickable {
-                            onConfirm(crosshairX.roundToInt(), crosshairY.roundToInt())
+                            // Add window screen offset to get absolute screen coordinates
+                            val absX = crosshairX.roundToInt() + screenOffsetX
+                            val absY = crosshairY.roundToInt() + screenOffsetY
+                            android.util.Log.d("CrosshairOverlay",
+                                "Confirm: layout=(${crosshairX.roundToInt()},${crosshairY.roundToInt()}) " +
+                                "offset=($screenOffsetX,$screenOffsetY) → screen=($absX,$absY)")
+                            onConfirm(absX, absY)
                         }
                         .padding(horizontal = 14.dp, vertical = 8.dp)
                 ) {
@@ -1079,8 +1120,9 @@ fun CrosshairOverlay(
             Spacer(modifier = Modifier.height(4.dp))
 
             // Row 3: Coordinate display — full width, bigger font
+            // Show absolute screen coordinates (with offset applied)
             Text(
-                "X: ${crosshairX.roundToInt()}   Y: ${crosshairY.roundToInt()}",
+                "X: ${crosshairX.roundToInt() + screenOffsetX}   Y: ${crosshairY.roundToInt() + screenOffsetY}",
                 color = Color.White,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,

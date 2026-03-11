@@ -275,9 +275,24 @@ class TpingAccessibilityService : AccessibilityService() {
             return Pair(rawX, rawY)
         }
         // Scale from recorded resolution to current screen resolution
-        val metrics = resources.displayMetrics
-        val currentWidth = metrics.widthPixels.toFloat()
-        val currentHeight = metrics.heightPixels.toFloat()
+        // v1.2.45: Use WindowManager.getRealSize() instead of displayMetrics
+        // (displayMetrics in AccessibilityService can return stale orientation data)
+        val currentWidth: Float
+        val currentHeight: Float
+        val wm = try {
+            getSystemService(android.content.Context.WINDOW_SERVICE) as? android.view.WindowManager
+        } catch (_: Exception) { null }
+        if (wm != null) {
+            val realSize = android.graphics.Point()
+            @Suppress("DEPRECATION")
+            wm.defaultDisplay.getRealSize(realSize)
+            currentWidth = realSize.x.toFloat()
+            currentHeight = realSize.y.toFloat()
+        } else {
+            val metrics = resources.displayMetrics
+            currentWidth = metrics.widthPixels.toFloat()
+            currentHeight = metrics.heightPixels.toFloat()
+        }
         val scaleX = currentWidth / action.screenWidth
         val scaleY = currentHeight / action.screenHeight
         return Pair(rawX * scaleX, rawY * scaleY)
