@@ -281,6 +281,31 @@ private fun CloudDashboard(
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val authState by CloudAuthManager.authState.collectAsState()
+    var showLogoutDialog by remember { mutableStateOf(false) }
+
+    // Logout confirmation dialog
+    if (showLogoutDialog) {
+        AlertDialog(
+            onDismissRequest = { showLogoutDialog = false },
+            title = { Text("ออกจากระบบ") },
+            text = { Text("ต้องการออกจากระบบ Cloud หรือไม่?\nข้อมูลในเครื่องจะยังอยู่") },
+            confirmButton = {
+                TextButton(onClick = {
+                    CloudAuthManager.logout()
+                    showLogoutDialog = false
+                    Toast.makeText(context, "ออกจากระบบแล้ว", Toast.LENGTH_SHORT).show()
+                }) {
+                    Text("ออกจากระบบ", color = Color(0xFFEF4444))
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutDialog = false }) {
+                    Text("ยกเลิก")
+                }
+            }
+        )
+    }
 
     LazyColumn(
         modifier = modifier
@@ -288,7 +313,7 @@ private fun CloudDashboard(
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        // Cloud connected card
+        // User account card
         item {
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -303,27 +328,42 @@ private fun CloudDashboard(
                         .padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        Icons.Default.CloudDone,
-                        contentDescription = null,
-                        tint = Color(0xFF06B6D4),
-                        modifier = Modifier.size(40.dp)
-                    )
+                    // User avatar
+                    Card(
+                        shape = RoundedCornerShape(50),
+                        colors = CardDefaults.cardColors(containerColor = Color(0xFF06B6D4))
+                    ) {
+                        Icon(
+                            Icons.Default.Person,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier
+                                .size(40.dp)
+                                .padding(8.dp)
+                        )
+                    }
                     Spacer(modifier = Modifier.width(12.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("Cloud เชื่อมต่อแล้ว", fontWeight = FontWeight.Bold, fontSize = 16.sp)
                         Text(
-                            "ซิงค์ข้อมูลอัตโนมัติเมื่อ License Active",
+                            authState.userName.ifEmpty { "User" },
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp
+                        )
+                        Text(
+                            authState.userEmail.ifEmpty { "เชื่อมต่อแล้ว" },
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                         )
                     }
-                    Icon(
-                        Icons.Default.CheckCircle,
-                        contentDescription = null,
-                        tint = Color(0xFF22C55E),
-                        modifier = Modifier.size(24.dp)
-                    )
+                    // Logout button
+                    IconButton(onClick = { showLogoutDialog = true }) {
+                        Icon(
+                            Icons.Default.Logout,
+                            contentDescription = "ออกจากระบบ",
+                            tint = Color(0xFFEF4444),
+                            modifier = Modifier.size(22.dp)
+                        )
+                    }
                 }
             }
         }
