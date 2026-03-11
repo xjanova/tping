@@ -172,10 +172,13 @@ object PuzzleCaptchaAction {
         delay(200)
 
         // Step 3: Test shell "input swipe" (most reliable if available)
+        // NOTE: Test at safe area (bottom of screen), NOT at slider position.
+        // Testing at sliderX/sliderY sends a real tap to the CAPTCHA which can
+        // trigger a failed-drag state and make the CAPTCHA harder before we solve it.
         status("ทดสอบระบบสัมผัส...")
         val shizukuDetail = ShizukuHelper.getDetailedStatus()
         DiagnosticReporter.logCaptcha("Shizuku status", shizukuDetail)
-        val shellTestResult = testShellInput(sliderX, sliderY)
+        val shellTestResult = testShellInput(screenW / 2f, screenH * 0.85f)
         DiagnosticReporter.logCaptcha("Shell test", "result=$shellTestResult, shizuku=$shizukuDetail")
         val useShellSwipe = shellTestResult.startsWith("ok")
         if (useShellSwipe) {
@@ -391,22 +394,28 @@ object PuzzleCaptchaAction {
                             "attempt=$attempt, remainGapX=$remainGapX, target=${targetX.toInt()}"
                         )
 
-                        // Functional failure: gesture "completed" but slider didn't move
-                        // (gap is still near the target position = slider never dragged)
-                        val gapDelta = kotlin.math.abs(remainGapX - targetX).toInt()
-                        if (gapDelta < 30) {
-                            functionalFailures++
-                            DiagnosticReporter.logCaptcha(
-                                "Functional failure",
-                                "tier=$swipeTier, funcFails=$functionalFailures, gapDelta=$gapDelta"
-                            )
-                            // Escalate tier if gesture keeps "completing" but slider doesn't move
-                            if (functionalFailures >= 2 && swipeTier < 3) {
-                                swipeTier++
-                                functionalFailures = 0
-                                status("🔄 สไลด์ไม่ขยับ — เปลี่ยนโหมดเป็น ${when(swipeTier) { 1 -> "slow-swipe"; 2 -> "tap+swipe"; else -> "press-hold-drag" }}")
-                                doWarmupTap(service, screenW, screenH)
-                                delay(300)
+                        // Functional failure detection: only for dispatchGesture tiers (tier >= 1).
+                        // For shell tier (tier 0), gapDelta is always near 0 because
+                        // targetX ≈ gapCenterX (gap is fixed in background). Escalating away
+                        // from the shell tier based on this is wrong — shell already gives
+                        // isTrusted=true events; the issue is gap position accuracy, not the
+                        // swipe method.
+                        if (swipeTier >= 1) {
+                            val gapDelta = kotlin.math.abs(remainGapX - targetX).toInt()
+                            if (gapDelta < 30) {
+                                functionalFailures++
+                                DiagnosticReporter.logCaptcha(
+                                    "Functional failure",
+                                    "tier=$swipeTier, funcFails=$functionalFailures, gapDelta=$gapDelta"
+                                )
+                                // Escalate tier if gesture keeps "completing" but slider doesn't move
+                                if (functionalFailures >= 2 && swipeTier < 3) {
+                                    swipeTier++
+                                    functionalFailures = 0
+                                    status("🔄 สไลด์ไม่ขยับ — เปลี่ยนโหมดเป็น ${when(swipeTier) { 1 -> "slow-swipe"; 2 -> "tap+swipe"; else -> "press-hold-drag" }}")
+                                    doWarmupTap(service, screenW, screenH)
+                                    delay(300)
+                                }
                             }
                         }
                     }
