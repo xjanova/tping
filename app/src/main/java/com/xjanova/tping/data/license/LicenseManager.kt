@@ -283,8 +283,9 @@ object LicenseManager {
         return try {
             val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
             val drmId = getDrmId()
+            val androidId = try { DeviceManager.getDeviceId(context) } catch (_: Exception) { "" }
             val result = withContext(Dispatchers.IO) {
-                LicenseApiClient.activateLicense(licenseKey, machineId, hardwareHash, drmId)
+                LicenseApiClient.activateLicense(licenseKey, machineId, hardwareHash, drmId, androidId)
             }
             if (result.success) {
                 val data = result.data.getAsJsonObject("data") ?: result.data
@@ -349,8 +350,9 @@ object LicenseManager {
         try {
             val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
             val drmId = getDrmId()
+            val androidId = try { DeviceManager.getDeviceId(context) } catch (_: Exception) { "" }
             val result = withContext(Dispatchers.IO) {
-                LicenseApiClient.activateLicense(licenseKey, newMachineId, hardwareHash, drmId)
+                LicenseApiClient.activateLicense(licenseKey, newMachineId, hardwareHash, drmId, androidId)
             }
             if (result.success) {
                 val data = result.data.getAsJsonObject("data") ?: result.data
@@ -416,8 +418,9 @@ object LicenseManager {
                 )
             } catch (_: Exception) {}
             val drmId = getDrmId()
+            // Also send ANDROID_ID for server-side cross-reference lookup after reinstall
             val result = withContext(Dispatchers.IO) {
-                LicenseApiClient.checkMachine(machineId, drmId)
+                LicenseApiClient.checkMachine(machineId, drmId, androidId = displayId)
             }
             if (result.success) {
                 val hasLicense = result.data.get("has_license")?.asBoolean ?: false
@@ -712,12 +715,13 @@ object LicenseManager {
         val displayId = try { DeviceManager.getDeviceId(context) } catch (_: Exception) { "unknown" }
         val hardwareHash = try { DeviceManager.getHardwareHash(context) } catch (_: Exception) { "" }
         val drmId = getDrmId()
+        val androidId = if (displayId != "unknown") displayId else ""
 
         _state.value = _state.value.copy(isLoading = true)
 
         return try {
             val result = withContext(Dispatchers.IO) {
-                LicenseApiClient.activateLicense(key, machineId, hardwareHash, drmId)
+                LicenseApiClient.activateLicense(key, machineId, hardwareHash, drmId, androidId)
             }
             if (result.success) {
                 val data = result.data.getAsJsonObject("data") ?: result.data

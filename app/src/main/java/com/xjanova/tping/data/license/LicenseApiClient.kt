@@ -80,13 +80,15 @@ object LicenseApiClient {
         licenseKey: String,
         machineId: String,
         machineFingerprint: String,
-        drmId: String = ""
+        drmId: String = "",
+        androidId: String = ""
     ): ApiResult {
         val body = JsonObject().apply {
             addProperty("license_key", licenseKey)
             addProperty("machine_id", machineId)
             addProperty("machine_fingerprint", machineFingerprint)
             if (drmId.isNotEmpty()) addProperty("drm_id", drmId)
+            if (androidId.isNotEmpty()) addProperty("android_id", androidId)
         }
         return post("$BASE_URL/activate", body)
     }
@@ -94,12 +96,13 @@ object LicenseApiClient {
     /**
      * Check if this machine already has an active license (HWID auto-check).
      * Used on first launch when no license_key is saved locally.
-     * Sends drm_id as secondary lookup key for cross-HWID migration.
+     * Sends drm_id and android_id as secondary lookup keys for cross-HWID migration.
      */
-    fun checkMachine(machineId: String, drmId: String = ""): ApiResult {
+    fun checkMachine(machineId: String, drmId: String = "", androidId: String = ""): ApiResult {
         val body = JsonObject().apply {
             addProperty("machine_id", machineId)
             if (drmId.isNotEmpty()) addProperty("drm_id", drmId)
+            if (androidId.isNotEmpty()) addProperty("android_id", androidId)
         }
         return post("$BASE_URL/check-machine", body)
     }

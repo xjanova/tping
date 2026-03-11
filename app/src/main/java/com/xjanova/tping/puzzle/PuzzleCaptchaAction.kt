@@ -19,11 +19,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.37
+ * Puzzle CAPTCHA solver — v1.2.41
  *
  * Slide strategy (4 tiers):
  *   0. SHELL INPUT: Uses `input swipe` shell command for hardware-level
  *      touch events (isTrusted=true). Requires shell/root permission.
+ *      Priority: SelfAdb (Wireless ADB built-in) → Shizuku → sh → su
  *      Tested first; if it works, all other tiers are skipped.
  *   1. ACCESSIBILITY SCROLL: Finds slider node in WebView accessibility tree
  *      and uses performAction(ACTION_SCROLL_FORWARD/RIGHT) to move it.
@@ -34,6 +35,9 @@ import java.util.concurrent.TimeUnit
  * Key insight (v1.2.36 diagnostics): dispatchGesture events complete
  * successfully but WebView marks them isTrusted=false in JavaScript,
  * causing CAPTCHA to reject them. Shell input creates real hardware events.
+ *
+ * v1.2.41: Added SelfAdb (Wireless Debugging ADB) as highest priority shell
+ * method — no Shizuku app needed, just Wireless Debugging enabled + paired.
  *
  * Also hides overlay during CAPTCHA (FLAG_NOT_TOUCHABLE) to prevent
  * FLAG_WINDOW_IS_PARTIALLY_OBSCURED on MotionEvents.
@@ -177,19 +181,21 @@ object PuzzleCaptchaAction {
         // trigger a failed-drag state and make the CAPTCHA harder before we solve it.
         status("ทดสอบระบบสัมผัส...")
         val shizukuDetail = ShizukuHelper.getDetailedStatus()
-        DiagnosticReporter.logCaptcha("Shizuku status", shizukuDetail)
+        val selfAdbDetail = SelfAdbHelper.getDetailedStatus()
+        DiagnosticReporter.logCaptcha("Shell status", "shizuku=$shizukuDetail, selfadb=$selfAdbDetail")
         val shellTestResult = testShellInput(screenW / 2f, screenH * 0.85f)
-        DiagnosticReporter.logCaptcha("Shell test", "result=$shellTestResult, shizuku=$shizukuDetail")
+        DiagnosticReporter.logCaptcha("Shell test", "result=$shellTestResult, shizuku=$shizukuDetail, selfadb=$selfAdbDetail")
         val useShellSwipe = shellTestResult.startsWith("ok")
         if (useShellSwipe) {
             val method = when {
+                shellTestResult.contains("selfadb") -> "SelfAdb"
                 shellTestResult.contains("shizuku") -> "Shizuku"
                 shellTestResult.contains("su") -> "root"
                 else -> "shell"
             }
             status("✓ ใช้ระบบสัมผัสจริง ($method)")
         } else {
-            status("⚠ ไม่มี Shizuku/Root — สไลด์ CAPTCHA จะไม่ทำงาน!")
+            status("⚠ ไม่มี SelfAdb/Shizuku/Root — สไลด์ CAPTCHA จะไม่ทำงาน!")
             DiagnosticReporter.logCaptcha(
                 "WARNING: No shell access",
                 "CAPTCHA will likely fail. Install Shizuku for isTrusted=true events. " +
@@ -442,7 +448,7 @@ object PuzzleCaptchaAction {
             "All attempts done",
             "maxRetries=${config.maxRetries}, opencv=$opencvOk, " +
                 "hasTrack=$hasTrack(auto=${!hasTrack}), tier=$swipeTier, " +
-                "shell=$useShellSwipe, shizuku=${ShizukuHelper.getDetailedStatus()}"
+                "shell=$useShellSwipe, shizuku=${ShizukuHelper.getDetailedStatus()}, selfadb=${SelfAdbHelper.getDetailedStatus()}"
         )
         // Restore overlay touch handling
         try {
@@ -700,7 +706,17 @@ object PuzzleCaptchaAction {
         return withContext(Dispatchers.IO) {
             Log.d(TAG, "testShellInput: testing at ($testX, $testY)")
 
-            // Try Shizuku first (ADB-level without root)
+            // Try SelfAdb first (Wireless Debugging ADB — built-in, no Shizuku needed)
+            val selfAdbAvail = SelfAdbHelper.isAvailable()
+            Log.d(TAG, "testShellInput: selfadb available=$selfAdbAvail")
+            if (selfAdbAvail) {
+                val selfAdbResult = SelfAdbHelper.inputTap(testX.toInt(), testY.toInt())
+                Log.d(TAG, "testShellInput: selfadb result=$selfAdbResult")
+                if (selfAdbResult == "ok") return@withContext "ok(selfadb)"
+                Log.w(TAG, "SelfAdb tap failed: $selfAdbResult")
+            }
+
+            // Try Shizuku (ADB-level without root — requires Shizuku app)
             val shizukuAvail = ShizukuHelper.isAvailable()
             Log.d(TAG, "testShellInput: shizuku available=$shizukuAvail")
             if (shizukuAvail) {
@@ -725,7 +741,7 @@ object PuzzleCaptchaAction {
                 ShizukuHelper.isRunning() -> "running_has_perm_but_exec_failed"
                 else -> "not_running"
             }
-            "fail(shizuku=$shizukuState, sh=$result, su=$suResult)"
+            "fail(selfadb=${selfAdbAvail}, shizuku=$shizukuState, sh=$result, su=$suResult)"
         }
     }
 
@@ -754,7 +770,7 @@ object PuzzleCaptchaAction {
 
     /**
      * Shell-based swipe (creates hardware-level isTrusted=true events).
-     * Priority: Shizuku → direct shell → su (root)
+     * Priority: SelfAdb (built-in Wireless ADB) → Shizuku → direct shell → su (root)
      */
     private suspend fun doShellSwipe(
         startX: Float, startY: Float,
@@ -762,7 +778,17 @@ object PuzzleCaptchaAction {
         durationMs: Long
     ): String {
         return withContext(Dispatchers.IO) {
-            // Try Shizuku first (ADB-level without root)
+            // Try SelfAdb first (Wireless Debugging ADB — no Shizuku needed)
+            if (SelfAdbHelper.isAvailable()) {
+                val result = SelfAdbHelper.inputSwipe(
+                    startX.toInt(), startY.toInt(),
+                    endX.toInt(), endY.toInt(), durationMs
+                )
+                if (result == "ok") return@withContext "completed"
+                Log.w(TAG, "SelfAdb swipe failed: $result")
+            }
+
+            // Try Shizuku (ADB-level without root — requires Shizuku app)
             if (ShizukuHelper.isAvailable()) {
                 val result = ShizukuHelper.inputSwipe(
                     startX.toInt(), startY.toInt(),
@@ -786,11 +812,18 @@ object PuzzleCaptchaAction {
 
     /**
      * Shell-based tap for refresh button etc.
-     * Priority: Shizuku → direct shell → su (root)
+     * Priority: SelfAdb (built-in Wireless ADB) → Shizuku → direct shell → su (root)
      */
     private suspend fun doShellTap(x: Float, y: Float) {
         withContext(Dispatchers.IO) {
-            // Try Shizuku first
+            // Try SelfAdb first (Wireless Debugging ADB — no Shizuku needed)
+            if (SelfAdbHelper.isAvailable()) {
+                val result = SelfAdbHelper.inputTap(x.toInt(), y.toInt())
+                if (result == "ok") return@withContext
+                Log.w(TAG, "SelfAdb tap failed: $result")
+            }
+
+            // Try Shizuku
             if (ShizukuHelper.isAvailable()) {
                 val result = ShizukuHelper.inputTap(x.toInt(), y.toInt())
                 if (result == "ok") return@withContext
