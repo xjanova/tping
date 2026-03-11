@@ -413,7 +413,26 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     // ====== Game Mode Recording ======
 
     private fun getScreenMetrics(): DisplayMetrics {
-        return resources.displayMetrics
+        // v1.2.44: Use getRealMetrics for accurate dimensions that include
+        // system bars and correctly reflect the current display orientation.
+        // resources.displayMetrics can return stale orientation data in services.
+        val metrics = DisplayMetrics()
+        val wm = try {
+            getSystemService(WINDOW_SERVICE) as? WindowManager
+        } catch (_: Exception) { null }
+        if (wm != null) {
+            @Suppress("DEPRECATION")
+            wm.defaultDisplay.getRealMetrics(metrics)
+        } else {
+            // Fallback
+            resources.displayMetrics.let {
+                metrics.widthPixels = it.widthPixels
+                metrics.heightPixels = it.heightPixels
+                metrics.density = it.density
+                metrics.densityDpi = it.densityDpi
+            }
+        }
+        return metrics
     }
 
     private fun startGameRecording() {

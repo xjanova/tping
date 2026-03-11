@@ -1,9 +1,13 @@
 package com.xjanova.tping.puzzle
 
 import android.accessibilityservice.GestureDescription
+import android.content.Context
+import android.graphics.Point
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.Surface
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import com.google.gson.Gson
 import com.xjanova.tping.data.diagnostic.DiagnosticReporter
@@ -19,7 +23,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.43
+ * Puzzle CAPTCHA solver — v1.2.44
  *
  * Slide strategy (4 tiers):
  *   0. SHELL INPUT: Hardware-level touch events (isTrusted=true).
@@ -36,6 +40,12 @@ import java.util.concurrent.TimeUnit
  * Key insight (v1.2.36): dispatchGesture → isTrusted=false → CAPTCHA rejects.
  * v1.2.41: SelfAdb (Wireless ADB) as top priority shell method.
  * v1.2.43: Press-hold-drag via sendevent for realistic human behavior.
+ * v1.2.44: Fix coordinate mapping for screen orientation/rotation.
+ *   - Use WindowManager.getRealSize() instead of displayMetrics
+ *     (displayMetrics in AccessibilityService can return stale orientation)
+ *   - Detect orientation mismatch between recording and execution
+ *   - Fix sendevent raw coordinate mapping for rotated displays
+ *   - Extensive diagnostic logging for coordinate debugging
  *   CAPTCHA sliders need: touchDown → hold 300ms → slow drag → release.
  *   `input swipe` skips the hold phase. sendevent gives full control.
  *
@@ -93,19 +103,110 @@ object PuzzleCaptchaAction {
             status("✓ OpenCV พร้อม")
         }
 
-        // === Scale coordinates ===
-        val metrics = service.resources.displayMetrics
-        val screenW = metrics.widthPixels
-        val screenH = metrics.heightPixels
-        val scaleX = if (action.screenWidth > 0) screenW.toFloat() / action.screenWidth else 1f
-        val scaleY = if (action.screenHeight > 0) screenH.toFloat() / action.screenHeight else 1f
+        // === Get accurate screen dimensions ===
+        // CRITICAL (v1.2.44): Use WindowManager.getRealSize() instead of
+        // service.resources.displayMetrics. The AccessibilityService's displayMetrics
+        // can return STALE orientation data (e.g., portrait 1080x2400 when the actual
+        // display is landscape 2400x1080), causing all coordinates to be wrong.
+        val screenW: Int
+        val screenH: Int
+        val rotation: Int
+        val wm = try {
+            service.getSystemService(Context.WINDOW_SERVICE) as? WindowManager
+        } catch (_: Exception) { null }
+        if (wm != null) {
+            @Suppress("DEPRECATION")
+            val display = wm.defaultDisplay
+            rotation = display.rotation
+            val realSize = Point()
+            @Suppress("DEPRECATION")
+            display.getRealSize(realSize)
+            screenW = realSize.x
+            screenH = realSize.y
+        } else {
+            // Fallback to displayMetrics if WindowManager unavailable
+            val metrics = service.resources.displayMetrics
+            screenW = metrics.widthPixels
+            screenH = metrics.heightPixels
+            rotation = 0
+            Log.w(TAG, "WindowManager unavailable, using displayMetrics fallback")
+        }
 
-        val sliderX = config.sliderButtonX * scaleX
-        val sliderY = config.sliderButtonY * scaleY
-        val refreshX = config.refreshButtonX * scaleX
-        val refreshY = config.refreshButtonY * scaleY
+        // Compare with displayMetrics to detect mismatches (diagnostic)
+        val metrics = service.resources.displayMetrics
+        val metricsW = metrics.widthPixels
+        val metricsH = metrics.heightPixels
+        if (metricsW != screenW || metricsH != screenH) {
+            Log.w(TAG, "⚠ METRICS MISMATCH: displayMetrics=${metricsW}x${metricsH}, " +
+                "getRealSize=${screenW}x${screenH}, rotation=$rotation")
+            DiagnosticReporter.logCaptcha("Metrics mismatch",
+                "metrics=${metricsW}x${metricsH}, real=${screenW}x${screenH}, rot=$rotation")
+        }
+
+        // Detect orientation mismatch between recording and current display
+        val isCurrentLandscape = screenW > screenH
+        val isRecordedLandscape = action.screenWidth > action.screenHeight
+        val orientationChanged = (action.screenWidth > 0 && action.screenHeight > 0)
+            && isCurrentLandscape != isRecordedLandscape
+
+        // === Scale coordinates ===
+        val scaleX: Float
+        val scaleY: Float
+        if (orientationChanged) {
+            // Orientation flipped between recording and execution.
+            // Recorded dimensions are swapped relative to current screen.
+            // e.g., recorded portrait 1080x2400 → current landscape 2400x1080
+            //   scaleX = 2400/2400 = 1.0, scaleY = 1080/1080 = 1.0
+            scaleX = screenW.toFloat() / action.screenHeight
+            scaleY = screenH.toFloat() / action.screenWidth
+            Log.w(TAG, "⚠ ORIENTATION CHANGED: " +
+                "recorded=${action.screenWidth}x${action.screenHeight}" +
+                "(${if (isRecordedLandscape) "landscape" else "portrait"}) → " +
+                "current=${screenW}x$screenH" +
+                "(${if (isCurrentLandscape) "landscape" else "portrait"}), " +
+                "rotation=$rotation, " +
+                "scale=${"%.2f".format(scaleX)}x${"%.2f".format(scaleY)}")
+            DiagnosticReporter.logCaptcha("Orientation changed",
+                "rec=${action.screenWidth}x${action.screenHeight}, " +
+                    "cur=${screenW}x$screenH, rot=$rotation, " +
+                    "scale=${"%.2f".format(scaleX)}x${"%.2f".format(scaleY)}")
+        } else {
+            scaleX = if (action.screenWidth > 0) screenW.toFloat() / action.screenWidth else 1f
+            scaleY = if (action.screenHeight > 0) screenH.toFloat() / action.screenHeight else 1f
+        }
+
+        // Transform coordinates — swap X↔Y if orientation changed
+        val sliderX: Float
+        val sliderY: Float
+        val refreshX: Float
+        val refreshY: Float
+        if (orientationChanged) {
+            // When screen rotates 90°, the X and Y axes swap.
+            // Recorded X (along short edge) → maps to current Y (now short edge)
+            // Recorded Y (along long edge) → maps to current X (now long edge)
+            sliderX = config.sliderButtonY * scaleX
+            sliderY = config.sliderButtonX * scaleY
+            refreshX = config.refreshButtonY * scaleX
+            refreshY = config.refreshButtonX * scaleY
+            Log.d(TAG, "Coordinates SWAPPED: " +
+                "slider=(${config.sliderButtonX},${config.sliderButtonY})→(${sliderX.toInt()},${sliderY.toInt()}), " +
+                "refresh=(${config.refreshButtonX},${config.refreshButtonY})→(${refreshX.toInt()},${refreshY.toInt()})")
+        } else {
+            sliderX = config.sliderButtonX * scaleX
+            sliderY = config.sliderButtonY * scaleY
+            refreshX = config.refreshButtonX * scaleX
+            refreshY = config.refreshButtonY * scaleY
+        }
         val hasRefresh = config.refreshButtonX > 0 && config.refreshButtonY > 0
         val hasTrack = config.hasTrackInfo
+
+        // Validate coordinates are within screen bounds
+        if (sliderX < 0 || sliderX > screenW || sliderY < 0 || sliderY > screenH) {
+            Log.e(TAG, "⚠ SLIDER OUT OF BOUNDS: (${sliderX.toInt()},${sliderY.toInt()}) " +
+                "screen=${screenW}x${screenH}")
+            DiagnosticReporter.logCaptcha("Slider out of bounds",
+                "pos=(${sliderX.toInt()},${sliderY.toInt()}), screen=${screenW}x${screenH}")
+        }
 
         // Auto-detect track width for 2-point recordings (sliderTrackEndX == 0)
         // Estimate: track extends from slider to ~90% of screen width
@@ -113,18 +214,33 @@ object PuzzleCaptchaAction {
         val trackEndX: Float
         val trackWidth: Float
         if (hasTrack) {
-            trackEndX = config.sliderTrackEndX * scaleX
+            trackEndX = if (orientationChanged) {
+                config.sliderTrackEndY * scaleX  // swap Y→X
+            } else {
+                config.sliderTrackEndX * scaleX
+            }
             trackWidth = trackEndX - sliderX
         } else {
             trackEndX = screenW * 0.90f
             trackWidth = trackEndX - sliderX
         }
 
+        val rotStr = when (rotation) {
+            Surface.ROTATION_0 -> "0°(portrait)"
+            Surface.ROTATION_90 -> "90°(landscape)"
+            Surface.ROTATION_180 -> "180°(reverse-portrait)"
+            Surface.ROTATION_270 -> "270°(reverse-landscape)"
+            else -> "${rotation}°"
+        }
         val info = "slider=(${sliderX.toInt()},${sliderY.toInt()}), " +
             "trackEnd=${trackEndX.toInt()}, trackW=${trackWidth.toInt()}, " +
             "screen=${screenW}x$screenH, " +
+            "metrics=${metricsW}x${metricsH}, " +
+            "rotation=$rotStr, " +
             "scale=${"%.2f".format(scaleX)}x${"%.2f".format(scaleY)}, " +
-            "hasTrack=$hasTrack(auto=${!hasTrack}), recorded=${action.screenWidth}x${action.screenHeight}"
+            "orientationChanged=$orientationChanged, " +
+            "hasTrack=$hasTrack(auto=${!hasTrack}), " +
+            "recorded=${action.screenWidth}x${action.screenHeight}"
         Log.d(TAG, info)
         DiagnosticReporter.logCaptcha("Captcha start", info)
 
@@ -315,7 +431,7 @@ object PuzzleCaptchaAction {
 
             val swipeDuration = (dragDist * 4f).toLong().coerceIn(1000, 4000)
             val swipeResult: String = when (swipeTier) {
-                0 -> doShellDrag(sliderX, swipeY, targetX, swipeY, swipeDuration, screenW, screenH)
+                0 -> doShellDrag(sliderX, swipeY, targetX, swipeY, swipeDuration, screenW, screenH, rotation)
                 1 -> doSlowSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 2 -> doTapThenSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 else -> doPressHoldDrag(service, sliderX, swipeY, targetX, swipeY,
@@ -849,7 +965,8 @@ object PuzzleCaptchaAction {
         startX: Float, startY: Float,
         endX: Float, endY: Float,
         durationMs: Long,
-        screenW: Int, screenH: Int
+        screenW: Int, screenH: Int,
+        rotation: Int = Surface.ROTATION_0
     ): String {
         return withContext(Dispatchers.IO) {
             val x1 = startX.toInt()
@@ -858,7 +975,7 @@ object PuzzleCaptchaAction {
             val y2 = endY.toInt()
 
             // --- Strategy A: sendevent press-hold-drag (most human-like) ---
-            val sendeventResult = trySendeventDrag(x1, y1, x2, y2, screenW, screenH, durationMs)
+            val sendeventResult = trySendeventDrag(x1, y1, x2, y2, screenW, screenH, durationMs, rotation)
             if (sendeventResult == "completed") {
                 Log.d(TAG, "ShellDrag: sendevent succeeded")
                 DiagnosticReporter.logCaptcha("ShellDrag", "sendevent OK")
@@ -1026,26 +1143,75 @@ object PuzzleCaptchaAction {
     /**
      * Try sendevent-based press-hold-drag.
      * Returns "completed" on success, error string on failure.
+     *
+     * v1.2.44: Rotation-aware raw coordinate mapping.
+     * sendevent writes directly to the kernel input device which uses
+     * PHYSICAL (unrotated) coordinates, NOT logical (rotation-aware) coordinates.
+     * When the display is rotated, we must transform logical→physical.
      */
     private suspend fun trySendeventDrag(
         x1: Int, y1: Int, x2: Int, y2: Int,
         screenW: Int, screenH: Int,
-        durationMs: Long
+        durationMs: Long,
+        rotation: Int = Surface.ROTATION_0
     ): String {
         val device = detectTouchDevice() ?: return "no_device"
 
-        // Map screen coordinates to raw device coordinates
-        val rawX1 = (x1.toLong() * device.xMax / screenW).toInt()
-        val rawY1 = (y1.toLong() * device.yMax / screenH).toInt()
-        val rawX2 = (x2.toLong() * device.xMax / screenW).toInt()
-        val rawY2 = (y2.toLong() * device.yMax / screenH).toInt()
+        // Map logical screen coordinates → physical raw device coordinates.
+        // The touch device always reports in the PHYSICAL (natural/portrait)
+        // coordinate frame. When the display is rotated, the logical axes
+        // swap relative to the physical axes.
+        //
+        // Native display dimensions (always portrait orientation):
+        val nativeW: Int
+        val nativeH: Int
+        if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
+            nativeW = screenH  // In landscape, native width = logical height
+            nativeH = screenW  // In landscape, native height = logical width
+        } else {
+            nativeW = screenW
+            nativeH = screenH
+        }
+
+        // Transform logical (x,y) → physical (px,py) based on rotation
+        fun toPhysical(lx: Int, ly: Int): Pair<Int, Int> {
+            return when (rotation) {
+                Surface.ROTATION_0 -> lx to ly
+                Surface.ROTATION_90 -> {
+                    // Landscape CW: phys_x = log_y, phys_y = nativeH - log_x
+                    ly to (nativeH - lx)
+                }
+                Surface.ROTATION_180 -> {
+                    // Upside down: phys_x = nativeW - log_x, phys_y = nativeH - log_y
+                    (nativeW - lx) to (nativeH - ly)
+                }
+                Surface.ROTATION_270 -> {
+                    // Landscape CCW: phys_x = nativeW - log_y, phys_y = log_x
+                    (nativeW - ly) to lx
+                }
+                else -> lx to ly
+            }
+        }
+
+        val (px1, py1) = toPhysical(x1, y1)
+        val (px2, py2) = toPhysical(x2, y2)
+
+        // Map physical screen coordinates to raw device coordinates
+        val rawX1 = (px1.toLong() * device.xMax / nativeW).toInt().coerceIn(0, device.xMax)
+        val rawY1 = (py1.toLong() * device.yMax / nativeH).toInt().coerceIn(0, device.yMax)
+        val rawX2 = (px2.toLong() * device.xMax / nativeW).toInt().coerceIn(0, device.xMax)
+        val rawY2 = (py2.toLong() * device.yMax / nativeH).toInt().coerceIn(0, device.yMax)
 
         val holdMs = 350
         val steps = 25
         val dragMs = durationMs.toInt().coerceIn(800, 3000)
 
         Log.d(TAG, "SendeventDrag: dev=${device.devicePath}, " +
-            "raw=($rawX1,$rawY1)→($rawX2,$rawY2), hold=${holdMs}ms, drag=${dragMs}ms, steps=$steps")
+            "logical=($x1,$y1)→($x2,$y2), " +
+            "physical=($px1,$py1)→($px2,$py2), " +
+            "raw=($rawX1,$rawY1)→($rawX2,$rawY2), " +
+            "native=${nativeW}x${nativeH}, rotation=$rotation, " +
+            "hold=${holdMs}ms, drag=${dragMs}ms, steps=$steps")
 
         val script = buildSendeventScript(
             device.devicePath, rawX1, rawY1, rawX2, rawY2,
