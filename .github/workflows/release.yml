@@ -11,6 +11,8 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # Skip auto-bump commits to prevent infinite loop
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
 
     steps:
       - name: Checkout code
@@ -55,9 +57,33 @@ jobs:
           path: ~/.android/debug.keystore
           key: debug-keystore-v1
 
-      - name: Read version from build.gradle.kts
+      - name: Auto-bump version if tag exists
         run: |
           VERSION=$(grep 'versionStr' app/build.gradle.kts | head -1 | grep -oP '"\K[^"]+')
+          echo "Current version: $VERSION"
+
+          # Check if tag already exists
+          if git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "⚠️ Tag v${VERSION} already exists — auto-bumping patch version"
+            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+            PATCH=$((PATCH + 1))
+            NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+            echo "🔼 Bumping: ${VERSION} → ${NEW_VERSION}"
+
+            # Update build.gradle.kts
+            sed -i "s/val versionStr = \"${VERSION}\"/val versionStr = \"${NEW_VERSION}\"/" app/build.gradle.kts
+            VERSION="$NEW_VERSION"
+
+            # Commit and push the version bump
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add app/build.gradle.kts
+            git commit -m "v${NEW_VERSION}: auto-bump version [skip ci]"
+            git push
+          else
+            echo "✅ Tag v${VERSION} is new — no bump needed"
+          fi
+
           VERSION_CODE=$(grep 'versionCode' app/build.gradle.kts | head -1 | grep -oP '[0-9]+' | tail -1)
           echo "VERSION=${VERSION}" >> $GITHUB_ENV
           echo "VERSION_CODE=${VERSION_CODE}" >> $GITHUB_ENV
@@ -73,7 +99,7 @@ jobs:
           if [ -f app/build/outputs/apk/release/app-release.apk ]; then
             echo "✅ Signed release APK found"
           else
-            echo "⚠️ Only unsigned APK found - using it anyway"
+            echo "⚠️ Only unsigned APK found — using it anyway"
           fi
 
       - name: Rename APK
