@@ -17,9 +17,11 @@ import com.xjanova.tping.service.TpingAccessibilityService
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.coroutineContext
 import java.util.concurrent.TimeUnit
 
 /**
@@ -347,8 +349,12 @@ object PuzzleCaptchaAction {
         // === MAIN SOLVING LOOP ===
         // ============================================================
         for (attempt in 1..config.maxRetries) {
+            // Check if flow was stopped — throws CancellationException immediately
+            coroutineContext.ensureActive()
+
             status("ครั้งที่ $attempt/${config.maxRetries}")
             delay(if (attempt == 1) 1500 else config.retryDelayMs)
+            coroutineContext.ensureActive()
 
             // === Determine target X ===
             var targetX: Float
@@ -505,24 +511,56 @@ object PuzzleCaptchaAction {
             consecutiveGestureFailures = 0
 
             // === Swipe completed ===
+            coroutineContext.ensureActive()
             status("ครั้งที่ $attempt: ✓ เลื่อนแล้ว ตรวจสอบ...")
             delay(2500)
+            coroutineContext.ensureActive()
 
             // === Verify ===
+            // Check if CAPTCHA UI disappeared (page changed after solve)
+            val captchaGone = isCaptchaGone(service, sliderY.toInt(), screenH)
+            if (captchaGone) {
+                status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt) — หน้าเปลี่ยนแล้ว")
+                DiagnosticReporter.logCaptcha(
+                    "Solved (UI gone)",
+                    "attempt=$attempt, mode=$dragMode+$swipeModeName, shell=$useShellSwipe"
+                )
+                try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
+                autoSendDiagnostics()
+                return
+            }
+
             if (opencvOk) {
                 val verifyShot = PuzzleScreenCapture.captureScreen()
                 if (verifyShot != null) {
                     val stillHasGap = PuzzleSolver.findGapRegion(verifyShot, sliderY.toInt())
                     verifyShot.recycle()
                     if (stillHasGap == null) {
-                        status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt)")
-                        DiagnosticReporter.logCaptcha(
-                            "Solved",
-                            "attempt=$attempt, mode=$dragMode+$swipeModeName, shell=$useShellSwipe"
-                        )
-                        try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
-                        autoSendDiagnostics()
-                        return
+                        // Double-check: wait a bit more and verify again
+                        delay(1000)
+                        coroutineContext.ensureActive()
+                        val secondShot = PuzzleScreenCapture.captureScreen()
+                        val secondCheck = if (secondShot != null) {
+                            val gap2 = PuzzleSolver.findGapRegion(secondShot, sliderY.toInt())
+                            secondShot.recycle()
+                            gap2 == null
+                        } else true  // If screenshot fails, trust first result
+
+                        if (secondCheck) {
+                            status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt)")
+                            DiagnosticReporter.logCaptcha(
+                                "Solved",
+                                "attempt=$attempt, mode=$dragMode+$swipeModeName, shell=$useShellSwipe"
+                            )
+                            try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
+                            autoSendDiagnostics()
+                            return
+                        } else {
+                            DiagnosticReporter.logCaptcha(
+                                "False positive",
+                                "attempt=$attempt, first=no_gap, second=has_gap"
+                            )
+                        }
                     } else {
                         val remainGapX = (stillHasGap.left + stillHasGap.right) / 2
                         DiagnosticReporter.logCaptcha(
@@ -556,10 +594,19 @@ object PuzzleCaptchaAction {
                         }
                     }
                 }
+            } else {
+                // No OpenCV — check if CAPTCHA UI changed (slider no longer found)
+                if (captchaGone) {
+                    status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt)")
+                    try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
+                    autoSendDiagnostics()
+                    return
+                }
             }
 
             // === Refresh ===
             if (attempt < config.maxRetries && hasRefresh) {
+                coroutineContext.ensureActive()
                 status("🔄 กดรีเฟรช...")
                 if (useShellSwipe) {
                     // Use shell tap for refresh button too (isTrusted=true)
@@ -570,6 +617,7 @@ object PuzzleCaptchaAction {
                     withTimeoutOrNull(3000) { tapDone.await() }
                 }
                 delay(2000)
+                coroutineContext.ensureActive()
             }
         }
 
@@ -585,6 +633,81 @@ object PuzzleCaptchaAction {
             FloatingOverlayService.instance?.setTouchPassthrough(false)
         } catch (_: Exception) {}
         autoSendDiagnostics()
+    }
+
+    // ============================================================
+    // === CAPTCHA-GONE DETECTION ===
+    // ============================================================
+
+    /**
+     * Detect if the CAPTCHA UI has disappeared from the screen.
+     * After a successful solve, the CAPTCHA overlay typically disappears.
+     * We check the accessibility tree at the slider Y region for WebView/slider nodes.
+     *
+     * Also checks via screenshot: if the pixel region around the slider
+     * looks uniform (no puzzle/slider UI), CAPTCHA is likely gone.
+     */
+    private fun isCaptchaGone(
+        service: TpingAccessibilityService,
+        sliderY: Int,
+        screenH: Int
+    ): Boolean {
+        try {
+            val root = service.rootInActiveWindow ?: return false
+
+            // Look for typical CAPTCHA-related nodes near slider Y
+            // If none found, CAPTCHA UI is likely gone
+            var foundCaptchaNode = false
+            val tolerance = screenH / 6  // ~16% of screen height
+
+            fun scanNode(node: AccessibilityNodeInfo) {
+                if (foundCaptchaNode) return
+                val rect = android.graphics.Rect()
+                node.getBoundsInScreen(rect)
+
+                // Check if node is near slider Y region
+                if (rect.top in (sliderY - tolerance)..(sliderY + tolerance) ||
+                    rect.bottom in (sliderY - tolerance)..(sliderY + tolerance)) {
+                    val className = node.className?.toString() ?: ""
+                    // WebView, slider-like elements, or image views near CAPTCHA area
+                    if (className.contains("WebView", ignoreCase = true) ||
+                        className.contains("SeekBar", ignoreCase = true) ||
+                        className.contains("Slider", ignoreCase = true)) {
+                        foundCaptchaNode = true
+                        return
+                    }
+                    // Also check content description for CAPTCHA-related text
+                    val desc = node.contentDescription?.toString() ?: ""
+                    if (desc.contains("captcha", ignoreCase = true) ||
+                        desc.contains("slider", ignoreCase = true) ||
+                        desc.contains("puzzle", ignoreCase = true) ||
+                        desc.contains("verify", ignoreCase = true)) {
+                        foundCaptchaNode = true
+                        return
+                    }
+                }
+
+                for (i in 0 until node.childCount) {
+                    val child = try { node.getChild(i) } catch (_: Exception) { null }
+                    if (child != null) {
+                        scanNode(child)
+                        try { child.recycle() } catch (_: Exception) {}
+                    }
+                }
+            }
+
+            scanNode(root)
+            try { root.recycle() } catch (_: Exception) {}
+
+            if (!foundCaptchaNode) {
+                Log.d(TAG, "isCaptchaGone: no CAPTCHA nodes found near sliderY=$sliderY")
+                DiagnosticReporter.logCaptcha("CAPTCHA gone", "no nodes near sliderY=$sliderY")
+                return true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "isCaptchaGone: error scanning nodes: ${e.message}")
+        }
+        return false
     }
 
     // ============================================================

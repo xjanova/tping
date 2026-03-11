@@ -147,6 +147,9 @@ class PlaybackEngine {
                             currentActionDesc = "[$step/$total] Captcha: $status"
                         )
                     }
+                } catch (e: CancellationException) {
+                    Log.d(TAG, "SOLVE_CAPTCHA cancelled (stop requested)")
+                    throw e  // Re-throw so coroutine cancellation propagates
                 } catch (e: Exception) {
                     Log.e(TAG, "SOLVE_CAPTCHA error: ${e.message}")
                     _state.value = _state.value.copy(
