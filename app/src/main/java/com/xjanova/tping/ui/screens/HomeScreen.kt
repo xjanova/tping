@@ -282,12 +282,23 @@ fun HomeScreen(
 
             // === License Status Card ===
             item(key = "license_status") {
-                val licColor = when (licenseState.status) {
-                    LicenseStatus.ACTIVE -> Color(0xFF22C55E)
-                    LicenseStatus.TRIAL -> Color(0xFF3B82F6)
-                    LicenseStatus.EXPIRED -> Color(0xFFEF4444)
-                    LicenseStatus.NONE -> Color(0xFFF59E0B)
-                    LicenseStatus.CHECKING -> Color(0xFF888888)
+                // Calculate display days from expiresAt with ceiling (partial day = 1 day)
+                val displayDays = if (licenseState.expiresAt > 0) {
+                    val ms = licenseState.expiresAt - System.currentTimeMillis()
+                    if (ms > 0) ((ms + 86_400_000 - 1) / 86_400_000).toInt() else 0
+                } else {
+                    licenseState.remainingDays
+                }
+                val isExpiringSoon = displayDays in 1..7 &&
+                    licenseState.licenseType != "lifetime" &&
+                    (licenseState.status == LicenseStatus.ACTIVE || licenseState.status == LicenseStatus.TRIAL)
+                val licColor = when {
+                    isExpiringSoon -> Color(0xFFEF4444) // Red when expiring soon
+                    licenseState.status == LicenseStatus.ACTIVE -> Color(0xFF22C55E)
+                    licenseState.status == LicenseStatus.TRIAL -> Color(0xFF3B82F6)
+                    licenseState.status == LicenseStatus.EXPIRED -> Color(0xFFEF4444)
+                    licenseState.status == LicenseStatus.NONE -> Color(0xFFF59E0B)
+                    else -> Color(0xFF888888)
                 }
                 val licIcon = when (licenseState.status) {
                     LicenseStatus.ACTIVE -> Icons.Default.VerifiedUser
@@ -295,13 +306,6 @@ fun HomeScreen(
                     LicenseStatus.EXPIRED -> Icons.Default.TimerOff
                     LicenseStatus.NONE -> Icons.Default.Key
                     LicenseStatus.CHECKING -> Icons.Default.HourglassTop
-                }
-                // Calculate display days from expiresAt with ceiling (partial day = 1 day)
-                val displayDays = if (licenseState.expiresAt > 0) {
-                    val ms = licenseState.expiresAt - System.currentTimeMillis()
-                    if (ms > 0) ((ms + 86_400_000 - 1) / 86_400_000).toInt() else 0
-                } else {
-                    licenseState.remainingDays
                 }
                 val licText = when (licenseState.status) {
                     LicenseStatus.ACTIVE -> {
@@ -424,6 +428,58 @@ fun HomeScreen(
                         }
                         if (activateSuccess.isNotEmpty()) {
                             Text(activateSuccess, color = Color(0xFF22C55E), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                        }
+                    }
+                }
+
+                // Red expiry warning when license is about to expire
+                if (isExpiringSoon) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(8.dp),
+                        colors = CardDefaults.cardColors(
+                            containerColor = Color(0xFFEF4444).copy(alpha = 0.15f)
+                        )
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = Color(0xFFEF4444),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    "⚠ ไลเซนส์ใกล้หมดอายุ!",
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Color(0xFFEF4444)
+                                )
+                                Text(
+                                    if (displayDays <= 1) "หมดอายุภายในวันนี้ — กรุณาต่ออายุ"
+                                    else "เหลืออีก $displayDays วัน — กรุณาต่ออายุก่อนหมด",
+                                    fontSize = 11.sp,
+                                    color = Color(0xFFEF4444).copy(alpha = 0.8f)
+                                )
+                            }
+                            TextButton(
+                                onClick = {
+                                    val intent = android.content.Intent(
+                                        android.content.Intent.ACTION_VIEW,
+                                        Uri.parse(LicenseManager.getPurchaseUrl())
+                                    )
+                                    context.startActivity(intent)
+                                }
+                            ) {
+                                Text("ต่ออายุ", fontSize = 12.sp, color = Color(0xFFEF4444), fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 }

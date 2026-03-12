@@ -29,7 +29,7 @@ import java.util.concurrent.TimeUnit
  *
  * Slide strategy (4 tiers):
  *   0. SHELL INPUT: Hardware-level touch events (isTrusted=true).
- *      Priority: SelfAdb → sh → su
+ *      Priority: sh → su
  *      Three sub-strategies tried in order:
  *        a) sendevent: Individual touch events (DOWN→hold→MOVE with easing→UP)
  *           Most human-like: press-and-hold, ease-out curve, Y jitter
@@ -40,7 +40,7 @@ import java.util.concurrent.TimeUnit
  *   3. TAP+SWIPE: Tap slider handle, delay, then swipe (fallback).
  *
  * Key insight (v1.2.36): dispatchGesture → isTrusted=false → CAPTCHA rejects.
- * v1.2.41: SelfAdb (Wireless ADB) as top priority shell method.
+ * v1.2.41: Shell input as primary method.
  * v1.2.43: Press-hold-drag via sendevent for realistic human behavior.
  * v1.2.44: Fix coordinate mapping for screen orientation/rotation.
  *   - Use WindowManager.getRealSize() instead of displayMetrics
@@ -298,23 +298,17 @@ object PuzzleCaptchaAction {
         // Testing at sliderX/sliderY sends a real tap to the CAPTCHA which can
         // trigger a failed-drag state and make the CAPTCHA harder before we solve it.
         status("ทดสอบระบบสัมผัส...")
-        val selfAdbDetail = SelfAdbHelper.getDetailedStatus()
-        DiagnosticReporter.logCaptcha("Shell status", "selfadb=$selfAdbDetail")
         val shellTestResult = testShellInput(screenW / 2f, screenH * 0.85f)
-        DiagnosticReporter.logCaptcha("Shell test", "result=$shellTestResult, selfadb=$selfAdbDetail")
+        DiagnosticReporter.logCaptcha("Shell test", "result=$shellTestResult")
         val useShellSwipe = shellTestResult.startsWith("ok")
         if (useShellSwipe) {
-            val method = when {
-                shellTestResult.contains("selfadb") -> "SelfAdb"
-                shellTestResult.contains("su") -> "root"
-                else -> "shell"
-            }
+            val method = if (shellTestResult.contains("su")) "root" else "shell"
             status("✓ ใช้ระบบสัมผัสจริง ($method)")
         } else {
-            status("⚠ ไม่มี SelfAdb/Root — สไลด์ CAPTCHA จะไม่ทำงาน!")
+            status("⚠ ไม่มี Shell/Root — สไลด์ CAPTCHA จะไม่ทำงาน!")
             DiagnosticReporter.logCaptcha(
                 "WARNING: No shell access",
-                "CAPTCHA will likely fail. selfadb=$selfAdbDetail, shellResult=$shellTestResult"
+                "CAPTCHA will likely fail. shellResult=$shellTestResult"
             )
         }
         delay(300)
@@ -623,7 +617,7 @@ object PuzzleCaptchaAction {
             "All attempts done",
             "maxRetries=${config.maxRetries}, opencv=$opencvOk, " +
                 "hasTrack=$hasTrack(auto=${!hasTrack}), tier=$swipeTier, " +
-                "shell=$useShellSwipe, selfadb=${SelfAdbHelper.getDetailedStatus()}"
+                "shell=$useShellSwipe"
         )
         // Restore overlay touch handling
         try {
@@ -962,22 +956,12 @@ object PuzzleCaptchaAction {
     /**
      * Test if shell `input` command works on this device.
      * The `input` command creates hardware-level events (isTrusted=true).
-     * Priority: SelfAdb → sh → su (root)
+     * Priority: sh → su (root)
      * Returns "ok" if working, or error description.
      */
     private suspend fun testShellInput(testX: Float, testY: Float): String {
         return withContext(Dispatchers.IO) {
             Log.d(TAG, "testShellInput: testing at ($testX, $testY)")
-
-            // Try SelfAdb first (Wireless Debugging ADB)
-            val selfAdbAvail = SelfAdbHelper.isAvailable()
-            Log.d(TAG, "testShellInput: selfadb available=$selfAdbAvail")
-            if (selfAdbAvail) {
-                val selfAdbResult = SelfAdbHelper.inputTap(testX.toInt(), testY.toInt())
-                Log.d(TAG, "testShellInput: selfadb result=$selfAdbResult")
-                if (selfAdbResult == "ok") return@withContext "ok(selfadb)"
-                Log.w(TAG, "SelfAdb tap failed: $selfAdbResult")
-            }
 
             // Try without root (will fail on Android 10+ for regular apps)
             val result = tryShellCommand("input tap ${testX.toInt()} ${testY.toInt()}")
@@ -989,7 +973,7 @@ object PuzzleCaptchaAction {
             Log.d(TAG, "testShellInput: su result=$suResult")
             if (suResult == "ok") return@withContext "ok(su)"
 
-            "fail(selfadb=${selfAdbAvail}, sh=$result, su=$suResult)"
+            "fail(sh=$result, su=$suResult)"
         }
     }
 
@@ -1018,16 +1002,10 @@ object PuzzleCaptchaAction {
 
     /**
      * Execute shell command and return stdout output.
-     * Tries SelfAdb → direct shell.
      * Returns null on failure.
      */
     private suspend fun execShellWithOutput(cmd: String): String? {
         return withContext(Dispatchers.IO) {
-            // SelfAdb
-            if (SelfAdbHelper.isAvailable()) {
-                val result = SelfAdbHelper.execCommandWithOutput(cmd)
-                if (result != null) return@withContext result
-            }
             // Direct shell (limited on Android 10+)
             try {
                 val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
@@ -1040,15 +1018,11 @@ object PuzzleCaptchaAction {
     }
 
     /**
-     * Execute a shell command via any available method (SelfAdb → sh → su).
+     * Execute a shell command via any available method (sh → su).
      * Returns "ok" on success, or error string.
      */
     private suspend fun execShellAny(cmd: String): String {
         return withContext(Dispatchers.IO) {
-            if (SelfAdbHelper.isAvailable()) {
-                val result = SelfAdbHelper.execCommand(cmd)
-                if (!result.startsWith("error")) return@withContext "ok"
-            }
             val result = tryShellCommand(cmd)
             if (result == "ok") return@withContext "ok"
             val suResult = tryShellCommand("su -c '$cmd'")
@@ -1069,7 +1043,7 @@ object PuzzleCaptchaAction {
      *   b) input draganddrop: Built-in long press (~500ms) + linear drag
      *   c) input swipe: Direct swipe (no hold, last resort)
      *
-     * Each strategy tries: SelfAdb → sh → su
+     * Each strategy tries: sh → su
      */
     private suspend fun doShellDrag(
         startX: Float, startY: Float,
@@ -1335,19 +1309,13 @@ object PuzzleCaptchaAction {
 
     /**
      * Try input draganddrop (has built-in ~500ms long press before drag).
-     * Priority: SelfAdb → sh → su
+     * Priority: sh → su
      */
     private suspend fun tryDragAndDrop(
         x1: Int, y1: Int, x2: Int, y2: Int,
         durationMs: Long
     ): String {
         return withContext(Dispatchers.IO) {
-            // SelfAdb
-            if (SelfAdbHelper.isAvailable()) {
-                val result = SelfAdbHelper.inputDragAndDrop(x1, y1, x2, y2, durationMs)
-                if (result == "ok") return@withContext "completed"
-                Log.w(TAG, "SelfAdb draganddrop failed: $result")
-            }
             // sh
             val cmd = "input draganddrop $x1 $y1 $x2 $y2 $durationMs"
             val result = tryShellCommand(cmd)
@@ -1361,19 +1329,13 @@ object PuzzleCaptchaAction {
 
     /**
      * Try input swipe (no hold phase, original approach).
-     * Priority: SelfAdb → sh → su
+     * Priority: sh → su
      */
     private suspend fun tryInputSwipe(
         x1: Int, y1: Int, x2: Int, y2: Int,
         durationMs: Long
     ): String {
         return withContext(Dispatchers.IO) {
-            // SelfAdb
-            if (SelfAdbHelper.isAvailable()) {
-                val result = SelfAdbHelper.inputSwipe(x1, y1, x2, y2, durationMs)
-                if (result == "ok") return@withContext "completed"
-                Log.w(TAG, "SelfAdb swipe failed: $result")
-            }
             // sh
             val cmd = "input swipe $x1 $y1 $x2 $y2 $durationMs"
             val result = tryShellCommand(cmd)
@@ -1387,20 +1349,12 @@ object PuzzleCaptchaAction {
 
     /**
      * Shell-based tap for refresh button etc.
-     * Priority: SelfAdb (built-in Wireless ADB) → direct shell → su (root)
+     * Priority: sh → su (root)
      */
     private suspend fun doShellTap(x: Float, y: Float) {
         Log.d(TAG, "doShellTap: (${x.toInt()}, ${y.toInt()})")
         DiagnosticReporter.logCaptcha("ShellTap", "pos=(${x.toInt()},${y.toInt()})")
         withContext(Dispatchers.IO) {
-            // Try SelfAdb first (Wireless Debugging ADB)
-            if (SelfAdbHelper.isAvailable()) {
-                val result = SelfAdbHelper.inputTap(x.toInt(), y.toInt())
-                Log.d(TAG, "doShellTap SelfAdb: $result at (${x.toInt()}, ${y.toInt()})")
-                if (result == "ok") return@withContext
-                Log.w(TAG, "SelfAdb tap failed: $result")
-            }
-
             val cmd = "input tap ${x.toInt()} ${y.toInt()}"
             Log.d(TAG, "doShellTap direct: $cmd")
             val result = tryShellCommand(cmd)

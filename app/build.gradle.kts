@@ -120,9 +120,6 @@ dependencies {
     // OpenCV for slide puzzle CAPTCHA solving
     implementation("org.opencv:opencv:4.9.0")
 
-    // libadb-android: Embedded ADB client via Wireless Debugging (Self-ADB)
-    implementation("com.github.MuntashirAkon:libadb-android:3.1.1")
-
     // ML Kit Barcode Scanning (QR Code scanner for license key)
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
 
