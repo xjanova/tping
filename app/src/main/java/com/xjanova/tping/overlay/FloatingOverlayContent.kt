@@ -1122,6 +1122,16 @@ fun CrosshairOverlay(
                     modifier = Modifier.padding(10.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
+                    // Action label — what this coordinate is for
+                    Text(
+                        actionLabel,
+                        color = Color(0xFFFFD54F),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+
+                    Spacer(modifier = Modifier.height(4.dp))
+
                     // Drag handle + coordinate display
                     Row(
                         modifier = Modifier
