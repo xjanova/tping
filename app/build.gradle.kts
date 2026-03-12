@@ -120,13 +120,6 @@ dependencies {
     // OpenCV for slide puzzle CAPTCHA solving
     implementation("org.opencv:opencv:4.9.0")
 
-    // Shizuku for ADB-level shell commands without root (CAPTCHA touch injection)
-    implementation("dev.rikka.shizuku:api:13.1.5")
-    implementation("dev.rikka.shizuku:provider:13.1.5")
-
-    // libadb-android: Embedded ADB client via Wireless Debugging (Self-ADB, no Shizuku needed)
-    implementation("com.github.MuntashirAkon:libadb-android:3.1.1")
-
     // ML Kit Barcode Scanning (QR Code scanner for license key)
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
 

@@ -907,7 +907,7 @@ object LicenseManager {
         // Only allow offline for paid licenses (not demo/trial)
         if (cachedStatus == "active" && cachedType != "demo" && cachedType != "trial" &&
             (cachedExpiry == 0L || cachedExpiry > now)) {
-            val days = if (cachedExpiry > 0) ((cachedExpiry - now) / (24 * 60 * 60 * 1000)).toInt() else 999
+            val days = if (cachedExpiry > 0) ((cachedExpiry - now + 86_400_000 - 1) / 86_400_000).toInt().coerceAtLeast(0) else 999
             _state.value = LicenseState(
                 status = LicenseStatus.ACTIVE,
                 licenseType = cachedType,
