@@ -806,6 +806,17 @@ object LicenseManager {
                     deviceId = stableDisplayId,
                     isLoading = false
                 )
+
+                // Auto-authenticate cloud after license activation (non-demo)
+                if (type != "demo" && type != "trial") {
+                    try {
+                        Log.d(TAG, "Auto deviceAuth after license activation...")
+                        com.xjanova.tping.data.cloud.CloudAuthManager.deviceAuth(key, machineId)
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Auto deviceAuth failed (non-fatal): ${e.message}")
+                    }
+                }
+
                 Result.success(getLicenseTypeDisplay(type))
             } else {
                 // Check for "already activated on other device" — hard block
