@@ -282,18 +282,35 @@ fun HomeScreen(
 
             // === License Status Card ===
             item(key = "license_status") {
-                // Calculate display days from expiresAt with ceiling (partial day = 1 day)
-                val displayDays = if (licenseState.expiresAt > 0) {
-                    val ms = licenseState.expiresAt - System.currentTimeMillis()
-                    if (ms > 0) ((ms + 86_400_000 - 1) / 86_400_000).toInt() else 0
-                } else {
-                    licenseState.remainingDays
+                // Real-time countdown clock
+                var nowMs by remember { mutableStateOf(System.currentTimeMillis()) }
+                val hasExpiry = licenseState.expiresAt > 0 && licenseState.licenseType != "lifetime" &&
+                    (licenseState.status == LicenseStatus.ACTIVE || licenseState.status == LicenseStatus.TRIAL)
+                LaunchedEffect(hasExpiry) {
+                    if (hasExpiry) {
+                        while (true) {
+                            kotlinx.coroutines.delay(1000L)
+                            nowMs = System.currentTimeMillis()
+                        }
+                    }
                 }
+                val remainMs = if (licenseState.expiresAt > 0) (licenseState.expiresAt - nowMs).coerceAtLeast(0) else 0L
+                val displayDays = if (remainMs > 0) ((remainMs + 86_400_000 - 1) / 86_400_000).toInt() else licenseState.remainingDays
+                val countdownText = if (hasExpiry && remainMs > 0) {
+                    val totalSec = remainMs / 1000
+                    val d = totalSec / 86400
+                    val h = (totalSec % 86400) / 3600
+                    val m = (totalSec % 3600) / 60
+                    val s = totalSec % 60
+                    if (d > 0) "${d}วัน %02d:%02d:%02d".format(h, m, s)
+                    else "%02d:%02d:%02d".format(h, m, s)
+                } else null
+
                 val isExpiringSoon = displayDays in 1..7 &&
                     licenseState.licenseType != "lifetime" &&
                     (licenseState.status == LicenseStatus.ACTIVE || licenseState.status == LicenseStatus.TRIAL)
                 val licColor = when {
-                    isExpiringSoon -> Color(0xFFEF4444) // Red when expiring soon
+                    isExpiringSoon -> Color(0xFFEF4444)
                     licenseState.status == LicenseStatus.ACTIVE -> Color(0xFF22C55E)
                     licenseState.status == LicenseStatus.TRIAL -> Color(0xFF3B82F6)
                     licenseState.status == LicenseStatus.EXPIRED -> Color(0xFFEF4444)
@@ -313,16 +330,11 @@ fun HomeScreen(
                         if (licenseState.licenseType == "lifetime") {
                             "ไลเซนส์: $typeDisplay (ไม่มีวันหมดอายุ)"
                         } else {
-                            "ไลเซนส์: $typeDisplay — เหลือ $displayDays วัน"
+                            "ไลเซนส์: $typeDisplay — เหลือ ${countdownText ?: "$displayDays วัน"}"
                         }
                     }
                     LicenseStatus.TRIAL -> {
-                        val h = licenseState.remainingHours
-                        when {
-                            h >= 48 -> "ทดลองใช้ฟรี — เหลือ $displayDays วัน"
-                            h >= 1 -> "ทดลองใช้ฟรี — เหลือ ${h} ชั่วโมง"
-                            else -> "ทดลองใช้ฟรี — เหลือไม่ถึง 1 ชั่วโมง"
-                        }
+                        "ทดลองใช้ฟรี — เหลือ ${countdownText ?: "$displayDays วัน"}"
                     }
                     LicenseStatus.EXPIRED -> "ไลเซนส์หมดอายุ — กดซื้อคีย์ใหม่"
                     LicenseStatus.NONE -> "กรุณากรอก License Key"
@@ -490,159 +502,98 @@ fun HomeScreen(
                 val updateInfo by UpdateChecker.updateInfo.collectAsState()
                 val autoUpdateOn by UpdateChecker.autoUpdateEnabled.collectAsState()
                 val updateScope = rememberCoroutineScope()
-                var showChangelog by remember { mutableStateOf(false) }
+                var showUpdateDialog by remember { mutableStateOf(false) }
 
                 // Init auto-update pref
                 LaunchedEffect(Unit) {
                     UpdateChecker.initAutoUpdatePref(context)
                 }
 
-                // Downloading overlay — block interactions
-                if (updateInfo.isDownloading) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = Color(0xFF8B5CF6).copy(alpha = 0.15f)
-                        )
-                    ) {
-                        Column(modifier = Modifier.padding(16.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.SystemUpdate, null, tint = Color(0xFF8B5CF6), modifier = Modifier.size(22.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
-                                Text("กำลังอัพเดท...", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color(0xFF8B5CF6))
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
+                // Auto-show popup when update found
+                LaunchedEffect(updateInfo.hasUpdate) {
+                    if (updateInfo.hasUpdate) showUpdateDialog = true
+                }
+
+                // Update popup dialog
+                if (showUpdateDialog && (updateInfo.hasUpdate || updateInfo.isDownloading)) {
+                    AlertDialog(
+                        onDismissRequest = { if (!updateInfo.isDownloading) showUpdateDialog = false },
+                        icon = { Icon(Icons.Default.SystemUpdate, null, tint = Color(0xFF8B5CF6), modifier = Modifier.size(32.dp)) },
+                        title = {
                             Text(
-                                "v${updateInfo.currentVersion} → v${updateInfo.latestVersion}",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
-                            Spacer(modifier = Modifier.height(10.dp))
-                            LinearProgressIndicator(
-                                progress = { updateInfo.downloadProgress / 100f },
-                                modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                                if (updateInfo.isDownloading) "กำลังอัพเดท..."
+                                else "อัพเดทใหม่ v${updateInfo.latestVersion}",
+                                fontWeight = FontWeight.Bold,
                                 color = Color(0xFF8B5CF6)
                             )
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Text(
-                                "กำลังดาวน์โหลด ${updateInfo.downloadProgress}% — กรุณาอย่าปิดแอป",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = Color(0xFF8B5CF6)
-                            )
-                            if (updateInfo.error.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(updateInfo.error, fontSize = 11.sp, color = Color(0xFFEF4444))
-                            }
-                        }
-                    }
-                } else if (updateInfo.hasUpdate) {
-                    // Update available — show with changelog
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = Color(0xFF8B5CF6).copy(alpha = 0.12f)
-                        )
-                    ) {
-                        Column(modifier = Modifier.padding(12.dp)) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.SystemUpdate, null, tint = Color(0xFF8B5CF6), modifier = Modifier.size(20.dp))
-                                Spacer(modifier = Modifier.width(8.dp))
+                        },
+                        text = {
+                            Column {
                                 Text(
-                                    "อัพเดทใหม่ v${updateInfo.latestVersion}",
-                                    fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color(0xFF8B5CF6)
+                                    "v${updateInfo.currentVersion} → v${updateInfo.latestVersion}",
+                                    fontSize = 13.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
                                 )
-                                Spacer(modifier = Modifier.weight(1f))
-                                TextButton(onClick = { UpdateChecker.dismissVersion(context, updateInfo.latestVersion) }) {
-                                    Text("ข้าม", fontSize = 12.sp)
+                                if (updateInfo.isDownloading) {
+                                    Spacer(modifier = Modifier.height(12.dp))
+                                    LinearProgressIndicator(
+                                        progress = { updateInfo.downloadProgress / 100f },
+                                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                                        color = Color(0xFF8B5CF6)
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        "กำลังดาวน์โหลด ${updateInfo.downloadProgress}%",
+                                        fontSize = 12.sp, color = Color(0xFF8B5CF6)
+                                    )
+                                }
+                                if (updateInfo.releaseNotes.isNotEmpty() && !updateInfo.isDownloading) {
+                                    Spacer(modifier = Modifier.height(10.dp))
+                                    Text("มีอะไรใหม่:", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF8B5CF6))
+                                    Spacer(modifier = Modifier.height(4.dp))
+                                    Text(
+                                        updateInfo.releaseNotes,
+                                        fontSize = 11.sp, lineHeight = 16.sp,
+                                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                                    )
+                                }
+                                if (updateInfo.error.isNotEmpty()) {
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(updateInfo.error, fontSize = 11.sp, color = Color(0xFFEF4444))
                                 }
                             }
-                            Text(
-                                "เวอร์ชัน ${updateInfo.currentVersion} → ${updateInfo.latestVersion}",
-                                fontSize = 12.sp,
-                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
-                            )
-                            // Changelog
-                            if (updateInfo.releaseNotes.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(6.dp))
-                                Card(
-                                    colors = CardDefaults.cardColors(containerColor = Color(0xFF8B5CF6).copy(alpha = 0.08f)),
-                                    shape = RoundedCornerShape(8.dp)
+                        },
+                        confirmButton = {
+                            if (!updateInfo.isDownloading) {
+                                Button(
+                                    onClick = { updateScope.launch { UpdateChecker.downloadAndInstall(context) } },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6))
                                 ) {
-                                    Column(modifier = Modifier.padding(10.dp)) {
-                                        Row(
-                                            modifier = Modifier.fillMaxWidth().clickable { showChangelog = !showChangelog },
-                                            verticalAlignment = Alignment.CenterVertically
-                                        ) {
-                                            Text("มีอะไรใหม่", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF8B5CF6))
-                                            Spacer(modifier = Modifier.weight(1f))
-                                            Icon(
-                                                if (showChangelog) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
-                                                null, modifier = Modifier.size(18.dp), tint = Color(0xFF8B5CF6)
-                                            )
-                                        }
-                                        if (showChangelog) {
-                                            Spacer(modifier = Modifier.height(4.dp))
-                                            Text(
-                                                updateInfo.releaseNotes,
-                                                fontSize = 11.sp, lineHeight = 16.sp,
-                                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                                            )
-                                        }
+                                    Icon(Icons.Default.Download, null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("อัพเดทเลย")
+                                }
+                            }
+                        },
+                        dismissButton = {
+                            if (!updateInfo.isDownloading) {
+                                Row {
+                                    TextButton(onClick = {
+                                        UpdateChecker.dismissVersion(context, updateInfo.latestVersion)
+                                        showUpdateDialog = false
+                                    }) {
+                                        Text("ข้าม", fontSize = 12.sp)
+                                    }
+                                    TextButton(onClick = { showUpdateDialog = false }) {
+                                        Text("ภายหลัง", fontSize = 12.sp)
                                     }
                                 }
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Button(
-                                onClick = { updateScope.launch { UpdateChecker.downloadAndInstall(context) } },
-                                modifier = Modifier.fillMaxWidth(),
-                                shape = RoundedCornerShape(8.dp),
-                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6))
-                            ) {
-                                Icon(Icons.Default.Download, null, modifier = Modifier.size(18.dp))
-                                Spacer(modifier = Modifier.width(6.dp))
-                                Text("อัพเดทเลย", fontWeight = FontWeight.Bold)
-                            }
-                            if (updateInfo.error.isNotEmpty()) {
-                                Spacer(modifier = Modifier.height(4.dp))
-                                Text(updateInfo.error, fontSize = 11.sp, color = Color(0xFFEF4444))
-                            }
                         }
-                    }
-                } else if (updateInfo.isUpToDate) {
-                    // Up to date — show confirmation
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFF22C55E).copy(alpha = 0.1f))
-                    ) {
-                        Row(
-                            modifier = Modifier.padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(Icons.Default.CheckCircle, null, tint = Color(0xFF22C55E), modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("ใช้เวอร์ชันล่าสุดแล้ว (v${updateInfo.currentVersion})", fontSize = 13.sp, color = Color(0xFF22C55E))
-                        }
-                    }
-                } else if (updateInfo.error.isNotEmpty()) {
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(containerColor = Color(0xFFFF9800).copy(alpha = 0.1f))
-                    ) {
-                        Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Warning, null, tint = Color(0xFFFF9800), modifier = Modifier.size(18.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("เช็คอัพเดท: ${updateInfo.error}", fontSize = 12.sp, color = Color(0xFFFF9800))
-                        }
-                    }
+                    )
                 }
 
-                // Manual check button + Auto-update toggle
-                Spacer(modifier = Modifier.height(4.dp))
+                // Compact update status row
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,

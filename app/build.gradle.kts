@@ -26,6 +26,10 @@ android {
             useSupportLibrary = true
         }
 
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a")
+        }
+
         // APK signing cert SHA-256 for runtime integrity verification.
         // Must match the release keystore used for signing.
         buildConfigField(

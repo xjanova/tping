@@ -860,7 +860,7 @@ data class ProfileCategoryItem(
 
 data class OverlayState(
     val mode: String = "idle", // idle, recording, game_recording, playing, paused
-    val isExpanded: Boolean = true,
+    val isExpanded: Boolean = false,
     val statusText: String = "พร้อมใช้งาน",
     val currentStep: Int = 0, val totalSteps: Int = 0, val stepCount: Int = 0,
     val currentLoop: Int = 0, val totalLoops: Int = 0, val progress: Float = 0f,

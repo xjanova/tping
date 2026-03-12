@@ -87,10 +87,8 @@ fun FloatingOverlayContent(
     onShowPuzzleCrosshair: () -> Unit = {}
 ) {
     Column {
-        if (!state.isExpanded) {
-            MiniOverlay(mode = state.mode, step = state.currentStep, onClick = onToggleExpand, onDragDelta = onDragDelta)
-        } else {
-            // Show dialog OR main panel (not both overlapping)
+        // Show expanded panel or dialogs above the floating button
+        if (state.isExpanded) {
             when {
                 state.showRecordModeDialog -> {
                     RecordModeDialog(
@@ -152,7 +150,11 @@ fun FloatingOverlayContent(
                     )
                 }
             }
+            Spacer(modifier = Modifier.height(6.dp))
         }
+
+        // Floating button — always visible, tap to toggle expanded panel
+        MiniOverlay(mode = state.mode, step = state.currentStep, onClick = onToggleExpand, onDragDelta = onDragDelta)
     }
 }
 
@@ -280,16 +282,10 @@ fun ExpandedOverlay(
                     }
                     Text(headerText, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    Icon(
-                        Icons.Default.Remove, "Minimize", tint = Color.White.copy(alpha = 0.9f),
-                        modifier = Modifier.size(18.dp).clickable(onClick = onMinimize)
-                    )
-                    Icon(
-                        Icons.Default.Close, "Close", tint = Color.White.copy(alpha = 0.9f),
-                        modifier = Modifier.size(18.dp).clickable(onClick = onClose)
-                    )
-                }
+                Icon(
+                    Icons.Default.Close, "Close", tint = Color.White.copy(alpha = 0.9f),
+                    modifier = Modifier.size(18.dp).clickable(onClick = onClose)
+                )
             }
 
             // Status text
@@ -1014,7 +1010,6 @@ fun CrosshairOverlay(
     val density = LocalDensity.current
 
     // Detect overlay window's screen offset (status bar, etc.)
-    // The overlay may not start at screen (0,0) even with FLAG_LAYOUT_IN_SCREEN.
     val view = LocalView.current
     var screenOffsetX by remember { mutableIntStateOf(0) }
     var screenOffsetY by remember { mutableIntStateOf(0) }
@@ -1038,16 +1033,18 @@ fun CrosshairOverlay(
     var crosshairX by remember { mutableFloatStateOf(screenWidth / 2f) }
     var crosshairY by remember { mutableFloatStateOf(screenHeight / 2f) }
 
+    // Floating button block position — draggable independently
+    var btnOffsetX by remember { mutableFloatStateOf(screenWidth / 2f - 100f) }
+    var btnOffsetY by remember { mutableFloatStateOf(screenHeight - 300f) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black.copy(alpha = 0.3f))
+            .background(Color.Black.copy(alpha = 0.15f))
             .onGloballyPositioned { coordinates ->
                 val w = coordinates.size.width
                 val h = coordinates.size.height
                 if (w != layoutWidth || h != layoutHeight) {
-                    android.util.Log.d("CrosshairOverlay",
-                        "Layout size: ${w}x${h}, expected: ${screenWidth}x${screenHeight}")
                     layoutWidth = w
                     layoutHeight = h
                 }
@@ -1055,82 +1052,11 @@ fun CrosshairOverlay(
             .pointerInput(layoutWidth, layoutHeight) {
                 detectDragGestures { change, dragAmount ->
                     change.consume()
-                    // Use ACTUAL layout dimensions for constraints
                     crosshairX = (crosshairX + dragAmount.x).coerceIn(0f, layoutWidth.toFloat())
                     crosshairY = (crosshairY + dragAmount.y).coerceIn(0f, layoutHeight.toFloat())
                 }
             }
     ) {
-        // Top bar with controls — full-width info
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(Color(0xDD000000))
-                .padding(horizontal = 16.dp, vertical = 10.dp)
-        ) {
-            // Row 1: Cancel + Confirm buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
-            ) {
-                // Cancel button
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(Color(0xFF444444))
-                        .clickable(onClick = onCancel)
-                        .padding(horizontal = 14.dp, vertical = 8.dp)
-                ) {
-                    Text("ยกเลิก", color = Color.White, fontSize = 13.sp)
-                }
-
-                // Confirm button
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(GameColor)
-                        .clickable {
-                            // Add window screen offset to get absolute screen coordinates
-                            val absX = crosshairX.roundToInt() + screenOffsetX
-                            val absY = crosshairY.roundToInt() + screenOffsetY
-                            android.util.Log.d("CrosshairOverlay",
-                                "Confirm: layout=(${crosshairX.roundToInt()},${crosshairY.roundToInt()}) " +
-                                "offset=($screenOffsetX,$screenOffsetY) → screen=($absX,$absY)")
-                            onConfirm(absX, absY)
-                        }
-                        .padding(horizontal = 14.dp, vertical = 8.dp)
-                ) {
-                    Text("ยืนยัน ✓", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            // Row 2: Action label — full width
-            Text(
-                actionLabel,
-                color = GameColor,
-                fontWeight = FontWeight.Bold,
-                fontSize = 16.sp,
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center
-            )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
-            // Row 3: Coordinate display — full width, bigger font
-            // Show absolute screen coordinates (with offset applied)
-            Text(
-                "X: ${crosshairX.roundToInt() + screenOffsetX}   Y: ${crosshairY.roundToInt() + screenOffsetY}",
-                color = Color.White,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.fillMaxWidth(),
-                textAlign = TextAlign.Center
-            )
-        }
-
         // Crosshair lines and circle
         val crossXDp = with(density) { crosshairX.toDp() }
         val crossYDp = with(density) { crosshairY.toDp() }
@@ -1182,21 +1108,75 @@ fun CrosshairOverlay(
                 .background(GameColor)
         )
 
-        // Instruction text at bottom
+        // Floating compact button block — draggable, shows coordinates + OK/Cancel
         Box(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 48.dp)
-                .clip(RoundedCornerShape(20.dp))
-                .background(Color(0xCC000000))
-                .padding(horizontal = 20.dp, vertical = 10.dp)
+                .offset { IntOffset(btnOffsetX.roundToInt(), btnOffsetY.roundToInt()) }
         ) {
-            Text(
-                "ลากเพื่อเลื่อนกากบาท แล้วกด ยืนยัน",
-                color = Color.White,
-                fontSize = 13.sp,
-                textAlign = TextAlign.Center
-            )
+            Card(
+                shape = RoundedCornerShape(14.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xE6111111)),
+                elevation = CardDefaults.cardElevation(defaultElevation = 8.dp)
+            ) {
+                Column(
+                    modifier = Modifier.padding(10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // Drag handle + coordinate display
+                    Row(
+                        modifier = Modifier
+                            .pointerInput(Unit) {
+                                detectDragGestures { change, dragAmount ->
+                                    change.consume()
+                                    btnOffsetX += dragAmount.x
+                                    btnOffsetY += dragAmount.y
+                                }
+                            },
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Default.DragIndicator, "Drag", tint = Color(0xFF666666), modifier = Modifier.size(14.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            "${crosshairX.roundToInt() + screenOffsetX}, ${crosshairY.roundToInt() + screenOffsetY}",
+                            color = GameColor,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // OK / Cancel buttons
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(Color(0xFF444444))
+                                .clickable(onClick = onCancel)
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                        ) {
+                            Text("ยกเลิก", color = Color.White, fontSize = 13.sp)
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(GameColor)
+                                .clickable {
+                                    val absX = crosshairX.roundToInt() + screenOffsetX
+                                    val absY = crosshairY.roundToInt() + screenOffsetY
+                                    android.util.Log.d("CrosshairOverlay",
+                                        "Confirm: layout=(${crosshairX.roundToInt()},${crosshairY.roundToInt()}) " +
+                                        "offset=($screenOffsetX,$screenOffsetY) → screen=($absX,$absY)")
+                                    onConfirm(absX, absY)
+                                }
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                        ) {
+                            Text("ตกลง", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                        }
+                    }
+                }
+            }
         }
     }
 }
