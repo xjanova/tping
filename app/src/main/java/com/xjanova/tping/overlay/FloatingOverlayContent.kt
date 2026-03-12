@@ -84,7 +84,9 @@ fun FloatingOverlayContent(
     onShowGameInputCrosshair: () -> Unit = {},
     onGameTagConfirm: (String) -> Unit = {},
     onDismissGameTagDialog: () -> Unit = {},
-    onShowPuzzleCrosshair: () -> Unit = {}
+    onShowPuzzleCrosshair: () -> Unit = {},
+    onBack: () -> Unit = {},
+    onHome: () -> Unit = {}
 ) {
     Column {
         // Show expanded panel or dialogs above the floating button
@@ -146,7 +148,9 @@ fun FloatingOverlayContent(
                         onShowGameCrosshair = onShowGameCrosshair,
                         onAddGameWait = onAddGameWait,
                         onShowGameInputCrosshair = onShowGameInputCrosshair,
-                        onShowPuzzleCrosshair = onShowPuzzleCrosshair
+                        onShowPuzzleCrosshair = onShowPuzzleCrosshair,
+                        onBack = onBack,
+                        onHome = onHome
                     )
                 }
             }
@@ -228,7 +232,9 @@ fun ExpandedOverlay(
     onShowGameCrosshair: (ActionType) -> Unit = {},
     onAddGameWait: (Long) -> Unit = {},
     onShowGameInputCrosshair: () -> Unit = {},
-    onShowPuzzleCrosshair: () -> Unit = {}
+    onShowPuzzleCrosshair: () -> Unit = {},
+    onBack: () -> Unit = {},
+    onHome: () -> Unit = {}
 ) {
     val headerColor = when (state.mode) {
         "recording" -> RecordColor
@@ -347,6 +353,8 @@ fun ExpandedOverlay(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
+                        OverlayButton(Icons.Default.ArrowBack, "ย้อน", Color(0xFF78909C), onBack)
+                        OverlayButton(Icons.Default.Home, "หน้าหลัก", Color(0xFF78909C), onHome)
                         OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStopGameRecord)
                     }
                 }
@@ -373,6 +381,14 @@ fun ExpandedOverlay(
                                 OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStop)
                             }
                         }
+                    }
+                    // Back / Home tool buttons
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
+                        OverlayButton(Icons.Default.ArrowBack, "ย้อน", Color(0xFF78909C), onBack)
+                        OverlayButton(Icons.Default.Home, "หน้าหลัก", Color(0xFF78909C), onHome)
                     }
                 }
             }
@@ -767,6 +783,22 @@ fun PlaySelectDialog(
                     ) {
                         Icon(Icons.Default.Add, "Increase", tint = Color.White, modifier = Modifier.size(16.dp))
                     }
+                }
+            }
+
+            // Loop guidance
+            if (selectedCategory.isNotEmpty()) {
+                val catInfo = categories.find { it.category == selectedCategory }
+                val idCount = catInfo?.profileCount ?: 0
+                if (idCount > 0) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        if (loops <= idCount) "วน $loops รอบ จาก $idCount ไอดี (ใช้ไอดีที่ 1-$loops)"
+                        else "วน $loops รอบ จาก $idCount ไอดี — ครบแล้ววนกลับไอดีแรก",
+                        color = Color(0xFF888888),
+                        fontSize = 9.sp,
+                        lineHeight = 13.sp
+                    )
                 }
             }
 

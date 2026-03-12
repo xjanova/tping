@@ -8,13 +8,8 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.xjanova.tping.data.dao.DataProfileDao
 import com.xjanova.tping.data.dao.WorkflowDao
-import com.xjanova.tping.data.entity.DataField
 import com.xjanova.tping.data.entity.DataProfile
 import com.xjanova.tping.data.entity.Workflow
-import com.google.gson.Gson
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 
 @Database(
     entities = [DataProfile::class, Workflow::class],
@@ -52,7 +47,6 @@ abstract class TpingDatabase : RoomDatabase() {
                     "tping_database"
                 )
                     .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
-                    .addCallback(SeedCallback())
                     .fallbackToDestructiveMigration()
                     .build()
                 INSTANCE = instance
@@ -60,47 +54,5 @@ abstract class TpingDatabase : RoomDatabase() {
             }
         }
 
-        /**
-         * Seeds sample data profiles on first database creation only.
-         */
-        private class SeedCallback : RoomDatabase.Callback() {
-            override fun onCreate(db: SupportSQLiteDatabase) {
-                super.onCreate(db)
-                INSTANCE?.let { database ->
-                    CoroutineScope(Dispatchers.IO).launch {
-                        val gson = Gson()
-                        val dao = database.dataProfileDao()
-
-                        // Sample 1: Game account
-                        val gameFields = listOf(
-                            DataField("ชื่อผู้ใช้", "player001"),
-                            DataField("รหัสผ่าน", "Pass1234"),
-                            DataField("อีเมล", "example@mail.com")
-                        )
-                        dao.insert(
-                            DataProfile(
-                                name = "บัญชี 1",
-                                category = "เกม",
-                                fieldsJson = gson.toJson(gameFields)
-                            )
-                        )
-
-                        // Sample 2: Social media
-                        val socialFields = listOf(
-                            DataField("ชื่อผู้ใช้", "myname"),
-                            DataField("รหัสผ่าน", "Secret123"),
-                            DataField("เบอร์โทร", "0812345678")
-                        )
-                        dao.insert(
-                            DataProfile(
-                                name = "บัญชี 1",
-                                category = "โซเชียล",
-                                fieldsJson = gson.toJson(socialFields)
-                            )
-                        )
-                    }
-                }
-            }
-        }
     }
 }

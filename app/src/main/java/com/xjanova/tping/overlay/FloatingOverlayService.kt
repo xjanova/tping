@@ -269,7 +269,9 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                         _overlayState.value = _overlayState.value.copy(showGameTagDialog = false)
                         setOverlayFocusable(false)
                     },
-                    onShowPuzzleCrosshair = { startPuzzleCrosshairFlow() }
+                    onShowPuzzleCrosshair = { startPuzzleCrosshairFlow() },
+                    onBack = { TpingAccessibilityService.instance?.performBack {} },
+                    onHome = { TpingAccessibilityService.instance?.performHome() }
                 )
             }
         }

@@ -220,13 +220,20 @@ object UpdateChecker {
                     val buffer = ByteArray(8192)
                     var bytesRead: Long = 0
                     var read: Int
+                    var lastEmittedProgress = -1
 
                     while (input.read(buffer).also { read = it } != -1) {
                         output.write(buffer, 0, read)
                         bytesRead += read
                         if (contentLength > 0) {
                             val progress = (bytesRead * 100 / contentLength).toInt()
-                            _updateInfo.value = _updateInfo.value.copy(downloadProgress = progress)
+                            // Emit on every percent change to ensure UI sees real-time updates
+                            if (progress != lastEmittedProgress) {
+                                lastEmittedProgress = progress
+                                withContext(Dispatchers.Main) {
+                                    _updateInfo.value = _updateInfo.value.copy(downloadProgress = progress)
+                                }
+                            }
                         }
                     }
                     output.flush()

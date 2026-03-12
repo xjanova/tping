@@ -458,6 +458,10 @@ class TpingAccessibilityService : AccessibilityService() {
         callback()
     }
 
+    fun performHome() {
+        performGlobalAction(GLOBAL_ACTION_HOME)
+    }
+
     /** Dismiss any visible keyboard via BACK action, then callback after animation delay */
     fun dismissKeyboard(callback: () -> Unit) {
         performGlobalAction(GLOBAL_ACTION_BACK)
