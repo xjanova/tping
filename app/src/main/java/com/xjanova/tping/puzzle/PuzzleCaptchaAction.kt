@@ -962,7 +962,7 @@ object PuzzleCaptchaAction {
     /**
      * Test if shell `input` command works on this device.
      * The `input` command creates hardware-level events (isTrusted=true).
-     * Priority: Shizuku → direct shell → su (root)
+     * Priority: SelfAdb → sh → su (root)
      * Returns "ok" if working, or error description.
      */
     private suspend fun testShellInput(testX: Float, testY: Float): String {
@@ -1069,7 +1069,7 @@ object PuzzleCaptchaAction {
      *   b) input draganddrop: Built-in long press (~500ms) + linear drag
      *   c) input swipe: Direct swipe (no hold, last resort)
      *
-     * Each strategy tries: SelfAdb → Shizuku → sh → su
+     * Each strategy tries: SelfAdb → sh → su
      */
     private suspend fun doShellDrag(
         startX: Float, startY: Float,
@@ -1335,7 +1335,7 @@ object PuzzleCaptchaAction {
 
     /**
      * Try input draganddrop (has built-in ~500ms long press before drag).
-     * Priority: SelfAdb → Shizuku → sh → su
+     * Priority: SelfAdb → sh → su
      */
     private suspend fun tryDragAndDrop(
         x1: Int, y1: Int, x2: Int, y2: Int,

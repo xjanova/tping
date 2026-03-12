@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit
 
 data class UpdateInfo(
     val hasUpdate: Boolean = false,
+    val isUpToDate: Boolean = false,
     val latestVersion: String = "",
     val currentVersion: String = BuildConfig.VERSION_NAME,
     val downloadUrl: String = "",
@@ -51,9 +52,24 @@ object UpdateChecker {
     private const val PREFS_NAME = "tping_update"
     private const val KEY_LAST_CHECK = "last_check_at"
     private const val KEY_DISMISSED_VERSION = "dismissed_version"
+    private const val KEY_AUTO_UPDATE = "auto_update_enabled"
 
     // Check interval: don't check more often than every 6 hours
     private const val CHECK_INTERVAL_MS = 6L * 60 * 60 * 1000
+
+    private val _autoUpdateEnabled = MutableStateFlow(false)
+    val autoUpdateEnabled: StateFlow<Boolean> = _autoUpdateEnabled
+
+    fun initAutoUpdatePref(context: Context) {
+        _autoUpdateEnabled.value = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .getBoolean(KEY_AUTO_UPDATE, false)
+    }
+
+    fun setAutoUpdate(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putBoolean(KEY_AUTO_UPDATE, enabled).apply()
+        _autoUpdateEnabled.value = enabled
+    }
 
     private val _updateInfo = MutableStateFlow(UpdateInfo())
     val updateInfo: StateFlow<UpdateInfo> = _updateInfo
@@ -84,22 +100,28 @@ object UpdateChecker {
     /**
      * Check for updates from xman4289.com.
      * If shouldThrottle is true, will skip if checked recently.
+     * If isManual is true, shows "up to date" message and auto-downloads if auto-update on.
      */
     suspend fun checkForUpdate(
         context: Context,
-        shouldThrottle: Boolean = false
+        shouldThrottle: Boolean = false,
+        isManual: Boolean = false
     ) = withContext(Dispatchers.IO) {
-        // Throttle check
-        if (shouldThrottle) {
+        // Throttle check (skip for manual checks)
+        if (shouldThrottle && !isManual) {
             val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val lastCheck = prefs.getLong(KEY_LAST_CHECK, 0)
             if (System.currentTimeMillis() - lastCheck < CHECK_INTERVAL_MS) {
                 Log.d(TAG, "Skipping update check — checked recently")
+                // Auto-download if auto-update enabled and we already know there's an update
+                if (_autoUpdateEnabled.value && _updateInfo.value.hasUpdate && !_updateInfo.value.isDownloading) {
+                    downloadAndInstall(context)
+                }
                 return@withContext
             }
         }
 
-        _updateInfo.value = _updateInfo.value.copy(isChecking = true, error = "")
+        _updateInfo.value = _updateInfo.value.copy(isChecking = true, error = "", isUpToDate = false)
 
         try {
             val currentVersion = BuildConfig.VERSION_NAME
@@ -129,13 +151,14 @@ object UpdateChecker {
             context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .edit().putLong(KEY_LAST_CHECK, System.currentTimeMillis()).apply()
 
-            // Check if this version was dismissed
+            // Check if this version was dismissed (only for non-auto-update)
             val dismissed = getDismissedVersion(context)
-            val showUpdate = hasUpdate && latestVersion != dismissed
+            val showUpdate = hasUpdate && (latestVersion != dismissed || _autoUpdateEnabled.value)
 
             _updateInfo.value = UpdateInfo(
                 hasUpdate = showUpdate,
-                latestVersion = latestVersion,
+                isUpToDate = !hasUpdate,
+                latestVersion = if (hasUpdate) latestVersion else currentVersion,
                 currentVersion = currentVersion,
                 downloadUrl = downloadUrl,
                 releaseNotes = changelog,
@@ -143,6 +166,11 @@ object UpdateChecker {
             )
 
             Log.d(TAG, "Update check: current=$currentVersion latest=$latestVersion hasUpdate=$hasUpdate")
+
+            // Auto-download if auto-update enabled
+            if (showUpdate && _autoUpdateEnabled.value && !_updateInfo.value.isDownloading) {
+                downloadAndInstall(context)
+            }
 
         } catch (e: Exception) {
             Log.e(TAG, "Update check failed", e)
