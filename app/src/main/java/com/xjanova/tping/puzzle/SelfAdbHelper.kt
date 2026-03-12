@@ -28,7 +28,7 @@ import java.util.concurrent.TimeUnit
  *
  * Connects to the device's own ADB daemon via Wireless Debugging (localhost).
  * This allows executing `input swipe` commands with isTrusted=true touch events,
- * without needing the external Shizuku app.
+ * without needing any external app.
  *
  * Setup flow (one-time):
  *   1. User enables Developer Options → Wireless Debugging
