@@ -29,7 +29,7 @@ data class UpdateInfo(
     val fileName: String = "",
     val isChecking: Boolean = false,
     val isDownloading: Boolean = false,
-    val downloadProgress: Int = 0, // 0-100
+    val downloadProgress: Int = 0, // -1=connecting, 0-100=downloading
     val error: String = ""
 )
 
@@ -113,10 +113,7 @@ object UpdateChecker {
             val lastCheck = prefs.getLong(KEY_LAST_CHECK, 0)
             if (System.currentTimeMillis() - lastCheck < CHECK_INTERVAL_MS) {
                 Log.d(TAG, "Skipping update check — checked recently")
-                // Auto-download if auto-update enabled and we already know there's an update
-                if (_autoUpdateEnabled.value && _updateInfo.value.hasUpdate && !_updateInfo.value.isDownloading) {
-                    downloadAndInstall(context)
-                }
+                // Don't auto-download here — let UI show changelog first
                 return@withContext
             }
         }
@@ -167,10 +164,8 @@ object UpdateChecker {
 
             Log.d(TAG, "Update check: current=$currentVersion latest=$latestVersion hasUpdate=$hasUpdate")
 
-            // Auto-download if auto-update enabled
-            if (showUpdate && _autoUpdateEnabled.value && !_updateInfo.value.isDownloading) {
-                downloadAndInstall(context)
-            }
+            // NOTE: Don't auto-download here. Always let UI show changelog dialog first.
+            // User must explicitly choose to update (even with auto-update ON).
 
         } catch (e: Exception) {
             Log.e(TAG, "Update check failed", e)
@@ -188,7 +183,10 @@ object UpdateChecker {
             return@withContext
         }
 
-        _updateInfo.value = info.copy(isDownloading = true, downloadProgress = 0, error = "")
+        // Reset state — set progress to -1 to indicate "connecting"
+        withContext(Dispatchers.Main) {
+            _updateInfo.value = info.copy(isDownloading = true, downloadProgress = -1, error = "")
+        }
 
         try {
             val request = Request.Builder()
@@ -199,14 +197,18 @@ object UpdateChecker {
             val response = client.newCall(request).execute()
 
             if (!response.isSuccessful) {
-                _updateInfo.value = _updateInfo.value.copy(
-                    isDownloading = false,
-                    error = "ดาวน์โหลดไม่สำเร็จ: HTTP ${response.code}"
-                )
+                withContext(Dispatchers.Main) {
+                    _updateInfo.value = _updateInfo.value.copy(
+                        isDownloading = false,
+                        error = "ดาวน์โหลดไม่สำเร็จ: HTTP ${response.code}"
+                    )
+                }
                 return@withContext
             }
 
             val contentLength = response.body?.contentLength() ?: -1L
+            Log.d(TAG, "Download started: contentLength=$contentLength")
+
             val downloadDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
                 ?: context.filesDir
             val fileName = info.fileName.ifBlank { "Tping-v${info.latestVersion}.apk" }
@@ -214,6 +216,11 @@ object UpdateChecker {
 
             // Delete existing file if present
             if (apkFile.exists()) apkFile.delete()
+
+            // Set progress to 0 now that we're actually downloading
+            withContext(Dispatchers.Main) {
+                _updateInfo.value = _updateInfo.value.copy(downloadProgress = 0)
+            }
 
             response.body?.byteStream()?.use { input ->
                 FileOutputStream(apkFile).use { output ->
@@ -225,14 +232,17 @@ object UpdateChecker {
                     while (input.read(buffer).also { read = it } != -1) {
                         output.write(buffer, 0, read)
                         bytesRead += read
-                        if (contentLength > 0) {
-                            val progress = (bytesRead * 100 / contentLength).toInt()
-                            // Emit on every percent change to ensure UI sees real-time updates
-                            if (progress != lastEmittedProgress) {
-                                lastEmittedProgress = progress
-                                withContext(Dispatchers.Main) {
-                                    _updateInfo.value = _updateInfo.value.copy(downloadProgress = progress)
-                                }
+                        val progress = if (contentLength > 0) {
+                            (bytesRead * 100 / contentLength).toInt().coerceIn(0, 100)
+                        } else {
+                            // Unknown size: show MB downloaded as pseudo-progress
+                            (bytesRead / 1024 / 10).toInt().coerceIn(0, 99)
+                        }
+                        // Emit on every percent change to ensure UI sees real-time updates
+                        if (progress != lastEmittedProgress) {
+                            lastEmittedProgress = progress
+                            withContext(Dispatchers.Main) {
+                                _updateInfo.value = _updateInfo.value.copy(downloadProgress = progress)
                             }
                         }
                     }
@@ -242,17 +252,21 @@ object UpdateChecker {
 
             Log.d(TAG, "APK downloaded: ${apkFile.absolutePath} (${apkFile.length()} bytes)")
 
-            _updateInfo.value = _updateInfo.value.copy(isDownloading = false, downloadProgress = 100)
+            withContext(Dispatchers.Main) {
+                _updateInfo.value = _updateInfo.value.copy(isDownloading = false, downloadProgress = 100)
+            }
 
             // Trigger install
             installApk(context, apkFile)
 
         } catch (e: Exception) {
             Log.e(TAG, "Download failed", e)
-            _updateInfo.value = _updateInfo.value.copy(
-                isDownloading = false,
-                error = "ดาวน์โหลดผิดพลาด: ${e.message}"
-            )
+            withContext(Dispatchers.Main) {
+                _updateInfo.value = _updateInfo.value.copy(
+                    isDownloading = false,
+                    error = "ดาวน์โหลดผิดพลาด: ${e.message}"
+                )
+            }
         }
     }
 

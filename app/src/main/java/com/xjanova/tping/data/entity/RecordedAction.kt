@@ -39,5 +39,6 @@ enum class ActionType {
     BACK_BUTTON,
     HOME_BUTTON,
     WAIT,
-    SOLVE_CAPTCHA
+    SOLVE_CAPTCHA,
+    RAPID_CLICK   // Burst click at coordinates with adjustable interval (inputText = JSON config)
 }

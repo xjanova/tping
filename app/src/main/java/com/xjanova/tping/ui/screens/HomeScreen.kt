@@ -536,16 +536,29 @@ fun HomeScreen(
                                 )
                                 if (updateInfo.isDownloading) {
                                     Spacer(modifier = Modifier.height(12.dp))
-                                    LinearProgressIndicator(
-                                        progress = { updateInfo.downloadProgress / 100f },
-                                        modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
-                                        color = Color(0xFF8B5CF6)
-                                    )
-                                    Spacer(modifier = Modifier.height(6.dp))
-                                    Text(
-                                        "กำลังดาวน์โหลด ${updateInfo.downloadProgress}%",
-                                        fontSize = 12.sp, color = Color(0xFF8B5CF6)
-                                    )
+                                    if (updateInfo.downloadProgress < 0) {
+                                        // Connecting phase: indeterminate progress
+                                        LinearProgressIndicator(
+                                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                                            color = Color(0xFF8B5CF6)
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            "กำลังเชื่อมต่อ...",
+                                            fontSize = 12.sp, color = Color(0xFF8B5CF6)
+                                        )
+                                    } else {
+                                        LinearProgressIndicator(
+                                            progress = { updateInfo.downloadProgress / 100f },
+                                            modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(4.dp)),
+                                            color = Color(0xFF8B5CF6)
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            "กำลังดาวน์โหลด ${updateInfo.downloadProgress}%",
+                                            fontSize = 12.sp, color = Color(0xFF8B5CF6)
+                                        )
+                                    }
                                 }
                                 if (updateInfo.releaseNotes.isNotEmpty() && !updateInfo.isDownloading) {
                                     Spacer(modifier = Modifier.height(10.dp))

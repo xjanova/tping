@@ -135,6 +135,36 @@ class PlaybackEngine {
         action: RecordedAction,
         textToInput: String
     ) {
+        // RAPID_CLICK: burst click at coordinates with configurable interval
+        if (action.actionType == ActionType.RAPID_CLICK) {
+            val config = try {
+                com.google.gson.Gson().fromJson(action.inputText, RapidClickConfig::class.java)
+            } catch (_: Exception) { RapidClickConfig() }
+            val cx = (action.boundsLeft + action.boundsRight) / 2f
+            val cy = (action.boundsTop + action.boundsBottom) / 2f
+            val intervalMs = config.intervalMs.coerceIn(30, 2000).toLong()
+            val clickCount = config.clickCount.coerceIn(1, 500)
+
+            _state.value = _state.value.copy(
+                currentActionDesc = "${_state.value.currentActionDesc} ⚡ $clickCount×"
+            )
+
+            for (i in 1..clickCount) {
+                currentCoroutineContext().ensureActive()
+                service.tapAtCoordinates(cx, cy) {}
+                if (i < clickCount) delay(intervalMs)
+                // Update progress
+                if (i % 10 == 0 || i == clickCount) {
+                    val step = _state.value.currentStep
+                    val total = _state.value.totalSteps
+                    _state.value = _state.value.copy(
+                        currentActionDesc = "[$step/$total] กดรัว $i/$clickCount"
+                    )
+                }
+            }
+            return
+        }
+
         // SOLVE_CAPTCHA is a suspend function — wrap entire call in timeout
         if (action.actionType == ActionType.SOLVE_CAPTCHA) {
             _state.value = _state.value.copy(currentActionDesc = _state.value.currentActionDesc + " ⏳")
@@ -252,6 +282,12 @@ class PlaybackEngine {
             ActionType.HOME_BUTTON -> "กดหน้าหลัก"
             ActionType.WAIT -> "รอ ${action.delayAfterMs / 1000.0}s"
             ActionType.SOLVE_CAPTCHA -> "แก้ Captcha สไลด์"
+            ActionType.RAPID_CLICK -> {
+                val config = try {
+                    com.google.gson.Gson().fromJson(action.inputText, RapidClickConfig::class.java)
+                } catch (_: Exception) { RapidClickConfig() }
+                "กดรัว ${config.clickCount}× (${config.intervalMs}ms) $coordText"
+            }
         }
     }
 
@@ -273,3 +309,12 @@ class PlaybackEngine {
         _state.value = PlaybackState()
     }
 }
+
+/**
+ * Configuration for RAPID_CLICK action.
+ * Stored as JSON in RecordedAction.inputText.
+ */
+data class RapidClickConfig(
+    val clickCount: Int = 20,     // Number of rapid clicks
+    val intervalMs: Int = 100     // Interval between clicks in milliseconds (30-2000)
+)

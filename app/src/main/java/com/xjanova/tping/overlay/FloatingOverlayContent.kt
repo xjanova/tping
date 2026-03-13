@@ -86,6 +86,9 @@ fun FloatingOverlayContent(
     onGameTagConfirm: (String) -> Unit = {},
     onDismissGameTagDialog: () -> Unit = {},
     onShowPuzzleCrosshair: () -> Unit = {},
+    onShowRapidClickCrosshair: () -> Unit = {},
+    onRapidClickConfirm: (Int, Int) -> Unit = { _, _ -> },
+    onDismissRapidClickDialog: () -> Unit = {},
     onBack: () -> Unit = {},
     onHome: () -> Unit = {}
 ) {
@@ -93,6 +96,13 @@ fun FloatingOverlayContent(
         // Show expanded panel or dialogs above the floating button
         if (state.isExpanded) {
             when {
+                state.showRapidClickDialog -> {
+                    RapidClickConfigDialog(
+                        coordsText = state.pendingInputCoords,
+                        onConfirm = { count, interval -> onRapidClickConfirm(count, interval) },
+                        onDismiss = onDismissRapidClickDialog
+                    )
+                }
                 state.showRecordModeDialog -> {
                     RecordModeDialog(
                         onNormal = onStartNormalRecord,
@@ -150,6 +160,7 @@ fun FloatingOverlayContent(
                         onAddGameWait = onAddGameWait,
                         onShowGameInputCrosshair = onShowGameInputCrosshair,
                         onShowPuzzleCrosshair = onShowPuzzleCrosshair,
+                        onShowRapidClickCrosshair = onShowRapidClickCrosshair,
                         onBack = onBack,
                         onHome = onHome
                     )
@@ -234,6 +245,7 @@ fun ExpandedOverlay(
     onAddGameWait: (Long) -> Unit = {},
     onShowGameInputCrosshair: () -> Unit = {},
     onShowPuzzleCrosshair: () -> Unit = {},
+    onShowRapidClickCrosshair: () -> Unit = {},
     onBack: () -> Unit = {},
     onHome: () -> Unit = {}
 ) {
@@ -333,7 +345,7 @@ fun ExpandedOverlay(
             // Controls
             when (state.mode) {
                 "game_recording" -> {
-                    // Game mode: 3 rows of buttons
+                    // Game mode: 4 rows of buttons
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
@@ -346,16 +358,22 @@ fun ExpandedOverlay(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
+                        OverlayButton(Icons.Default.FlashOn, "กดรัว", Color(0xFFFF6D00), onShowRapidClickCrosshair)
                         OverlayButton(Icons.Default.Timer, "รอ 1s", PauseColor) { onAddGameWait(1000) }
                         OverlayButton(Icons.Default.Timer3, "รอ 3s", PauseColor) { onAddGameWait(3000) }
-                        OverlayButton(Icons.Default.Extension, "Captcha", Color(0xFF00BCD4), onShowPuzzleCrosshair)
                     }
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
+                        OverlayButton(Icons.Default.Extension, "Captcha", Color(0xFF00BCD4), onShowPuzzleCrosshair)
                         OverlayButton(Icons.Default.ArrowBack, "ย้อน", Color(0xFF78909C), onBack)
                         OverlayButton(Icons.Default.Home, "หน้าหลัก", Color(0xFF78909C), onHome)
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp),
+                        horizontalArrangement = Arrangement.SpaceEvenly
+                    ) {
                         OverlayButton(Icons.Default.Stop, "หยุด", RecordColor, onStopGameRecord)
                     }
                 }
@@ -1224,7 +1242,160 @@ fun CrosshairOverlay(
     }
 }
 
-// ====== Game Data Field Dialog ======
+// ====== Rapid Click Config Dialog ======
+
+@Composable
+fun RapidClickConfigDialog(
+    coordsText: String = "",
+    onConfirm: (Int, Int) -> Unit,
+    onDismiss: () -> Unit
+) {
+    var clickCount by remember { mutableIntStateOf(20) }
+    var intervalMs by remember { mutableIntStateOf(100) }
+
+    Card(
+        modifier = Modifier.width(280.dp).padding(8.dp),
+        shape = RoundedCornerShape(16.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xF5222222)),
+        elevation = CardDefaults.cardElevation(defaultElevation = 16.dp)
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.FlashOn, null, tint = Color(0xFFFF6D00), modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("ตั้งค่ากดรัว", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 15.sp)
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Show coordinate info
+            if (coordsText.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(GameColor.copy(alpha = 0.15f))
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Default.MyLocation, null, tint = GameColor, modifier = Modifier.size(14.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("ตำแหน่ง: $coordsText", color = GameColor, fontSize = 11.sp)
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Click count
+            Text("จำนวนคลิก: $clickCount ครั้ง", color = Color(0xFFCCCCCC), fontSize = 13.sp)
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf(5, 10, 20, 50, 100).forEach { count ->
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                if (clickCount == count) Color(0xFFFF6D00).copy(alpha = 0.3f)
+                                else Color(0xFF333333)
+                            )
+                            .clickable { clickCount = count }
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            "$count",
+                            color = if (clickCount == count) Color(0xFFFF6D00) else Color(0xFFBBBBBB),
+                            fontSize = 11.sp
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+            Slider(
+                value = clickCount.toFloat(),
+                onValueChange = { clickCount = it.toInt() },
+                valueRange = 1f..500f,
+                steps = 0,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFFFF6D00),
+                    activeTrackColor = Color(0xFFFF6D00)
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            // Interval
+            Text("ความเร็ว: ${intervalMs}ms ต่อคลิก", color = Color(0xFFCCCCCC), fontSize = 13.sp)
+            Spacer(modifier = Modifier.height(4.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                listOf(30 to "เร็วสุด", 50 to "เร็ว", 100 to "ปกติ", 200 to "ช้า", 500 to "ช้ามาก").forEach { (ms, label) ->
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                if (intervalMs == ms) Color(0xFFFF6D00).copy(alpha = 0.3f)
+                                else Color(0xFF333333)
+                            )
+                            .clickable { intervalMs = ms }
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                    ) {
+                        Text(
+                            label,
+                            color = if (intervalMs == ms) Color(0xFFFF6D00) else Color(0xFFBBBBBB),
+                            fontSize = 10.sp
+                        )
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+            Slider(
+                value = intervalMs.toFloat(),
+                onValueChange = { intervalMs = it.toInt() },
+                valueRange = 30f..2000f,
+                steps = 0,
+                colors = SliderDefaults.colors(
+                    thumbColor = Color(0xFFFF6D00),
+                    activeTrackColor = Color(0xFFFF6D00)
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            // Summary
+            val totalTime = (clickCount.toLong() * intervalMs) / 1000.0
+            Text(
+                "⏱ ใช้เวลาประมาณ ${"%.1f".format(totalTime)} วินาที",
+                color = Color(0xFF888888), fontSize = 11.sp
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                TextButton(onClick = onDismiss) {
+                    Text("ยกเลิก", color = Color(0xFF999999))
+                }
+                Spacer(modifier = Modifier.width(8.dp))
+                Button(
+                    onClick = { onConfirm(clickCount, intervalMs) },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF6D00)),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Icon(Icons.Default.FlashOn, null, modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("ตกลง", fontSize = 13.sp)
+                }
+            }
+        }
+    }
+}
 
 @Composable
 fun GameDataFieldDialog(

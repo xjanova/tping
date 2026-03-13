@@ -37,6 +37,7 @@ import com.xjanova.tping.puzzle.PuzzleRecordingFlow
 import com.xjanova.tping.puzzle.PuzzleRecordingState
 import com.xjanova.tping.puzzle.PuzzleRecordingStep
 import com.xjanova.tping.recorder.PlaybackEngine
+import com.xjanova.tping.recorder.RapidClickConfig
 import com.xjanova.tping.service.TpingAccessibilityService
 import com.xjanova.tping.util.AppResolver
 import kotlinx.coroutines.CoroutineScope
@@ -271,6 +272,12 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                         setOverlayFocusable(false)
                     },
                     onShowPuzzleCrosshair = { startPuzzleCrosshairFlow() },
+                    onShowRapidClickCrosshair = { showRapidClickCrosshair() },
+                    onRapidClickConfirm = { count, interval -> addGameRapidClickAction(count, interval) },
+                    onDismissRapidClickDialog = {
+                        _overlayState.value = _overlayState.value.copy(showRapidClickDialog = false)
+                        setOverlayFocusable(false)
+                    },
                     onBack = { handleBack() },
                     onHome = { handleHome() }
                 )
@@ -533,6 +540,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         val actionLabel = when {
             mode == "puzzle" -> PuzzleRecordingFlow.getCrosshairLabel(puzzleRecordingState.step)
             mode == "input" -> "กรอกข้อมูล"
+            mode == "rapid_click" -> "กดรัว"
             actionType == ActionType.CLICK -> "กด"
             actionType == ActionType.LONG_CLICK -> "กดค้าง"
             else -> "กด"
@@ -551,6 +559,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                         hideCrosshair()
                         when (mode) {
                             "puzzle" -> onPuzzleCrosshairConfirm(x, y)
+                            "rapid_click" -> onRapidClickCrosshairConfirm(x, y)
                             "input" -> {
                                 pendingGameInputX = x
                                 pendingGameInputY = y
@@ -684,6 +693,54 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             showGameTagDialog = false,
             stepCount = gameActions.size,
             statusText = "กรอก [$fieldKey] ที่ (${pendingGameInputX}, ${pendingGameInputY}) — ${gameActions.size} ขั้นตอน"
+        )
+        setOverlayFocusable(false)
+    }
+
+    // ====== Rapid Click Recording ======
+
+    private var pendingRapidClickX: Int = 0
+    private var pendingRapidClickY: Int = 0
+
+    private fun showRapidClickCrosshair() {
+        showCrosshair(ActionType.CLICK, "rapid_click")
+    }
+
+    private fun onRapidClickCrosshairConfirm(x: Int, y: Int) {
+        pendingRapidClickX = x
+        pendingRapidClickY = y
+        setOverlayFocusable(true)
+        _overlayState.value = _overlayState.value.copy(
+            showRapidClickDialog = true,
+            pendingInputCoords = "($x, $y)"
+        )
+    }
+
+    private fun addGameRapidClickAction(clickCount: Int, intervalMs: Int) {
+        val metrics = getScreenMetrics()
+        val now = System.currentTimeMillis()
+        val delay = (now - gameLastActionTime).coerceIn(100, 5000)
+        gameLastActionTime = now
+
+        val config = RapidClickConfig(clickCount = clickCount, intervalMs = intervalMs)
+        val configJson = gson.toJson(config)
+
+        val action = RecordedAction(
+            stepOrder = ++gameStepCounter,
+            actionType = ActionType.RAPID_CLICK,
+            boundsLeft = pendingRapidClickX - 1, boundsTop = pendingRapidClickY - 1,
+            boundsRight = pendingRapidClickX + 1, boundsBottom = pendingRapidClickY + 1,
+            inputText = configJson,
+            delayAfterMs = if (gameStepCounter == 1) 500 else delay,
+            screenWidth = metrics.widthPixels,
+            screenHeight = metrics.heightPixels,
+            isGameMode = true
+        )
+        gameActions.add(action)
+        _overlayState.value = _overlayState.value.copy(
+            showRapidClickDialog = false,
+            stepCount = gameActions.size,
+            statusText = "กดรัว ${clickCount}× (${intervalMs}ms) — ${gameActions.size} ขั้นตอน"
         )
         setOverlayFocusable(false)
     }
@@ -963,6 +1020,7 @@ data class OverlayState(
     val showRecordModeDialog: Boolean = false,
     val showGameCrosshair: Boolean = false,
     val showGameTagDialog: Boolean = false,
+    val showRapidClickDialog: Boolean = false,
     val pendingInputCoords: String = "",
     val targetAppName: String = "", val suggestedFieldName: String = "",
     val suggestedWorkflowName: String = "",
