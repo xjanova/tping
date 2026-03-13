@@ -25,9 +25,9 @@ import kotlin.coroutines.coroutineContext
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.46
+ * Puzzle CAPTCHA solver — v1.2.62
  *
- * v1.2.46 fixes:
+ * v1.2.62 fixes:
  * - Drag duration reduced from ×10 to ×4 (was unnaturally slow, CAPTCHA may detect bot)
  * - Smart drag verify delays reduced (400/500ms instead of 600/800ms)
  * - Post-swipe verify delay reduced to 1800ms (was 3000ms)
@@ -361,7 +361,7 @@ object PuzzleCaptchaAction {
             coroutineContext.ensureActive()
 
             status("ครั้งที่ $attempt/${config.maxRetries}")
-            // v1.2.46: Moderate delay — 1000ms first, retryDelay on subsequent
+            // v1.2.62: Moderate delay — 1000ms first, retryDelay on subsequent
             delay(if (attempt == 1) 1000 else config.retryDelayMs)
             coroutineContext.ensureActive()
 
@@ -459,7 +459,7 @@ object PuzzleCaptchaAction {
             status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode+$swipeModeName, ${dragDist.toInt()}px)...")
 
             // Human-like timing: moderate speed for natural feel
-            // v1.2.46: ×4 (was ×10 which was unnaturally slow — CAPTCHAs may detect bot-like slowness)
+            // v1.2.62: ×4 (was ×10 which was unnaturally slow — CAPTCHAs may detect bot-like slowness)
             val swipeDuration = (dragDist * 4f).toLong().coerceIn(800, 3500)
             // Use smart hold-verify-adjust for shell tier when OpenCV is available
             // v1.2.45: Always use smart drag when shell+OpenCV available (even blind mode)
@@ -533,7 +533,7 @@ object PuzzleCaptchaAction {
             // === Swipe completed ===
             coroutineContext.ensureActive()
             status("ครั้งที่ $attempt: ✓ เลื่อนแล้ว ตรวจสอบ...")
-            // v1.2.46: 1800ms — enough for CAPTCHA JS to validate (was 3000ms, too slow)
+            // v1.2.62: 1800ms — enough for CAPTCHA JS to validate (was 3000ms, too slow)
             delay(1800)
             coroutineContext.ensureActive()
 
@@ -641,7 +641,7 @@ object PuzzleCaptchaAction {
                     service.tapAtCoordinates(refreshX, refreshY) { tapDone.complete(Unit) }
                     withTimeoutOrNull(3000) { tapDone.await() }
                 }
-                // v1.2.46: 2500ms for new puzzle to load (was 3500ms — too slow)
+                // v1.2.62: 2500ms for new puzzle to load (was 3500ms — too slow)
                 delay(2500)
                 coroutineContext.ensureActive()
             }
@@ -1265,7 +1265,7 @@ object PuzzleCaptchaAction {
             sb.append("sendevent $dev 0 0 0;")
 
             // Variable delay: slower at start and end (more human)
-            // v1.2.46: Faster middle (0.6) for natural acceleration curve
+            // v1.2.62: Faster middle (0.6) for natural acceleration curve
             if (i < steps) {
                 val speedFactor = when {
                     i <= (steps * 0.12).toInt() -> 1.8  // slow start (grabbing)
@@ -1331,7 +1331,7 @@ object PuzzleCaptchaAction {
             sb.append("sendevent $dev 3 54 $rawY;")
             sb.append("sendevent $dev 0 0 0;")
 
-            // v1.2.46: Natural speed curve — fast middle, slow edges
+            // v1.2.62: Natural speed curve — fast middle, slow edges
             if (i < steps) {
                 val speedFactor = when {
                     i <= (steps * 0.12).toInt() -> 1.8  // slow start (grabbing)
@@ -1426,9 +1426,9 @@ object PuzzleCaptchaAction {
         val dragDist = targetX - sliderX
         val holdMs = 350
         val steps = 30
-        // v1.2.46: ×4 for natural human speed (was ×10 — unnaturally slow)
+        // v1.2.62: ×4 for natural human speed (was ×10 — unnaturally slow)
         val dragMs = (dragDist * 4f).toLong().toInt().coerceIn(600, 3000)
-        // v1.2.46: Undershoot far targets by 20px to prevent overshoot, then adjust in verify loop
+        // v1.2.62: Undershoot far targets by 20px to prevent overshoot, then adjust in verify loop
         val undershootPx = if (dragDist > 200) 20f else 0f
         val adjustedTargetX = targetX - undershootPx
 
@@ -1454,7 +1454,7 @@ object PuzzleCaptchaAction {
         }
 
         // Phase 2: Verify and adjust while holding
-        // v1.2.46: 4 rounds max, faster verify (350/450ms — was 600/800)
+        // v1.2.62: 4 rounds max, faster verify (350/450ms — was 600/800)
         val maxAdjustments = 4
         var adjustments = 0
         var currentLogicalX = adjustedTargetX
@@ -1462,7 +1462,7 @@ object PuzzleCaptchaAction {
 
         for (adj in 1..maxAdjustments) {
             // Wait for UI to render piece at current position
-            // v1.2.46: Faster verification — 350ms first, 450ms subsequent
+            // v1.2.62: Faster verification — 350ms first, 450ms subsequent
             delay(if (adj == 1) 350 else 450)
 
             val screenshot = PuzzleScreenCapture.captureScreen()
@@ -1500,7 +1500,7 @@ object PuzzleCaptchaAction {
                 Log.w(TAG, "SmartDrag: drift too large (${drift.toInt()}px), skipping adjust")
                 break
             }
-            // v1.2.46: For large drift (>150px), only move 80% to avoid overshoot
+            // v1.2.62: For large drift (>150px), only move 80% to avoid overshoot
             val adjustFactor = if (kotlin.math.abs(drift) > 150) 0.8f else 1.0f
 
             // Micro-adjust toward gap center
@@ -1524,7 +1524,7 @@ object PuzzleCaptchaAction {
         }
 
         // Phase 3: Brief pause then release
-        // v1.2.46: 250ms (was 500ms — too slow)
+        // v1.2.62: 250ms (was 500ms — too slow)
         delay(250)
         val releaseScript = buildSendeventRelease(device.devicePath)
         execShellAny("sh -c '$releaseScript'")
@@ -1599,7 +1599,7 @@ object PuzzleCaptchaAction {
 
         val holdMs = 350
         val steps = 30
-        // v1.2.46: Natural speed range (was 1500-6000 — too slow)
+        // v1.2.62: Natural speed range (was 1500-6000 — too slow)
         val dragMs = durationMs.toInt().coerceIn(600, 3000)
 
         Log.d(TAG, "SendeventDrag: dev=${device.devicePath}, " +
