@@ -137,6 +137,16 @@ object PuzzleCaptchaAction {
             status("✓ OpenCV พร้อม")
         }
 
+        // Set debug directory for saving diagnostic images
+        try {
+            val debugDir = java.io.File(service.cacheDir, "puzzle_debug")
+            PuzzleSolver.debugDir = debugDir
+            PuzzleSolver.cleanOldDebugImages()
+            Log.d(TAG, "Debug images → ${debugDir.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Cannot set debug dir: ${e.message}")
+        }
+
         // === Get accurate screen dimensions ===
         // CRITICAL (v1.2.44): Use WindowManager.getRealSize() instead of
         // service.resources.displayMetrics. The AccessibilityService's displayMetrics
@@ -1763,9 +1773,11 @@ object PuzzleCaptchaAction {
                 dragState.lastRawY = newRawY
                 previousX = targetX
 
-                delay(200)
+                delay(250)
                 val screenshot = PuzzleScreenCapture.captureScreen()
                 if (screenshot != null) {
+                    // Save scan position screenshot for debugging
+                    PuzzleSolver.saveScanPosition(screenshot, i, targetX.toInt())
                     val gap = PuzzleSolver.findGapRegion(screenshot, sliderY.toInt())
                     screenshot.recycle()
                     if (gap == null) {
@@ -1776,9 +1788,11 @@ object PuzzleCaptchaAction {
                     } else {
                         val gapArea = (gap.right - gap.left) * (gap.bottom - gap.top)
                         results.add(ScanResult(targetX, gapArea, true))
+                        Log.d(TAG, "ScanDrag: pos $i x=${targetX.toInt()} gapArea=$gapArea " +
+                            "gap=(${gap.left},${gap.top})-(${gap.right},${gap.bottom})")
                     }
                 }
-                if (i % 3 == 0) status("$statusPrefix สแกน ${i + 1}/$numPositions...")
+                if (i % 2 == 0) status("$statusPrefix สแกน ${i + 1}/$numPositions...")
             }
 
             // Determine best position

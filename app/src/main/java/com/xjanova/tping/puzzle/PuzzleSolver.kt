@@ -2,16 +2,22 @@ package com.xjanova.tping.puzzle
 
 import android.graphics.Bitmap
 import android.graphics.Rect
+import android.os.Environment
 import android.util.Log
 import org.opencv.android.OpenCVLoader
 import org.opencv.android.Utils
 import org.opencv.core.Core
+import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfDouble
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfPoint2f
+import org.opencv.core.Point
+import org.opencv.core.Scalar
 import org.opencv.core.Size
+import org.opencv.imgcodecs.Imgcodecs
 import org.opencv.imgproc.Imgproc
+import java.io.File
 
 object PuzzleSolver {
 
@@ -20,6 +26,75 @@ object PuzzleSolver {
 
     /** Brightness threshold for "dark pixel" detection (legacy) */
     private const val DARK_THRESHOLD = 70.0
+
+    /** Enable saving debug images to /sdcard/puzzle_debug/ */
+    var debugSaveImages = true
+    private var debugCounter = 0
+
+    /** Set the debug output directory (should be app cache/files dir) */
+    var debugDir: File? = null
+
+    private fun resolveDebugDir(): File? {
+        // Try app-specific dir first (no permission needed), then fallback
+        val dir = debugDir ?: File(Environment.getExternalStorageDirectory(), "puzzle_debug")
+        if (!dir.exists()) dir.mkdirs()
+        return if (dir.canWrite()) dir else null
+    }
+
+    /** Clean old debug images (keep last 3 rounds) */
+    fun cleanOldDebugImages() {
+        try {
+            val dir = resolveDebugDir() ?: return
+            val files = dir.listFiles() ?: return
+            // Keep only files from last 3 debugCounter values
+            val minKeep = (debugCounter - 2).coerceAtLeast(0)
+            for (f in files) {
+                val num = f.name.substringBefore("_").toIntOrNull() ?: continue
+                if (num < minKeep) f.delete()
+            }
+        } catch (_: Exception) {}
+    }
+
+    /** Save a Mat as PNG for diagnosis */
+    private fun saveMat(mat: Mat, name: String) {
+        if (!debugSaveImages) return
+        try {
+            val dir = resolveDebugDir() ?: return
+            val file = File(dir, "${debugCounter}_$name.png")
+            val toSave = if (mat.channels() == 1) {
+                val rgb = Mat()
+                Imgproc.cvtColor(mat, rgb, Imgproc.COLOR_GRAY2BGR)
+                rgb
+            } else if (mat.channels() == 4) {
+                val bgr = Mat()
+                Imgproc.cvtColor(mat, bgr, Imgproc.COLOR_RGBA2BGR)
+                bgr
+            } else mat
+            Imgcodecs.imwrite(file.absolutePath, toSave)
+            if (toSave !== mat) toSave.release()
+            Log.d(TAG, "Debug saved: ${file.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Debug save failed for $name: ${e.message}")
+        }
+    }
+
+    /** Save a scan position screenshot for debugging */
+    fun saveScanPosition(bitmap: Bitmap, index: Int, posX: Int) {
+        saveBitmap(bitmap, "scan_pos${index}_x${posX}")
+    }
+
+    /** Save a Bitmap as PNG */
+    private fun saveBitmap(bitmap: Bitmap, name: String) {
+        if (!debugSaveImages) return
+        try {
+            val dir = resolveDebugDir() ?: return
+            val file = File(dir, "${debugCounter}_$name.png")
+            file.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            Log.d(TAG, "Debug saved: ${file.absolutePath}")
+        } catch (e: Exception) {
+            Log.w(TAG, "Debug save failed for $name: ${e.message}")
+        }
+    }
 
     fun ensureOpenCV(): Boolean {
         if (!opencvInitialized) {
@@ -625,6 +700,10 @@ object PuzzleSolver {
     ): Int? {
         if (!ensureOpenCV()) return null
 
+        debugCounter++
+        saveBitmap(beforeBitmap, "a_before")
+        saveBitmap(afterBitmap, "b_after")
+
         val beforeMat = Mat()
         val afterMat = Mat()
         val beforeGray = Mat()
@@ -640,6 +719,7 @@ object PuzzleSolver {
 
             // === Step 1: absdiff → find changed pixels ===
             Core.absdiff(beforeGray, afterGray, diff)
+            saveMat(diff, "c_diff_raw")
 
             // === Step 2: Threshold + morphology → clean binary mask ===
             Imgproc.threshold(diff, binary, 25.0, 255.0, Imgproc.THRESH_BINARY)
@@ -647,6 +727,7 @@ object PuzzleSolver {
             Imgproc.dilate(binary, binary, kernel)
             Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_CLOSE, kernel)
             kernel.release()
+            saveMat(binary, "d_diff_binary")
 
             // === Step 3: Find contours in puzzle area ===
             val searchTop = (sliderY - 600).coerceAtLeast(0)
@@ -655,13 +736,32 @@ object PuzzleSolver {
             if (searchBottom <= searchTop) return null
 
             val puzzleMask = binary.submat(searchTop, searchBottom, 0, binary.cols())
+            saveMat(puzzleMask, "e_puzzle_mask")
+
             val contours = ArrayList<MatOfPoint>()
             val hierarchy = Mat()
             Imgproc.findContours(
-                puzzleMask, contours, hierarchy,
+                puzzleMask.clone(), contours, hierarchy,
                 Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
             )
             hierarchy.release()
+
+            // Draw all contours on a debug image
+            if (debugSaveImages && contours.isNotEmpty()) {
+                val contourViz = Mat.zeros(puzzleMask.size(), CvType.CV_8UC3)
+                for (i in contours.indices) {
+                    val area = Imgproc.contourArea(contours[i])
+                    val color = if (area > 500) Scalar(0.0, 255.0, 0.0) else Scalar(0.0, 0.0, 255.0)
+                    Imgproc.drawContours(contourViz, contours, i, color, 2)
+                    val rect = Imgproc.boundingRect(contours[i])
+                    Imgproc.putText(contourViz, "a=${area.toInt()}",
+                        Point(rect.x.toDouble(), rect.y.toDouble() - 5),
+                        Imgproc.FONT_HERSHEY_SIMPLEX, 0.4, Scalar(255.0, 255.0, 255.0), 1)
+                }
+                saveMat(contourViz, "f_contours")
+                contourViz.release()
+            }
+            Log.d(TAG, "findGapByDiffMatch: ${contours.size} contours in puzzle area")
 
             // === Step 4: Find the piece contour (rightmost large contour) ===
             var bestContour: MatOfPoint? = null
@@ -702,10 +802,12 @@ object PuzzleSolver {
             }
 
             val pieceCrop = afterGray.submat(pieceTop, pieceBottom, pieceLeft, pieceRight)
+            saveMat(pieceCrop, "g_piece_crop")
 
             // === Step 6: Canny edges on piece ===
             val pieceEdges = Mat()
             Imgproc.Canny(pieceCrop, pieceEdges, 100.0, 200.0)
+            saveMat(pieceEdges, "h_piece_edges")
 
             // Check piece has enough edges
             val pieceEdgeCount = Core.countNonZero(pieceEdges)
@@ -734,6 +836,7 @@ object PuzzleSolver {
             Imgproc.GaussianBlur(bgArea, bgBlurred, Size(3.0, 3.0), 0.0)
             val bgEdges = Mat()
             Imgproc.Canny(bgBlurred, bgEdges, 100.0, 200.0)
+            saveMat(bgEdges, "i_bg_edges")
 
             // Check that template is smaller than search area
             if (pieceEdges.rows() > bgEdges.rows() || pieceEdges.cols() > bgEdges.cols()) {
@@ -758,6 +861,32 @@ object PuzzleSolver {
 
             Log.d(TAG, "findGapByDiffMatch: match at ($matchX,$matchY) " +
                 "confidence=${"%.3f".format(confidence)}")
+
+            // Save result heatmap + annotated background
+            if (debugSaveImages) {
+                // Normalize result to 0-255 for visualization
+                val resultNorm = Mat()
+                Core.normalize(result, resultNorm, 0.0, 255.0, Core.NORM_MINMAX)
+                resultNorm.convertTo(resultNorm, CvType.CV_8U)
+                val heatmap = Mat()
+                Imgproc.applyColorMap(resultNorm, heatmap, Imgproc.COLORMAP_JET)
+                saveMat(heatmap, "j_match_heatmap")
+                heatmap.release()
+                resultNorm.release()
+
+                // Draw match position on background
+                val bgViz = Mat()
+                Imgproc.cvtColor(bgEdges, bgViz, Imgproc.COLOR_GRAY2BGR)
+                Imgproc.rectangle(bgViz,
+                    Point(matchX, matchY),
+                    Point(matchX + bestRect.width, matchY + bestRect.height),
+                    Scalar(0.0, 255.0, 0.0), 2)
+                Imgproc.putText(bgViz, "conf=${"%.2f".format(confidence)}",
+                    Point(matchX, matchY - 10),
+                    Imgproc.FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0.0, 255.0, 0.0), 1)
+                saveMat(bgViz, "k_match_on_bg")
+                bgViz.release()
+            }
 
             result.release()
             bgEdges.release()
