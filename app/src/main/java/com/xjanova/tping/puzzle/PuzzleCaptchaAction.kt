@@ -25,7 +25,15 @@ import kotlin.coroutines.coroutineContext
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.44
+ * Puzzle CAPTCHA solver — v1.2.45
+ *
+ * v1.2.45 fixes:
+ *   - Shell timeout 5s→15s (prevents premature drag termination on far targets)
+ *   - Slower drag speed (×10 multiplier, was ×6; 40 steps, was 25)
+ *   - Smart drag used for ALL modes (blind+smart) when shell+OpenCV available
+ *   - Post-refresh delay 2000ms→3500ms (wait for new puzzle to load)
+ *   - More verify-adjust rounds (5, was 3) with longer delays
+ *   - Smoother speed curve (no rapid middle phase)
  *
  * Slide strategy (4 tiers):
  *   0. SHELL INPUT: Hardware-level touch events (isTrusted=true).
@@ -344,7 +352,8 @@ object PuzzleCaptchaAction {
             coroutineContext.ensureActive()
 
             status("ครั้งที่ $attempt/${config.maxRetries}")
-            delay(if (attempt == 1) 1500 else config.retryDelayMs)
+            // v1.2.45: Longer delay on retries to ensure puzzle is fully rendered
+            delay(if (attempt == 1) 1500 else config.retryDelayMs + 500)
             coroutineContext.ensureActive()
 
             // === Determine target X ===
@@ -441,9 +450,12 @@ object PuzzleCaptchaAction {
             status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode+$swipeModeName, ${dragDist.toInt()}px)...")
 
             // Human-like timing: slower swipe = more accurate positioning
-            val swipeDuration = (dragDist * 6f).toLong().coerceIn(1500, 5000)
+            // v1.2.45: Slower drag (×10 instead of ×6) to prevent overshooting
+            val swipeDuration = (dragDist * 10f).toLong().coerceIn(2000, 7000)
             // Use smart hold-verify-adjust for shell tier when OpenCV is available
-            val useSmartDrag = swipeTier == 0 && opencvOk && dragMode.startsWith("smart")
+            // v1.2.45: Always use smart drag when shell+OpenCV available (even blind mode)
+            // because verify phase can detect and adjust to actual gap position
+            val useSmartDrag = swipeTier == 0 && opencvOk
             val swipeResult: String = when {
                 useSmartDrag -> doSmartDragWithVerify(
                     sliderX, swipeY, targetX,
@@ -512,7 +524,8 @@ object PuzzleCaptchaAction {
             // === Swipe completed ===
             coroutineContext.ensureActive()
             status("ครั้งที่ $attempt: ✓ เลื่อนแล้ว ตรวจสอบ...")
-            delay(2500)
+            // v1.2.45: Longer wait for CAPTCHA to validate (was 2500ms)
+            delay(3000)
             coroutineContext.ensureActive()
 
             // === Verify ===
@@ -619,7 +632,8 @@ object PuzzleCaptchaAction {
                     service.tapAtCoordinates(refreshX, refreshY) { tapDone.complete(Unit) }
                     withTimeoutOrNull(3000) { tapDone.await() }
                 }
-                delay(2000)
+                // v1.2.45: Longer wait for new puzzle to fully load (was 2000ms)
+                delay(3500)
                 coroutineContext.ensureActive()
             }
         }
@@ -1024,7 +1038,7 @@ object PuzzleCaptchaAction {
     private fun tryShellCommand(cmd: String): String {
         return try {
             val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
-            val exited = process.waitFor(5, TimeUnit.SECONDS)
+            val exited = process.waitFor(15, TimeUnit.SECONDS)
             if (!exited) {
                 process.destroy()
                 return "timeout"
@@ -1051,7 +1065,7 @@ object PuzzleCaptchaAction {
             try {
                 val process = Runtime.getRuntime().exec(arrayOf("sh", "-c", cmd))
                 val output = process.inputStream.bufferedReader().readText()
-                val exited = process.waitFor(5, TimeUnit.SECONDS)
+                val exited = process.waitFor(15, TimeUnit.SECONDS)
                 if (exited && process.exitValue() == 0 && output.isNotEmpty()) output.trim()
                 else null
             } catch (_: Exception) { null }
@@ -1242,20 +1256,21 @@ object PuzzleCaptchaAction {
             sb.append("sendevent $dev 0 0 0;")
 
             // Variable delay: slower at start and end (more human)
+            // v1.2.45: Slower overall — middle speed 0.9 (was 0.7), more gradual
             if (i < steps) {
                 val speedFactor = when {
-                    i <= (steps * 0.15).toInt() -> 1.8 // slow start (grabbing)
-                    i >= (steps * 0.85).toInt() -> 1.4  // slow end (positioning)
-                    else -> 0.7                          // faster middle
+                    i <= (steps * 0.15).toInt() -> 2.0 // slow start (grabbing)
+                    i >= (steps * 0.85).toInt() -> 1.6  // slow end (positioning)
+                    else -> 0.9                          // moderate middle
                 }
-                val delayMs = (baseStepDelayMs * speedFactor).toInt().coerceAtLeast(15)
+                val delayMs = (baseStepDelayMs * speedFactor).toInt().coerceAtLeast(20)
                 val delaySec = delayMs / 1000.0
                 sb.append("sleep ${"%.3f".format(delaySec)};")
             }
         }
 
         // Small pause before release (human verifying position)
-        sb.append("sleep 0.100;")
+        sb.append("sleep 0.200;")
 
         // Touch UP
         sb.append("sendevent $dev 3 57 -1;")  // ABS_MT_TRACKING_ID = -1 (finger up)
@@ -1307,13 +1322,14 @@ object PuzzleCaptchaAction {
             sb.append("sendevent $dev 3 54 $rawY;")
             sb.append("sendevent $dev 0 0 0;")
 
+            // v1.2.45: Slower speed curve to prevent overshooting
             if (i < steps) {
                 val speedFactor = when {
-                    i <= (steps * 0.15).toInt() -> 1.8
-                    i >= (steps * 0.85).toInt() -> 1.4
-                    else -> 0.7
+                    i <= (steps * 0.15).toInt() -> 2.0 // slow start (grabbing)
+                    i >= (steps * 0.85).toInt() -> 1.6  // slow end (positioning)
+                    else -> 0.9                          // moderate middle
                 }
-                val delayMs = (baseStepDelayMs * speedFactor).toInt().coerceAtLeast(15)
+                val delayMs = (baseStepDelayMs * speedFactor).toInt().coerceAtLeast(20)
                 val delaySec = delayMs / 1000.0
                 sb.append("sleep ${"%.3f".format(delaySec)};")
             }
@@ -1405,9 +1421,10 @@ object PuzzleCaptchaAction {
         dragState.lastRawY = rawY2
 
         val dragDist = targetX - sliderX
-        val holdMs = 350
-        val steps = 25
-        val dragMs = (dragDist * 6f).toLong().toInt().coerceIn(800, 3000)
+        val holdMs = 400
+        val steps = 40
+        // v1.2.45: Much slower drag to prevent overshooting (×10, cap 6000ms)
+        val dragMs = (dragDist * 10f).toLong().toInt().coerceIn(1500, 6000)
 
         Log.d(TAG, "SmartDrag: start=(${sliderX.toInt()},${sliderY.toInt()}) " +
             "target=${targetX.toInt()} dist=${"%.0f".format(dragDist)}")
@@ -1425,15 +1442,16 @@ object PuzzleCaptchaAction {
         }
 
         // Phase 2: Verify and adjust while holding
-        val maxAdjustments = 3
+        // v1.2.45: More adjustment rounds (5 instead of 3) for better accuracy
+        val maxAdjustments = 5
         var adjustments = 0
         var currentLogicalX = targetX
         var verified = false
 
         for (adj in 1..maxAdjustments) {
             // Wait for UI to render piece at current position
-            // First check needs less time, subsequent checks (after micro-move) need more
-            delay(if (adj == 1) 500 else 600)
+            // v1.2.45: Longer waits — first 600ms, subsequent 800ms (was 500/600)
+            delay(if (adj == 1) 600 else 800)
 
             val screenshot = PuzzleScreenCapture.captureScreen()
             if (screenshot == null) {
@@ -1492,7 +1510,8 @@ object PuzzleCaptchaAction {
         }
 
         // Phase 3: Pause like a human verifying the final position, then release
-        delay(300)
+        // v1.2.45: Longer pause before release (500ms, was 300ms) for human-like feel
+        delay(500)
         val releaseScript = buildSendeventRelease(device.devicePath)
         execShellAny("sh -c '$releaseScript'")
 
@@ -1564,9 +1583,10 @@ object PuzzleCaptchaAction {
         val rawX2 = (px2.toLong() * device.xMax / nativeW).toInt().coerceIn(0, device.xMax)
         val rawY2 = (py2.toLong() * device.yMax / nativeH).toInt().coerceIn(0, device.yMax)
 
-        val holdMs = 350
-        val steps = 25
-        val dragMs = durationMs.toInt().coerceIn(800, 3000)
+        val holdMs = 400
+        val steps = 40
+        // v1.2.45: Higher cap to allow slower drags for far targets
+        val dragMs = durationMs.toInt().coerceIn(1500, 6000)
 
         Log.d(TAG, "SendeventDrag: dev=${device.devicePath}, " +
             "logical=($x1,$y1)→($x2,$y2), " +
