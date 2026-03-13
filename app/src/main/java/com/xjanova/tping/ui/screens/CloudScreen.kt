@@ -15,6 +15,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -47,7 +48,8 @@ fun CloudScreen(
     val scope = rememberCoroutineScope()
 
     // Auto deviceAuth when license is active but not logged into cloud
-    var isAutoAuthenticating by remember { mutableStateOf(false) }
+    // Use rememberSaveable so state survives rotation (configuration change)
+    var isAutoAuthenticating by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(licenseState.status, authState.isLoggedIn) {
         if (licenseState.status == LicenseStatus.ACTIVE &&
             !authState.isLoggedIn &&
@@ -64,6 +66,11 @@ fun CloudScreen(
             }
         }
     }
+
+    // Derived flag: license is active (non-demo/trial) — never show pricing for these users
+    val hasActiveLicense = licenseState.status == LicenseStatus.ACTIVE &&
+        licenseState.licenseType != "demo" &&
+        licenseState.licenseType != "trial"
 
     Scaffold(
         topBar = {
@@ -101,11 +108,8 @@ fun CloudScreen(
                 }
             }
 
-            // License active (non-demo) + logged in → show dashboard
-            licenseState.status == LicenseStatus.ACTIVE &&
-                licenseState.licenseType != "demo" &&
-                licenseState.licenseType != "trial" &&
-                authState.isLoggedIn -> {
+            // License active + logged in → show dashboard
+            hasActiveLicense && authState.isLoggedIn -> {
                 CloudDashboard(
                     modifier = Modifier.padding(padding),
                     syncState = syncState,
@@ -113,26 +117,45 @@ fun CloudScreen(
                 )
             }
 
-            // License active but auth failed → show retry
-            licenseState.status == LicenseStatus.ACTIVE &&
-                licenseState.licenseType != "demo" &&
-                licenseState.licenseType != "trial" &&
-                !authState.isLoggedIn -> {
-                CloudAuthRetry(
-                    modifier = Modifier.padding(padding),
-                    errorMessage = authState.errorMessage,
-                    onRetry = {
-                        scope.launch {
-                            val licenseKey = LicenseManager.getLicenseKey()
-                            val machineId = LicenseManager.getMachineId()
-                            if (licenseKey != null && machineId != null) {
-                                isAutoAuthenticating = true
-                                CloudAuthManager.deviceAuth(licenseKey, machineId)
-                                isAutoAuthenticating = false
+            // License active but NOT logged in yet → show loading or retry
+            // (This prevents CloudPricingScreen from flashing during rotation)
+            hasActiveLicense && !authState.isLoggedIn -> {
+                if (authState.errorMessage.isNotEmpty()) {
+                    // Auth attempted but failed → show retry
+                    CloudAuthRetry(
+                        modifier = Modifier.padding(padding),
+                        errorMessage = authState.errorMessage,
+                        onRetry = {
+                            scope.launch {
+                                val licenseKey = LicenseManager.getLicenseKey()
+                                val machineId = LicenseManager.getMachineId()
+                                if (licenseKey != null && machineId != null) {
+                                    isAutoAuthenticating = true
+                                    CloudAuthManager.deviceAuth(licenseKey, machineId)
+                                    isAutoAuthenticating = false
+                                }
                             }
                         }
+                    )
+                } else {
+                    // Auth not yet attempted (e.g., just rotated) → show loading
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(padding),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator(color = Color(0xFF06B6D4))
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                "กำลังเชื่อมต่อ Cloud...",
+                                fontSize = 14.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                            )
+                        }
                     }
-                )
+                }
             }
 
             // No license, demo, trial, or expired → show pricing
