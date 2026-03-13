@@ -1,6 +1,8 @@
 package com.xjanova.tping.ui.components
 
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -55,8 +57,8 @@ fun LicenseKeyField(
                 placeholder = {
                     Text("XXXX-XXXX-XXXX-XXXX", fontSize = 12.sp)
                 },
-                singleLine = true,
-                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
                 textStyle = androidx.compose.ui.text.TextStyle(
                     fontSize = 13.sp,
                     fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace
@@ -95,8 +97,8 @@ fun LicenseKeyField(
             placeholder = {
                 Text("XXXX-XXXX-XXXX-XXXX", color = Color.White.copy(alpha = 0.3f))
             },
-            singleLine = true,
-            modifier = modifier.fillMaxWidth(),
+            maxLines = 1,
+            modifier = modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
             textStyle = androidx.compose.ui.text.TextStyle(
                 fontSize = 16.sp,
                 fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace,

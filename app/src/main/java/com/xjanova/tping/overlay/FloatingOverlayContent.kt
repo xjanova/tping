@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -450,8 +451,8 @@ fun SaveWorkflowDialog(
                 onValueChange = { name = it },
                 label = { Text("ชื่อ Workflow", color = Color(0xFF888888)) },
                 placeholder = { Text("เช่น สมัครสมาชิก, Login", color = Color(0xFF555555), fontSize = 12.sp) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                maxLines = 1,
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color(0xFFCCCCCC),
@@ -906,8 +907,8 @@ fun TagDataDialog(
                 onValueChange = { fieldKey = it },
                 label = { Text("Data Key", color = Color(0xFF888888)) },
                 placeholder = { Text("เช่น ชื่อ, เบอร์, ที่อยู่", color = Color(0xFF555555), fontSize = 12.sp) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                maxLines = 1,
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color(0xFFCCCCCC),
@@ -1303,8 +1304,8 @@ fun GameDataFieldDialog(
                 onValueChange = { fieldKey = it },
                 label = { Text("Data Key", color = Color(0xFF888888)) },
                 placeholder = { Text("เช่น ชื่อผู้ใช้, รหัสผ่าน", color = Color(0xFF555555), fontSize = 12.sp) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                maxLines = 1,
+                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedTextColor = Color.White,
                     unfocusedTextColor = Color(0xFFCCCCCC),

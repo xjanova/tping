@@ -568,29 +568,8 @@ object PuzzleCaptchaAction {
                             "attempt=$attempt, remainGapX=$remainGapX, target=${targetX.toInt()}, drift=$sliderDrift"
                         )
 
-                        // Correction slide: if the gap is still visible and we can measure
-                        // how far off we were, try a small corrective drag
-                        if (kotlin.math.abs(sliderDrift) in 15..200 && swipeTier == 0) {
-                            status("ครั้งที่ $attempt: ปรับตำแหน่ง (${sliderDrift}px)...")
-                            val correctionTarget = sliderX + (remainGapX.toFloat() - sliderX)
-                            val corrDuration = (kotlin.math.abs(sliderDrift) * 8f).toLong().coerceIn(800, 3000)
-                            doShellDrag(sliderX, sliderY, correctionTarget, sliderY, corrDuration, screenW, screenH, rotation)
-                            delay(2500)
-                            coroutineContext.ensureActive()
-                            // Re-verify after correction
-                            val corrShot = PuzzleScreenCapture.captureScreen()
-                            if (corrShot != null) {
-                                val corrGap = PuzzleSolver.findGapRegion(corrShot, sliderY.toInt())
-                                corrShot.recycle()
-                                if (corrGap == null || isCaptchaGone(service, sliderY.toInt(), screenH)) {
-                                    status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt + correction)")
-                                    DiagnosticReporter.logCaptcha("Solved (correction)", "attempt=$attempt, drift=$sliderDrift")
-                                    try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
-                                    autoSendDiagnostics()
-                                    return
-                                }
-                            }
-                        }
+                        // Note: correction is now handled BEFORE release in doSmartDragWithVerify()
+                        // (hold-verify-adjust-release flow). No post-release correction needed.
 
                         // Functional failure detection: only for dispatchGesture tiers (tier >= 1).
                         // For shell tier (tier 0), gapDelta is always near 0 because
@@ -1453,7 +1432,8 @@ object PuzzleCaptchaAction {
 
         for (adj in 1..maxAdjustments) {
             // Wait for UI to render piece at current position
-            delay(400)
+            // First check needs less time, subsequent checks (after micro-move) need more
+            delay(if (adj == 1) 500 else 600)
 
             val screenshot = PuzzleScreenCapture.captureScreen()
             if (screenshot == null) {
@@ -1511,8 +1491,8 @@ object PuzzleCaptchaAction {
             adjustments++
         }
 
-        // Phase 3: Small pause (human verifying), then release
-        delay(150)
+        // Phase 3: Pause like a human verifying the final position, then release
+        delay(300)
         val releaseScript = buildSendeventRelease(device.devicePath)
         execShellAny("sh -c '$releaseScript'")
 

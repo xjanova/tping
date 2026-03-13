@@ -15,6 +15,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import com.xjanova.tping.data.entity.DataField
 import com.xjanova.tping.data.entity.DataProfile
 import com.xjanova.tping.ui.viewmodel.MainViewModel
@@ -305,8 +307,8 @@ fun ProfileEditDialog(
                         },
                         label = { Text("หมวดหมู่") },
                         placeholder = { Text("เช่น โซเชียล, เกม") },
-                        modifier = Modifier.fillMaxWidth().menuAnchor(),
-                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().menuAnchor().horizontalScroll(rememberScrollState()),
+                        maxLines = 1,
                         trailingIcon = {
                             if (existingCategories.isNotEmpty()) {
                                 ExposedDropdownMenuDefaults.TrailingIcon(expanded = showCategoryDropdown)
@@ -340,8 +342,8 @@ fun ProfileEditDialog(
                     value = name,
                     onValueChange = { name = it },
                     label = { Text("ชื่อชุดข้อมูล") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    maxLines = 1
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 Text("ข้อมูล:", fontWeight = FontWeight.Medium, fontSize = 14.sp)
@@ -360,8 +362,8 @@ fun ProfileEditDialog(
                                 }
                             },
                             label = { Text("Key") },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true
+                            modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                            maxLines = 1
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         OutlinedTextField(
@@ -372,8 +374,8 @@ fun ProfileEditDialog(
                                 }
                             },
                             label = { Text("Value") },
-                            modifier = Modifier.weight(1f),
-                            singleLine = true
+                            modifier = Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                            maxLines = 1
                         )
                         IconButton(
                             onClick = {
