@@ -21,7 +21,7 @@ data class PuzzleConfig(
     val refreshButtonX: Int = 0,
     val refreshButtonY: Int = 0,
     // Tuning
-    val maxRetries: Int = 5,
+    val maxRetries: Int = 10,
     val retryDelayMs: Long = 2000,
     val swipeDurationMs: Long = 600,
     val analyzeMethod: String = "edge",
