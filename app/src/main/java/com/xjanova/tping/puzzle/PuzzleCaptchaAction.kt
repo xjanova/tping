@@ -25,7 +25,14 @@ import kotlin.coroutines.coroutineContext
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.62
+ * Puzzle CAPTCHA solver — v1.2.64
+ *
+ * v1.2.64 fixes:
+ * - NEW: Gesture-based scan drag for non-rooted devices (doScanDragGesture)
+ *   Uses dispatchGesture + willContinue continuation chains to scan entire track,
+ *   find where puzzle piece covers the gap, then MOVE BACK to best position.
+ * - Scan drag now works for ALL tiers (shell + gesture), not just shell tier 0
+ * - Better status messages showing which scan mode is active
  *
  * v1.2.62 fixes:
  * - Drag duration reduced from ×10 to ×4 (was unnaturally slow, CAPTCHA may detect bot)
@@ -322,10 +329,10 @@ object PuzzleCaptchaAction {
             val method = if (shellTestResult.contains("su")) "root" else "shell"
             status("✓ ใช้ระบบสัมผัสจริง ($method)")
         } else {
-            status("⚠ ไม่มี Shell/Root — สไลด์ CAPTCHA จะไม่ทำงาน!")
+            status("⚠ ไม่มี Shell/Root — ใช้โหมด gesture-scan")
             DiagnosticReporter.logCaptcha(
                 "WARNING: No shell access",
-                "CAPTCHA will likely fail. shellResult=$shellTestResult"
+                "Using gesture-scan fallback. shellResult=$shellTestResult"
             )
         }
         delay(300)
@@ -365,10 +372,11 @@ object PuzzleCaptchaAction {
             delay(if (attempt == 1) 1000 else config.retryDelayMs)
             coroutineContext.ensureActive()
 
-            // === v1.2.62: Use SCAN DRAG as primary strategy when shell+OpenCV+track available ===
-            // Scan drag scans the entire track to find where the piece covers the gap,
-            // instead of relying on pre-detection which often misses various gap shapes.
-            val useScanDrag = swipeTier == 0 && opencvOk && trackWidth > 100
+            // === v1.2.63: SCAN DRAG for ALL tiers when OpenCV+track available ===
+            // Shell: sendevent scan drag | Non-shell: gesture continuation scan drag
+            val useScanDrag = opencvOk && trackWidth > 100
+            val useScanShell = useScanDrag && swipeTier == 0
+            val useScanGesture = useScanDrag && swipeTier >= 1
             val swipeY = sliderY + when {
                 functionalFailures == 1 -> -4f
                 functionalFailures >= 2 -> 4f
@@ -381,15 +389,23 @@ object PuzzleCaptchaAction {
 
             val swipeResult: String
 
-            if (useScanDrag) {
-                // === SCAN DRAG: Primary strategy — scan entire track ===
-                status("ครั้งที่ $attempt: สแกนตำแหน่ง (scan)...")
+            if (useScanShell) {
+                // === SCAN DRAG (shell): sendevent-based scan ===
+                status("ครั้งที่ $attempt: สแกนตำแหน่ง (shell-scan)...")
                 swipeResult = doScanDrag(
                     sliderX, swipeY, trackWidth, trackEndX,
                     screenW, screenH, rotation,
                     "ครั้งที่ $attempt:"
                 ) { status(it) }
-                dragMode = "scan"
+                dragMode = "scan-shell"
+            } else if (useScanGesture) {
+                // === SCAN DRAG (gesture): dispatchGesture continuation chains ===
+                status("ครั้งที่ $attempt: สแกนตำแหน่ง (gesture-scan)...")
+                swipeResult = doScanDragGesture(
+                    service, sliderX, swipeY, trackWidth, trackEndX,
+                    "ครั้งที่ $attempt:"
+                ) { status(it) }
+                dragMode = "scan-gesture"
             } else {
                 // === LEGACY: Determine target X for non-scan tiers ===
                 if (opencvOk) {
@@ -1764,6 +1780,185 @@ object PuzzleCaptchaAction {
             } catch (_: Exception) {}
             throw e  // Re-throw (CancellationException etc.)
         }
+    }
+
+    /**
+     * Scan drag using accessibility gesture continuation chains (no root required).
+     *
+     * Uses dispatchGesture + willContinue=true to keep finger pressed while scanning.
+     * Flow: press → scan 6 positions → screenshot at each → find best → move back → release.
+     *
+     * This enables the "scan and return" strategy on non-rooted devices.
+     */
+    private suspend fun doScanDragGesture(
+        service: TpingAccessibilityService,
+        sliderX: Float, sliderY: Float,
+        trackWidth: Float, trackEndX: Float,
+        statusPrefix: String,
+        status: (String) -> Unit
+    ): String {
+        if (trackWidth < 100) return "track_too_short"
+
+        // 6 scan positions (10% to 90% of track)
+        val numPositions = 6
+        val scanPositions = FloatArray(numPositions) { i ->
+            val pct = 0.10f + (0.80f * i / (numPositions - 1))
+            (sliderX + trackWidth * pct).coerceAtMost(trackEndX - 5f)
+        }
+
+        Log.d(TAG, "ScanDragGesture: start=(${sliderX.toInt()},${sliderY.toInt()}) " +
+            "track=${trackWidth.toInt()} positions=$numPositions")
+
+        data class ScanResult(val posX: Float, val gapArea: Int, val gapFound: Boolean)
+        val results = mutableListOf<ScanResult>()
+        var earlyExitX: Float? = null
+
+        // === Phase 1: Press at slider start, hold 300ms (willContinue=true) ===
+        val phase1 = CompletableDeferred<GestureDescription.StrokeDescription?>()
+        service.swipeWithContinuation(
+            sliderX, sliderY, sliderX + 2f, sliderY,
+            300L, willContinue = true, previousStroke = null
+        ) { phase1.complete(it) }
+
+        var currentStroke = withTimeoutOrNull(5000L) { phase1.await() }
+            ?: return "gesture_press_failed"
+        var currentX = sliderX + 2f
+        status("$statusPrefix สแกนตำแหน่ง (gesture)...")
+
+        // === Phase 2: Scan across track ===
+        for (i in scanPositions.indices) {
+            coroutineContext.ensureActive()
+
+            val targetX = scanPositions[i]
+            val dist = kotlin.math.abs(targetX - currentX)
+            val moveDuration = (dist * 3f).toLong().coerceIn(200, 800)
+
+            val moveResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
+            service.swipeWithContinuation(
+                currentX, sliderY, targetX, sliderY,
+                moveDuration, willContinue = true, previousStroke = currentStroke
+            ) { moveResult.complete(it) }
+
+            val nextStroke = withTimeoutOrNull(moveDuration + 5000L) { moveResult.await() }
+            if (nextStroke == null) {
+                Log.w(TAG, "ScanDragGesture: move to pos $i failed, releasing")
+                break
+            }
+            currentStroke = nextStroke
+            currentX = targetX
+
+            // Wait for UI to render piece at new position
+            delay(250)
+
+            // Screenshot and analyze
+            val screenshot = PuzzleScreenCapture.captureScreen()
+            if (screenshot != null) {
+                val gap = PuzzleSolver.findGapRegion(screenshot, sliderY.toInt())
+                screenshot.recycle()
+
+                if (gap == null) {
+                    // Gap invisible — piece is covering it!
+                    results.add(ScanResult(targetX, 0, false))
+                    Log.d(TAG, "ScanDragGesture: gap COVERED at pos $i x=${targetX.toInt()}")
+                    status("$statusPrefix พบตำแหน่ง! (scan ${i + 1}/$numPositions)")
+                    earlyExitX = targetX
+                    break
+                } else {
+                    val gapArea = (gap.right - gap.left) * (gap.bottom - gap.top)
+                    results.add(ScanResult(targetX, gapArea, true))
+                    Log.d(TAG, "ScanDragGesture: pos $i x=${targetX.toInt()} gapArea=$gapArea")
+                }
+            } else {
+                results.add(ScanResult(targetX, Int.MAX_VALUE, true))
+            }
+
+            if (i % 2 == 0) {
+                status("$statusPrefix สแกน ${i + 1}/$numPositions...")
+            }
+        }
+
+        // === Phase 3: Determine best position ===
+        val bestX: Float
+        if (earlyExitX != null) {
+            bestX = earlyExitX
+        } else if (results.isNotEmpty()) {
+            val minResult = results.minByOrNull { it.gapArea }!!
+            bestX = minResult.posX
+            Log.d(TAG, "ScanDragGesture: best x=${bestX.toInt()} gapArea=${minResult.gapArea}")
+        } else {
+            // No results — release at current position
+            val release = CompletableDeferred<GestureDescription.StrokeDescription?>()
+            service.swipeWithContinuation(
+                currentX, sliderY, currentX + 1f, sliderY,
+                100L, willContinue = false, previousStroke = currentStroke
+            ) { release.complete(it) }
+            withTimeoutOrNull(5000L) { release.await() }
+            return "scan_no_results"
+        }
+
+        // === Phase 4: Move BACK to best position ===
+        if (kotlin.math.abs(bestX - currentX) > 10f) {
+            val returnDist = kotlin.math.abs(bestX - currentX)
+            val returnDuration = (returnDist * 4f).toLong().coerceIn(400, 2000)
+            status("$statusPrefix กลับไปตำแหน่งที่ดีสุด...")
+
+            val returnResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
+            service.swipeWithContinuation(
+                currentX, sliderY, bestX, sliderY,
+                returnDuration, willContinue = true, previousStroke = currentStroke
+            ) { returnResult.complete(it) }
+
+            val returnStroke = withTimeoutOrNull(returnDuration + 5000L) { returnResult.await() }
+            if (returnStroke != null) {
+                currentStroke = returnStroke
+                currentX = bestX
+            }
+        }
+
+        // === Phase 5: Fine-tune with 1 verify round ===
+        delay(300)
+        val verifyShot = PuzzleScreenCapture.captureScreen()
+        if (verifyShot != null) {
+            val finalGap = PuzzleSolver.findGapRegion(verifyShot, sliderY.toInt())
+            verifyShot.recycle()
+            if (finalGap != null) {
+                val gapCenterX = (finalGap.left + finalGap.right) / 2f
+                val drift = gapCenterX - currentX
+                if (kotlin.math.abs(drift) in 10f..200f) {
+                    val adjustX = currentX + drift * 0.8f
+                    val adjustDuration = (kotlin.math.abs(drift) * 3f).toLong().coerceIn(200, 600)
+                    status("$statusPrefix ปรับ ${drift.toInt()}px...")
+
+                    val adjustResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
+                    service.swipeWithContinuation(
+                        currentX, sliderY, adjustX, sliderY,
+                        adjustDuration, willContinue = true, previousStroke = currentStroke
+                    ) { adjustResult.complete(it) }
+
+                    val adjStroke = withTimeoutOrNull(adjustDuration + 5000L) { adjustResult.await() }
+                    if (adjStroke != null) {
+                        currentStroke = adjStroke
+                        currentX = adjustX
+                    }
+                }
+            } else {
+                status("$statusPrefix ตรงเป้า!")
+            }
+        }
+
+        // === Phase 6: Release ===
+        delay(200)
+        val release = CompletableDeferred<GestureDescription.StrokeDescription?>()
+        service.swipeWithContinuation(
+            currentX, sliderY, currentX + 1f, sliderY,
+            100L, willContinue = false, previousStroke = currentStroke
+        ) { release.complete(it) }
+        withTimeoutOrNull(5000L) { release.await() }
+
+        val msg = "completed(gestureScan=$numPositions, best=${bestX.toInt()}, early=${earlyExitX != null})"
+        Log.d(TAG, "ScanDragGesture: $msg")
+        DiagnosticReporter.logCaptcha("ScanDragGesture", msg)
+        return "completed"
     }
 
     /**
