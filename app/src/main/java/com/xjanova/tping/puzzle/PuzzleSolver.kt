@@ -124,6 +124,81 @@ object PuzzleSolver {
     }
 
     // =====================================================================
+    // Smart scan: Measure edge count to find where piece fills the gap
+    // =====================================================================
+
+    /**
+     * Measure total Canny edge count in the puzzle area (above slider).
+     * When the puzzle piece fills the gap, the gap's shadow edges disappear,
+     * causing a measurable DIP in edge count.
+     *
+     * @return edge count, or -1 on error
+     */
+    fun measurePuzzleEdges(screenshot: Bitmap, sliderY: Int): Int {
+        if (!ensureOpenCV()) return -1
+        val src = Mat()
+        val gray = Mat()
+        try {
+            val top = (sliderY - 500).coerceAtLeast(0)
+            val bottom = (sliderY - 20).coerceAtLeast(top + 10).coerceAtMost(screenshot.height)
+            if (bottom <= top) return -1
+
+            Utils.bitmapToMat(screenshot, src)
+            Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
+            val region = gray.submat(top, bottom, 0, screenshot.width)
+            val blurred = Mat()
+            Imgproc.GaussianBlur(region, blurred, Size(3.0, 3.0), 0.0)
+            val edges = Mat()
+            Imgproc.Canny(blurred, edges, 50.0, 150.0)
+            val count = Core.countNonZero(edges)
+            edges.release(); blurred.release(); region.release()
+            return count
+        } catch (e: Exception) {
+            Log.e(TAG, "measurePuzzleEdges failed: ${e.message}")
+            return -1
+        } finally {
+            src.release(); gray.release()
+        }
+    }
+
+    /**
+     * Measure edge count in a narrow vertical strip centered at a specific X position.
+     * Used during scan to detect where the piece boundary blends with the gap.
+     *
+     * @param centerX X center of the strip
+     * @param stripWidth width of the strip in pixels
+     * @return edge count in the strip, or -1 on error
+     */
+    fun measureEdgesAtX(screenshot: Bitmap, sliderY: Int, centerX: Int, stripWidth: Int = 80): Int {
+        if (!ensureOpenCV()) return -1
+        val src = Mat()
+        val gray = Mat()
+        try {
+            val top = (sliderY - 500).coerceAtLeast(0)
+            val bottom = (sliderY - 20).coerceAtLeast(top + 10).coerceAtMost(screenshot.height)
+            val left = (centerX - stripWidth / 2).coerceAtLeast(0)
+            val right = (centerX + stripWidth / 2).coerceAtMost(screenshot.width)
+            if (bottom <= top || right <= left) return -1
+
+            Utils.bitmapToMat(screenshot, src)
+            Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
+            val strip = gray.submat(top, bottom, left, right)
+            val blurred = Mat()
+            Imgproc.GaussianBlur(strip, blurred, Size(3.0, 3.0), 0.0)
+            val edges = Mat()
+            Imgproc.Canny(blurred, edges, 50.0, 150.0)
+            val count = Core.countNonZero(edges)
+            edges.release(); blurred.release(); strip.release()
+            return count
+        } catch (e: Exception) {
+            Log.e(TAG, "measureEdgesAtX failed: ${e.message}")
+            return -1
+        } finally {
+            src.release(); gray.release()
+        }
+    }
+
+    // =====================================================================
     // Primary API: Multi-strategy gap detection + edge-based tracking
     // =====================================================================
 
