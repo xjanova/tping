@@ -601,6 +601,199 @@ object PuzzleSolver {
     }
 
     // =====================================================================
+    // Diff + Template Matching: Extract piece shape, find gap by edge match
+    // =====================================================================
+
+    /**
+     * Find gap position by comparing before/after screenshots + edge template matching.
+     *
+     * 1. absdiff(before, after) → extract piece shape from moved pixels
+     * 2. Canny edges on piece template + background
+     * 3. matchTemplate(TM_CCOEFF_NORMED) → find gap
+     *
+     * @param beforeBitmap Screenshot BEFORE moving slider
+     * @param afterBitmap  Screenshot AFTER moving slider ~60px right
+     * @param sliderY      Y coordinate of slider (gap is above)
+     * @param sliderX      X of slider start (exclude from search)
+     * @return Gap center X in screen coords, or null if detection failed
+     */
+    fun findGapByDiffMatch(
+        beforeBitmap: Bitmap,
+        afterBitmap: Bitmap,
+        sliderY: Int,
+        sliderX: Float
+    ): Int? {
+        if (!ensureOpenCV()) return null
+
+        val beforeMat = Mat()
+        val afterMat = Mat()
+        val beforeGray = Mat()
+        val afterGray = Mat()
+        val diff = Mat()
+        val binary = Mat()
+
+        try {
+            Utils.bitmapToMat(beforeBitmap, beforeMat)
+            Utils.bitmapToMat(afterBitmap, afterMat)
+            Imgproc.cvtColor(beforeMat, beforeGray, Imgproc.COLOR_RGBA2GRAY)
+            Imgproc.cvtColor(afterMat, afterGray, Imgproc.COLOR_RGBA2GRAY)
+
+            // === Step 1: absdiff → find changed pixels ===
+            Core.absdiff(beforeGray, afterGray, diff)
+
+            // === Step 2: Threshold + morphology → clean binary mask ===
+            Imgproc.threshold(diff, binary, 25.0, 255.0, Imgproc.THRESH_BINARY)
+            val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
+            Imgproc.dilate(binary, binary, kernel)
+            Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_CLOSE, kernel)
+            kernel.release()
+
+            // === Step 3: Find contours in puzzle area ===
+            val searchTop = (sliderY - 600).coerceAtLeast(0)
+            val searchBottom = (sliderY - 20).coerceAtLeast(searchTop + 10)
+                .coerceAtMost(binary.rows())
+            if (searchBottom <= searchTop) return null
+
+            val puzzleMask = binary.submat(searchTop, searchBottom, 0, binary.cols())
+            val contours = ArrayList<MatOfPoint>()
+            val hierarchy = Mat()
+            Imgproc.findContours(
+                puzzleMask, contours, hierarchy,
+                Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
+            )
+            hierarchy.release()
+
+            // === Step 4: Find the piece contour (rightmost large contour) ===
+            var bestContour: MatOfPoint? = null
+            var bestRect: org.opencv.core.Rect? = null
+            var bestRightEdge = 0
+
+            for (c in contours) {
+                val area = Imgproc.contourArea(c)
+                if (area < 500) continue  // too small
+                val rect = Imgproc.boundingRect(c)
+                if (rect.width < 15 || rect.height < 15) continue  // too thin
+                val rightEdge = rect.x + rect.width
+                if (rightEdge > bestRightEdge) {
+                    bestRightEdge = rightEdge
+                    bestContour = c
+                    bestRect = rect
+                }
+            }
+
+            if (bestContour == null || bestRect == null) {
+                Log.d(TAG, "findGapByDiffMatch: no piece contour found in diff")
+                puzzleMask.release()
+                return null
+            }
+
+            Log.d(TAG, "findGapByDiffMatch: piece contour at " +
+                "(${bestRect.x},${bestRect.y}) ${bestRect.width}x${bestRect.height}")
+
+            // === Step 5: Extract piece template from AFTER image ===
+            val pieceTop = (searchTop + bestRect.y).coerceAtLeast(0)
+            val pieceBottom = (pieceTop + bestRect.height).coerceAtMost(afterGray.rows())
+            val pieceLeft = bestRect.x.coerceAtLeast(0)
+            val pieceRight = (pieceLeft + bestRect.width).coerceAtMost(afterGray.cols())
+
+            if (pieceRight - pieceLeft < 15 || pieceBottom - pieceTop < 15) {
+                puzzleMask.release()
+                return null
+            }
+
+            val pieceCrop = afterGray.submat(pieceTop, pieceBottom, pieceLeft, pieceRight)
+
+            // === Step 6: Canny edges on piece ===
+            val pieceEdges = Mat()
+            Imgproc.Canny(pieceCrop, pieceEdges, 100.0, 200.0)
+
+            // Check piece has enough edges
+            val pieceEdgeCount = Core.countNonZero(pieceEdges)
+            if (pieceEdgeCount < 20) {
+                Log.d(TAG, "findGapByDiffMatch: piece edges too few ($pieceEdgeCount)")
+                pieceEdges.release()
+                pieceCrop.release()
+                puzzleMask.release()
+                return null
+            }
+
+            // === Step 7: Canny edges on background (puzzle area, right of slider) ===
+            val bgSearchLeft = (sliderX + 100f).toInt().coerceAtLeast(0)
+                .coerceAtMost(beforeGray.cols() - bestRect.width - 1)
+            val bgSearchRight = beforeGray.cols()
+
+            if (bgSearchRight - bgSearchLeft < bestRect.width) {
+                pieceEdges.release()
+                pieceCrop.release()
+                puzzleMask.release()
+                return null
+            }
+
+            val bgArea = beforeGray.submat(searchTop, searchBottom, bgSearchLeft, bgSearchRight)
+            val bgBlurred = Mat()
+            Imgproc.GaussianBlur(bgArea, bgBlurred, Size(3.0, 3.0), 0.0)
+            val bgEdges = Mat()
+            Imgproc.Canny(bgBlurred, bgEdges, 100.0, 200.0)
+
+            // Check that template is smaller than search area
+            if (pieceEdges.rows() > bgEdges.rows() || pieceEdges.cols() > bgEdges.cols()) {
+                Log.d(TAG, "findGapByDiffMatch: template larger than search area")
+                bgEdges.release()
+                bgBlurred.release()
+                bgArea.release()
+                pieceEdges.release()
+                pieceCrop.release()
+                puzzleMask.release()
+                return null
+            }
+
+            // === Step 8: Template matching ===
+            val result = Mat()
+            Imgproc.matchTemplate(bgEdges, pieceEdges, result, Imgproc.TM_CCOEFF_NORMED)
+            val minMaxLoc = Core.minMaxLoc(result)
+
+            val confidence = minMaxLoc.maxVal
+            val matchX = minMaxLoc.maxLoc.x
+            val matchY = minMaxLoc.maxLoc.y
+
+            Log.d(TAG, "findGapByDiffMatch: match at ($matchX,$matchY) " +
+                "confidence=${"%.3f".format(confidence)}")
+
+            result.release()
+            bgEdges.release()
+            bgBlurred.release()
+            bgArea.release()
+            pieceEdges.release()
+            pieceCrop.release()
+            puzzleMask.release()
+
+            if (confidence < 0.25) {
+                Log.d(TAG, "findGapByDiffMatch: confidence too low (${"%.3f".format(confidence)})")
+                return null
+            }
+
+            // Convert to screen X: matchX is relative to bgSearchLeft
+            val gapCenterX = bgSearchLeft + matchX.toInt() + bestRect.width / 2
+            Log.d(TAG, "findGapByDiffMatch: gap center X = $gapCenterX " +
+                "(bgSearchLeft=$bgSearchLeft, matchX=${matchX.toInt()}, " +
+                "pieceW=${bestRect.width}, confidence=${"%.3f".format(confidence)})")
+
+            return gapCenterX
+
+        } catch (e: Exception) {
+            Log.e(TAG, "findGapByDiffMatch failed: ${e.message}")
+            return null
+        } finally {
+            beforeMat.release()
+            afterMat.release()
+            beforeGray.release()
+            afterGray.release()
+            diff.release()
+            binary.release()
+        }
+    }
+
+    // =====================================================================
     // Tracking: Edge strength for fill detection during sliding
     // =====================================================================
 
