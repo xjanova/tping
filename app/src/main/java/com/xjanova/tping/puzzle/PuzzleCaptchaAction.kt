@@ -442,10 +442,17 @@ object PuzzleCaptchaAction {
 
             // Human-like timing: slower swipe = more accurate positioning
             val swipeDuration = (dragDist * 6f).toLong().coerceIn(1500, 5000)
-            val swipeResult: String = when (swipeTier) {
-                0 -> doShellDrag(sliderX, swipeY, targetX, swipeY, swipeDuration, screenW, screenH, rotation)
-                1 -> doSlowSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
-                2 -> doTapThenSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
+            // Use smart hold-verify-adjust for shell tier when OpenCV is available
+            val useSmartDrag = swipeTier == 0 && opencvOk && dragMode.startsWith("smart")
+            val swipeResult: String = when {
+                useSmartDrag -> doSmartDragWithVerify(
+                    sliderX, swipeY, targetX,
+                    screenW, screenH, rotation,
+                    "ครั้งที่ $attempt:"
+                ) { status(it) }
+                swipeTier == 0 -> doShellDrag(sliderX, swipeY, targetX, swipeY, swipeDuration, screenW, screenH, rotation)
+                swipeTier == 1 -> doSlowSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
+                swipeTier == 2 -> doTapThenSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 else -> doPressHoldDrag(service, sliderX, swipeY, targetX, swipeY,
                     (dragDist * 7f).toLong().coerceIn(1500, 5000))
             }
@@ -976,6 +983,35 @@ object PuzzleCaptchaAction {
         val yMax: Int
     )
 
+    /**
+     * Tracks an active drag session where the finger is held down.
+     * Used for hold-verify-adjust-release flow.
+     */
+    private data class ActiveDragState(
+        val devicePath: String,
+        val xMax: Int,
+        val yMax: Int,
+        val nativeW: Int,
+        val nativeH: Int,
+        val rotation: Int,
+        var lastRawX: Int,
+        var lastRawY: Int
+    ) {
+        /** Map logical screen coordinate → raw device coordinate */
+        fun logicalToRaw(lx: Float, ly: Float, screenW: Int, screenH: Int): Pair<Int, Int> {
+            val (px, py) = when (rotation) {
+                Surface.ROTATION_0 -> lx.toInt() to ly.toInt()
+                Surface.ROTATION_90 -> ly.toInt() to (nativeH - lx.toInt())
+                Surface.ROTATION_180 -> (nativeW - lx.toInt()) to (nativeH - ly.toInt())
+                Surface.ROTATION_270 -> (nativeW - ly.toInt()) to lx.toInt()
+                else -> lx.toInt() to ly.toInt()
+            }
+            val rawX = (px.toLong() * xMax / nativeW).toInt().coerceIn(0, xMax)
+            val rawY = (py.toLong() * yMax / nativeH).toInt().coerceIn(0, yMax)
+            return rawX to rawY
+        }
+    }
+
     @Volatile
     private var cachedTouchDevice: TouchDeviceInfo? = null
 
@@ -1248,6 +1284,242 @@ object PuzzleCaptchaAction {
         sb.append("sendevent $dev 0 0 0")     // SYN_REPORT
 
         return sb.toString()
+    }
+
+    /**
+     * Build sendevent script for DOWN + HOLD + DRAG without final UP (finger stays down).
+     * Used for hold-verify-adjust-release flow.
+     */
+    private fun buildSendeventDragNoRelease(
+        dev: String,
+        rawX1: Int, rawY1: Int,
+        rawX2: Int, rawY2: Int,
+        holdMs: Int, dragMs: Int, steps: Int
+    ): String {
+        val sb = StringBuilder()
+
+        // Touch DOWN
+        sb.append("sendevent $dev 3 47 0;")
+        sb.append("sendevent $dev 3 57 0;")
+        sb.append("sendevent $dev 3 53 $rawX1;")
+        sb.append("sendevent $dev 3 54 $rawY1;")
+        sb.append("sendevent $dev 3 48 5;")
+        sb.append("sendevent $dev 1 330 1;")
+        sb.append("sendevent $dev 0 0 0;")
+
+        // Hold
+        val holdSec = holdMs / 1000.0
+        sb.append("sleep ${"%.3f".format(holdSec)};")
+
+        // Move with ease-out-cubic curve
+        val baseStepDelayMs = dragMs / steps
+        for (i in 1..steps) {
+            val t = i.toFloat() / steps
+            val eased = 1f - (1f - t).let { it * it * it }
+            val rawX = rawX1 + ((rawX2 - rawX1) * eased).toInt()
+            val yJitter = when {
+                i % 7 == 0 -> 1
+                i % 5 == 0 -> -1
+                else -> 0
+            }
+            val rawY = rawY1 + ((rawY2 - rawY1) * eased).toInt() + yJitter
+
+            sb.append("sendevent $dev 3 53 $rawX;")
+            sb.append("sendevent $dev 3 54 $rawY;")
+            sb.append("sendevent $dev 0 0 0;")
+
+            if (i < steps) {
+                val speedFactor = when {
+                    i <= (steps * 0.15).toInt() -> 1.8
+                    i >= (steps * 0.85).toInt() -> 1.4
+                    else -> 0.7
+                }
+                val delayMs = (baseStepDelayMs * speedFactor).toInt().coerceAtLeast(15)
+                val delaySec = delayMs / 1000.0
+                sb.append("sleep ${"%.3f".format(delaySec)};")
+            }
+        }
+        // NO sleep and NO UP event — finger stays down
+        return sb.toString()
+    }
+
+    /**
+     * Build sendevent script to move finger to a new position (no DOWN, no UP).
+     * Finger must already be touching (from buildSendeventDragNoRelease).
+     * Uses slow linear interpolation for smooth micro-adjustment.
+     */
+    private fun buildSendeventMicroMove(
+        dev: String,
+        fromRawX: Int, fromRawY: Int,
+        toRawX: Int, toRawY: Int,
+        steps: Int = 10,
+        durationMs: Int = 600
+    ): String {
+        val sb = StringBuilder()
+        val stepDelayMs = durationMs / steps
+        for (i in 1..steps) {
+            val t = i.toFloat() / steps
+            // Ease-out for smooth deceleration
+            val eased = 1f - (1f - t).let { it * it }
+            val rawX = fromRawX + ((toRawX - fromRawX) * eased).toInt()
+            val rawY = fromRawY + ((toRawY - fromRawY) * eased).toInt()
+            sb.append("sendevent $dev 3 53 $rawX;")
+            sb.append("sendevent $dev 3 54 $rawY;")
+            sb.append("sendevent $dev 0 0 0;")
+            if (i < steps) {
+                val delaySec = stepDelayMs / 1000.0
+                sb.append("sleep ${"%.3f".format(delaySec)};")
+            }
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Build sendevent script to release finger (UP event only).
+     */
+    private fun buildSendeventRelease(dev: String): String {
+        return "sendevent $dev 3 57 -1;" +  // ABS_MT_TRACKING_ID = -1
+            "sendevent $dev 1 330 0;" +       // BTN_TOUCH = 0
+            "sendevent $dev 0 0 0"            // SYN_REPORT
+    }
+
+    /**
+     * Smart drag with hold-verify-adjust-release flow.
+     *
+     * 1. Press and drag to target position (finger stays down)
+     * 2. Take screenshot while holding → check if gap is covered
+     * 3. If gap still visible → micro-adjust toward gap center
+     * 4. Repeat verification up to maxAdjustments times
+     * 5. Release finger
+     *
+     * This is much more accurate than drag-release-retry because we
+     * fine-tune the position BEFORE releasing, and CAPTCHA only validates on release.
+     */
+    private suspend fun doSmartDragWithVerify(
+        sliderX: Float, sliderY: Float,
+        targetX: Float,
+        screenW: Int, screenH: Int,
+        rotation: Int,
+        statusPrefix: String,
+        status: (String) -> Unit
+    ): String {
+        val device = detectTouchDevice() ?: return "no_device"
+
+        // Compute native dimensions
+        val nativeW: Int
+        val nativeH: Int
+        if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
+            nativeW = screenH; nativeH = screenW
+        } else {
+            nativeW = screenW; nativeH = screenH
+        }
+
+        val dragState = ActiveDragState(
+            device.devicePath, device.xMax, device.yMax,
+            nativeW, nativeH, rotation, 0, 0
+        )
+
+        // Map coordinates
+        val (rawX1, rawY1) = dragState.logicalToRaw(sliderX, sliderY, screenW, screenH)
+        val (rawX2, rawY2) = dragState.logicalToRaw(targetX, sliderY, screenW, screenH)
+        dragState.lastRawX = rawX2
+        dragState.lastRawY = rawY2
+
+        val dragDist = targetX - sliderX
+        val holdMs = 350
+        val steps = 25
+        val dragMs = (dragDist * 6f).toLong().toInt().coerceIn(800, 3000)
+
+        Log.d(TAG, "SmartDrag: start=(${sliderX.toInt()},${sliderY.toInt()}) " +
+            "target=${targetX.toInt()} dist=${"%.0f".format(dragDist)}")
+
+        // Phase 1: Drag to target WITHOUT releasing
+        val dragScript = buildSendeventDragNoRelease(
+            device.devicePath, rawX1, rawY1, rawX2, rawY2,
+            holdMs, dragMs, steps
+        )
+        val dragResult = execShellAny("sh -c '$dragScript'")
+        if (dragResult != "ok") {
+            // Fallback: release just in case, then return failure
+            execShellAny("sh -c '${buildSendeventRelease(device.devicePath)}'")
+            return "drag_hold_$dragResult"
+        }
+
+        // Phase 2: Verify and adjust while holding
+        val maxAdjustments = 3
+        var adjustments = 0
+        var currentLogicalX = targetX
+        var verified = false
+
+        for (adj in 1..maxAdjustments) {
+            // Wait for UI to render piece at current position
+            delay(400)
+
+            val screenshot = PuzzleScreenCapture.captureScreen()
+            if (screenshot == null) {
+                Log.w(TAG, "SmartDrag: screenshot failed during hold")
+                break
+            }
+
+            val gap = PuzzleSolver.findGapRegion(screenshot, sliderY.toInt())
+            screenshot.recycle()
+
+            if (gap == null) {
+                // Gap is gone = piece is covering it perfectly!
+                Log.d(TAG, "SmartDrag: gap covered after adj=$adjustments — releasing")
+                status("$statusPrefix ตรงเป้า! ปล่อย...")
+                verified = true
+                break
+            }
+
+            // Gap is still visible → calculate adjustment needed
+            val gapCenterX = (gap.left + gap.right) / 2f
+            val drift = gapCenterX - currentLogicalX
+            Log.d(TAG, "SmartDrag: adj=$adj gap=${gapCenterX.toInt()} current=${currentLogicalX.toInt()} drift=${"%.0f".format(drift)}")
+
+            if (kotlin.math.abs(drift) < 10) {
+                // Close enough — release
+                Log.d(TAG, "SmartDrag: drift < 10px, close enough")
+                status("$statusPrefix เกือบตรง (${drift.toInt()}px) ปล่อย...")
+                verified = true
+                break
+            }
+
+            if (kotlin.math.abs(drift) > 300) {
+                // Too far off — something is wrong, don't adjust
+                Log.w(TAG, "SmartDrag: drift too large (${drift.toInt()}px), skipping adjust")
+                break
+            }
+
+            // Micro-adjust toward gap center
+            val newTargetX = currentLogicalX + drift
+            val (newRawX, newRawY) = dragState.logicalToRaw(newTargetX, sliderY, screenW, screenH)
+
+            status("$statusPrefix ปรับ ${drift.toInt()}px...")
+            val moveScript = buildSendeventMicroMove(
+                device.devicePath,
+                dragState.lastRawX, dragState.lastRawY,
+                newRawX, newRawY,
+                steps = 10,
+                durationMs = (kotlin.math.abs(drift) * 5f).toInt().coerceIn(300, 1500)
+            )
+            execShellAny("sh -c '$moveScript'")
+
+            dragState.lastRawX = newRawX
+            dragState.lastRawY = newRawY
+            currentLogicalX = newTargetX
+            adjustments++
+        }
+
+        // Phase 3: Small pause (human verifying), then release
+        delay(150)
+        val releaseScript = buildSendeventRelease(device.devicePath)
+        execShellAny("sh -c '$releaseScript'")
+
+        val resultMsg = if (verified) "completed(verified,adj=$adjustments)" else "completed(unverified,adj=$adjustments)"
+        Log.d(TAG, "SmartDrag: $resultMsg")
+        DiagnosticReporter.logCaptcha("SmartDrag", resultMsg)
+        return "completed"
     }
 
     /**
