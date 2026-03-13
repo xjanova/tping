@@ -186,6 +186,10 @@ class PlaybackEngine {
             ActionType.BACK_BUTTON -> {
                 service.performBack { done.complete(Unit) }
             }
+            ActionType.HOME_BUTTON -> {
+                service.performHome()
+                done.complete(Unit)
+            }
             ActionType.WAIT -> {
                 delay(action.delayAfterMs)
                 done.complete(Unit)
@@ -245,6 +249,7 @@ class PlaybackEngine {
             ActionType.SCROLL_UP -> "เลื่อนขึ้น"
             ActionType.SCROLL_DOWN -> "เลื่อนลง"
             ActionType.BACK_BUTTON -> "กดย้อนกลับ"
+            ActionType.HOME_BUTTON -> "กดหน้าหลัก"
             ActionType.WAIT -> "รอ ${action.delayAfterMs / 1000.0}s"
             ActionType.SOLVE_CAPTCHA -> "แก้ Captcha สไลด์"
         }

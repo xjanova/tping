@@ -10,6 +10,7 @@ import com.xjanova.tping.TpingApplication
 import com.xjanova.tping.data.entity.*
 import com.xjanova.tping.recorder.PlaybackEngine
 import com.xjanova.tping.service.TpingAccessibilityService
+import com.xjanova.tping.data.cloud.CloudSyncManager
 import com.xjanova.tping.util.AppResolver
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
@@ -80,6 +81,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val json = gson.toJson(fields)
             profileDao.insert(DataProfile(name = name, category = category, fieldsJson = json))
+            triggerCloudSync()
         }
     }
 
@@ -87,12 +89,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val json = gson.toJson(fields)
             profileDao.update(profile.copy(name = name, category = category, fieldsJson = json))
+            triggerCloudSync()
         }
     }
 
     fun deleteProfile(profile: DataProfile) {
         viewModelScope.launch {
             profileDao.delete(profile)
+            triggerCloudSync()
         }
     }
 
@@ -100,6 +104,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val newName = "${profile.name} (สำเนา)"
             profileDao.insert(DataProfile(name = newName, category = profile.category, fieldsJson = profile.fieldsJson))
+            triggerCloudSync()
         }
     }
 
@@ -118,12 +123,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val json = gson.toJson(actions)
             workflowDao.insert(Workflow(name = name, stepsJson = json, targetAppPackage = targetApp))
+            triggerCloudSync()
         }
     }
 
     fun deleteWorkflow(workflow: Workflow) {
         viewModelScope.launch {
             workflowDao.delete(workflow)
+            triggerCloudSync()
+        }
+    }
+
+    private fun triggerCloudSync() {
+        viewModelScope.launch {
+            CloudSyncManager.syncAfterLocalChange()
         }
     }
 

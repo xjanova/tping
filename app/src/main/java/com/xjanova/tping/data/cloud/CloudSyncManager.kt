@@ -297,6 +297,87 @@ object CloudSyncManager {
         }
     }
 
+    // ========================== Real-time Sync ==========================
+
+    /**
+     * Trigger a background sync after a local data change (add/edit/delete).
+     * Silently uploads all local data and removes server-side items that no longer exist locally.
+     */
+    suspend fun syncAfterLocalChange() {
+        if (!canSync()) return
+        withContext(Dispatchers.IO) {
+            try {
+                if (!CloudAuthManager.isLoggedIn() && !tryDeviceAuth()) return@withContext
+
+                // Upload all local data (upsert)
+                uploadAllWorkflows()
+                uploadAllProfiles()
+
+                // Reconcile deletions: remove server items not present locally
+                reconcileWorkflowDeletions()
+                reconcileProfileDeletions()
+
+                Log.d(TAG, "Real-time sync completed")
+            } catch (e: Exception) {
+                Log.w(TAG, "Real-time sync failed: ${e.message}")
+            }
+        }
+    }
+
+    /**
+     * Delete workflows from server that no longer exist locally.
+     */
+    private suspend fun reconcileWorkflowDeletions() {
+        val token = CloudAuthManager.getToken() ?: return
+        val db = TpingApplication.instance.database
+        val localWorkflows = db.workflowDao().getAllOnce()
+
+        val result = CloudApiClient.getWorkflows(token)
+        if (!result.success) return
+
+        val serverArray = result.data?.getAsJsonObject("data")?.getAsJsonArray("data") ?: return
+
+        for (item in serverArray) {
+            val obj = item.asJsonObject
+            val serverId = obj.get("id")?.asLong ?: continue
+            val name = obj.get("name")?.asString ?: continue
+            val pkg = obj.get("target_app_package")?.asString ?: ""
+
+            val existsLocally = localWorkflows.any { it.name == name && it.targetAppPackage == pkg }
+            if (!existsLocally) {
+                Log.d(TAG, "Deleting server workflow $serverId ($name)")
+                CloudApiClient.deleteWorkflow(token, serverId)
+            }
+        }
+    }
+
+    /**
+     * Delete profiles from server that no longer exist locally.
+     */
+    private suspend fun reconcileProfileDeletions() {
+        val token = CloudAuthManager.getToken() ?: return
+        val db = TpingApplication.instance.database
+        val localProfiles = db.dataProfileDao().getAllOnce()
+
+        val result = CloudApiClient.getDataProfiles(token)
+        if (!result.success) return
+
+        val serverArray = result.data?.getAsJsonObject("data")?.getAsJsonArray("data") ?: return
+
+        for (item in serverArray) {
+            val obj = item.asJsonObject
+            val serverId = obj.get("id")?.asLong ?: continue
+            val name = obj.get("name")?.asString ?: continue
+            val category = obj.get("category")?.asString ?: ""
+
+            val existsLocally = localProfiles.any { it.name == name && it.category == category }
+            if (!existsLocally) {
+                Log.d(TAG, "Deleting server profile $serverId ($name)")
+                CloudApiClient.deleteDataProfile(token, serverId)
+            }
+        }
+    }
+
     // ========================== Helpers ==========================
 
     private fun requireAuthToken(): String {

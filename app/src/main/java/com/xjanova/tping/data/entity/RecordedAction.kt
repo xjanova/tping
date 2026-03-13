@@ -37,6 +37,7 @@ enum class ActionType {
     SCROLL_UP,
     SCROLL_DOWN,
     BACK_BUTTON,
+    HOME_BUTTON,
     WAIT,
     SOLVE_CAPTCHA
 }

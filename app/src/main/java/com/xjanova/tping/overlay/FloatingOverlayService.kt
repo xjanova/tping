@@ -27,6 +27,7 @@ import com.google.gson.reflect.TypeToken
 import com.xjanova.tping.MainActivity
 import com.xjanova.tping.R
 import com.xjanova.tping.TpingApplication
+import com.xjanova.tping.data.cloud.CloudSyncManager
 import com.xjanova.tping.data.license.LicenseManager
 import com.xjanova.tping.data.entity.ActionType
 import com.xjanova.tping.data.entity.DataField
@@ -270,8 +271,8 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                         setOverlayFocusable(false)
                     },
                     onShowPuzzleCrosshair = { startPuzzleCrosshairFlow() },
-                    onBack = { TpingAccessibilityService.instance?.performBack {} },
-                    onHome = { TpingAccessibilityService.instance?.performHome() }
+                    onBack = { handleBack() },
+                    onHome = { handleHome() }
                 )
             }
         }
@@ -392,9 +393,62 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                 )
                 setOverlayFocusable(false)
                 service.getRecorder().clear()
+                CloudSyncManager.syncAfterLocalChange()
             } catch (_: Exception) {
                 _overlayState.value = _overlayState.value.copy(statusText = "เกิดข้อผิดพลาด")
             }
+        }
+    }
+
+    /**
+     * Handle Back button: record as step if recording, otherwise just execute.
+     */
+    private fun handleBack() {
+        val mode = _overlayState.value.mode
+        when (mode) {
+            "game_recording" -> addGameBackAction()
+            "recording" -> {
+                val service = TpingAccessibilityService.instance ?: return
+                val recorder = service.getRecorder()
+                val action = RecordedAction(
+                    stepOrder = recorder.getNextStep(),
+                    actionType = ActionType.BACK_BUTTON,
+                    delayAfterMs = recorder.getTimeSinceLastAction()
+                )
+                recorder.addAction(action)
+                service.performBack {}
+                _overlayState.value = _overlayState.value.copy(
+                    stepCount = recorder.getActions().size,
+                    statusText = "ย้อนกลับ — ${recorder.getActions().size} ขั้นตอน"
+                )
+            }
+            else -> TpingAccessibilityService.instance?.performBack {}
+        }
+    }
+
+    /**
+     * Handle Home button: record as step if recording, otherwise just execute.
+     */
+    private fun handleHome() {
+        val mode = _overlayState.value.mode
+        when (mode) {
+            "game_recording" -> addGameHomeAction()
+            "recording" -> {
+                val service = TpingAccessibilityService.instance ?: return
+                val recorder = service.getRecorder()
+                val action = RecordedAction(
+                    stepOrder = recorder.getNextStep(),
+                    actionType = ActionType.HOME_BUTTON,
+                    delayAfterMs = recorder.getTimeSinceLastAction()
+                )
+                recorder.addAction(action)
+                service.performHome()
+                _overlayState.value = _overlayState.value.copy(
+                    stepCount = recorder.getActions().size,
+                    statusText = "หน้าหลัก — ${recorder.getActions().size} ขั้นตอน"
+                )
+            }
+            else -> TpingAccessibilityService.instance?.performHome()
         }
     }
 
@@ -572,6 +626,42 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         )
     }
 
+    private fun addGameBackAction() {
+        val action = RecordedAction(
+            stepOrder = ++gameStepCounter,
+            actionType = ActionType.BACK_BUTTON,
+            delayAfterMs = 500,
+            screenWidth = getScreenMetrics().widthPixels,
+            screenHeight = getScreenMetrics().heightPixels,
+            isGameMode = true
+        )
+        gameActions.add(action)
+        gameLastActionTime = System.currentTimeMillis()
+        TpingAccessibilityService.instance?.performBack {}
+        _overlayState.value = _overlayState.value.copy(
+            stepCount = gameActions.size,
+            statusText = "ย้อนกลับ — ${gameActions.size} ขั้นตอน"
+        )
+    }
+
+    private fun addGameHomeAction() {
+        val action = RecordedAction(
+            stepOrder = ++gameStepCounter,
+            actionType = ActionType.HOME_BUTTON,
+            delayAfterMs = 500,
+            screenWidth = getScreenMetrics().widthPixels,
+            screenHeight = getScreenMetrics().heightPixels,
+            isGameMode = true
+        )
+        gameActions.add(action)
+        gameLastActionTime = System.currentTimeMillis()
+        TpingAccessibilityService.instance?.performHome()
+        _overlayState.value = _overlayState.value.copy(
+            stepCount = gameActions.size,
+            statusText = "หน้าหลัก — ${gameActions.size} ขั้นตอน"
+        )
+    }
+
     private fun addGameInputAction(fieldKey: String) {
         val metrics = getScreenMetrics()
         val now = System.currentTimeMillis()
@@ -720,6 +810,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                 )
                 setOverlayFocusable(false)
                 gameActions.clear()
+                CloudSyncManager.syncAfterLocalChange()
             } catch (_: Exception) {
                 _overlayState.value = _overlayState.value.copy(statusText = "เกิดข้อผิดพลาด")
             }
@@ -737,6 +828,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                 _overlayState.value = _overlayState.value.copy(
                     statusText = "ลบแล้ว"
                 )
+                CloudSyncManager.syncAfterLocalChange()
             } catch (_: Exception) {
                 _overlayState.value = _overlayState.value.copy(statusText = "เกิดข้อผิดพลาด")
             }
