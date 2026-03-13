@@ -199,6 +199,197 @@ object PuzzleSolver {
     }
 
     // =====================================================================
+    // White border detection: Both puzzle piece and gap have white border lines
+    // When piece is IN the gap, white borders overlap → detectable signal
+    // =====================================================================
+
+    /**
+     * Measure white border alignment score at a given X position.
+     * Puzzle piece + gap both have white border lines on their edges.
+     * When piece aligns with gap, the white borders overlap perfectly →
+     * a VERTICAL column of bright pixels at the gap edges disappears.
+     *
+     * Higher score = MORE white border pixels visible = piece NOT in gap.
+     * Lower score = fewer borders = piece covering gap = CORRECT position.
+     *
+     * @param screenshot current screen
+     * @param sliderY Y of slider (search area above this)
+     * @param centerX X to measure around (current piece position)
+     * @param stripWidth width of analysis strip (default 100px)
+     * @return white border score (0 = perfect, higher = more visible borders), -1 on error
+     */
+    fun measureWhiteBorderScore(
+        screenshot: Bitmap, sliderY: Int, centerX: Int, stripWidth: Int = 100
+    ): Int {
+        if (!ensureOpenCV()) return -1
+        val src = Mat()
+        val gray = Mat()
+        try {
+            val top = (sliderY - 500).coerceAtLeast(0)
+            val bottom = (sliderY - 20).coerceAtLeast(top + 10).coerceAtMost(screenshot.height)
+            val left = (centerX - stripWidth / 2).coerceAtLeast(0)
+            val right = (centerX + stripWidth / 2).coerceAtMost(screenshot.width)
+            if (bottom <= top || right <= left) return -1
+
+            Utils.bitmapToMat(screenshot, src)
+            Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
+            val strip = gray.submat(top, bottom, left, right)
+
+            // Detect bright/white pixels (the white border lines)
+            // White borders typically > 200 brightness
+            val whiteMask = Mat()
+            Imgproc.threshold(strip, whiteMask, 200.0, 255.0, Imgproc.THRESH_BINARY)
+
+            // Focus on vertical edges using Sobel X — white borders are vertical lines
+            val sobelX = Mat()
+            Imgproc.Sobel(strip, sobelX, CvType.CV_16S, 1, 0)
+            val absSobel = Mat()
+            Core.convertScaleAbs(sobelX, absSobel)
+
+            // Combine: bright pixels that are also on vertical edges
+            val edgeMask = Mat()
+            Imgproc.threshold(absSobel, edgeMask, 40.0, 255.0, Imgproc.THRESH_BINARY)
+
+            // AND: white AND vertical edge → white border pixels
+            val whiteBorder = Mat()
+            Core.bitwise_and(whiteMask, edgeMask, whiteBorder)
+
+            val score = Core.countNonZero(whiteBorder)
+
+            whiteBorder.release(); edgeMask.release(); absSobel.release()
+            sobelX.release(); whiteMask.release(); strip.release()
+
+            return score
+        } catch (e: Exception) {
+            Log.e(TAG, "measureWhiteBorderScore failed: ${e.message}")
+            return -1
+        } finally {
+            src.release(); gray.release()
+        }
+    }
+
+    /**
+     * Detect the gap X position by finding where white border signal peaks
+     * on both LEFT and RIGHT sides of the gap.
+     *
+     * Scans vertical columns in the puzzle area for high-brightness vertical
+     * edges (white border lines). The gap has TWO white borders: left edge and right edge.
+     * Between them is the actual gap. We find these borders and return the center.
+     *
+     * @param screenshot current screen
+     * @param sliderY Y of slider
+     * @param searchStartX start scanning from this X (typically sliderX + 100)
+     * @param searchEndX end scanning at this X
+     * @return gap center X, or null if not found
+     */
+    fun findGapByWhiteBorder(
+        screenshot: Bitmap, sliderY: Int,
+        searchStartX: Int, searchEndX: Int
+    ): Int? {
+        if (!ensureOpenCV()) return null
+        val src = Mat()
+        val gray = Mat()
+        try {
+            val top = (sliderY - 500).coerceAtLeast(0)
+            val bottom = (sliderY - 20).coerceAtLeast(top + 10).coerceAtMost(screenshot.height)
+            if (bottom <= top) return null
+            val startX = searchStartX.coerceAtLeast(0)
+            val endX = searchEndX.coerceAtMost(screenshot.width)
+            if (endX <= startX + 30) return null
+
+            Utils.bitmapToMat(screenshot, src)
+            Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
+            val region = gray.submat(top, bottom, startX, endX)
+
+            // Detect white pixels in the region (brightness > 200)
+            val whiteMask = Mat()
+            Imgproc.threshold(region, whiteMask, 200.0, 255.0, Imgproc.THRESH_BINARY)
+
+            // Get Sobel X for vertical edges
+            val sobelX = Mat()
+            Imgproc.Sobel(region, sobelX, CvType.CV_16S, 1, 0)
+            val absSobel = Mat()
+            Core.convertScaleAbs(sobelX, absSobel)
+            val edgeMask = Mat()
+            Imgproc.threshold(absSobel, edgeMask, 40.0, 255.0, Imgproc.THRESH_BINARY)
+
+            // Combine: white vertical edges
+            val whiteBorder = Mat()
+            Core.bitwise_and(whiteMask, edgeMask, whiteBorder)
+
+            // Sum columns: project vertically to find where white borders are strongest
+            val colSum = IntArray(endX - startX)
+            val rows = whiteBorder.rows()
+            for (col in 0 until whiteBorder.cols()) {
+                var sum = 0
+                for (row in 0 until rows) {
+                    if (whiteBorder.get(row, col)[0] > 0) sum++
+                }
+                colSum[col] = sum
+            }
+
+            // Find peaks in colSum — these are the white border positions
+            // A peak = column with significantly more white border pixels than neighbors
+            val avgSum = colSum.average()
+            val threshold = (avgSum * 2.5).coerceAtLeast(5.0)
+
+            // Find clusters of peaks (border is a few pixels wide)
+            val peaks = mutableListOf<Int>() // cluster centers
+            var inPeak = false
+            var peakStart = 0
+            for (col in colSum.indices) {
+                if (colSum[col] > threshold) {
+                    if (!inPeak) { peakStart = col; inPeak = true }
+                } else {
+                    if (inPeak) {
+                        peaks.add((peakStart + col - 1) / 2)
+                        inPeak = false
+                    }
+                }
+            }
+            if (inPeak) peaks.add((peakStart + colSum.size - 1) / 2)
+
+            whiteBorder.release(); edgeMask.release(); absSobel.release()
+            sobelX.release(); whiteMask.release(); region.release()
+
+            Log.d(TAG, "findGapByWhiteBorder: ${peaks.size} border peaks found, " +
+                "threshold=${"%.1f".format(threshold)}, avgSum=${"%.1f".format(avgSum)}")
+
+            if (peaks.size < 2) return null
+
+            // Find the pair of peaks with gap-like spacing (40-120px apart)
+            // This pair represents the left and right borders of the gap
+            var bestPairCenter: Int? = null
+            var bestPairScore = 0
+            for (i in 0 until peaks.size - 1) {
+                val gap = peaks[i + 1] - peaks[i]
+                if (gap in 35..130) {
+                    // Score = combined column sum (stronger borders = more confident)
+                    val score = colSum[peaks[i]] + colSum[peaks[i + 1]]
+                    if (score > bestPairScore) {
+                        bestPairScore = score
+                        bestPairCenter = (peaks[i] + peaks[i + 1]) / 2
+                    }
+                }
+            }
+
+            if (bestPairCenter != null) {
+                val gapX = bestPairCenter + startX
+                Log.d(TAG, "findGapByWhiteBorder: gap center at x=$gapX " +
+                    "(score=$bestPairScore)")
+                return gapX
+            }
+
+            return null
+        } catch (e: Exception) {
+            Log.e(TAG, "findGapByWhiteBorder failed: ${e.message}")
+            return null
+        } finally {
+            src.release(); gray.release()
+        }
+    }
+
+    // =====================================================================
     // Primary API: Multi-strategy gap detection + edge-based tracking
     // =====================================================================
 

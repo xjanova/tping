@@ -25,7 +25,16 @@ import kotlin.coroutines.coroutineContext
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.66
+ * Puzzle CAPTCHA solver — v1.2.68
+ *
+ * v1.2.68 — White border detection + overshoot fix:
+ * - NEW: White border detection (measureWhiteBorderScore, findGapByWhiteBorder)
+ *   Both puzzle piece and gap have white border lines on edges → detectable signal
+ * - FIX: Return-to-valley overshoot → 2-stage return (90% fast, 10% creep)
+ * - FIX: Fine-tune now 3 rounds with 85% drift correction (was 2 rounds, 70%)
+ * - FIX: try-finally around main loop → overlay touch ALWAYS restored
+ *   (prevents floating buttons becoming unresponsive after cancel/crash)
+ * - Fine-tune logs white border score for diagnosis
  *
  * v1.2.66 — COMPLETE REWRITE of scan strategy:
  * - NEW: Edge-measurement slow scan — measure Canny edge count at each position
@@ -383,6 +392,7 @@ object PuzzleCaptchaAction {
         // ============================================================
         // === MAIN SOLVING LOOP ===
         // ============================================================
+        try {  // try-finally to ALWAYS restore overlay touch
         for (attempt in 1..config.maxRetries) {
             // Check if flow was stopped — throws CancellationException immediately
             coroutineContext.ensureActive()
@@ -691,11 +701,14 @@ object PuzzleCaptchaAction {
                 "hasTrack=$hasTrack(auto=${!hasTrack}), tier=$swipeTier, " +
                 "shell=$useShellSwipe"
         )
-        // Restore overlay touch handling
-        try {
-            FloatingOverlayService.instance?.setTouchPassthrough(false)
-        } catch (_: Exception) {}
         autoSendDiagnostics()
+        } finally {
+            // ALWAYS restore overlay touch — even on CancellationException or crash
+            try {
+                FloatingOverlayService.instance?.setTouchPassthrough(false)
+                Log.d(TAG, "Overlay touch restored in finally block")
+            } catch (_: Exception) {}
+        }
     }
 
     // ============================================================
@@ -1770,58 +1783,83 @@ object PuzzleCaptchaAction {
 
             status("$statusPrefix พบ valley ที่ x=${bestX.toInt()} (${valleyDepth.toInt()}% ลึก)")
 
-            // === Phase 4: Move BACK to best position ===
+            // === Phase 4: Move BACK to best position (SLOW, in 2 stages to prevent overshoot) ===
             val (bestRawX, bestRawY) = dragState.logicalToRaw(bestX, sliderY, screenW, screenH)
 
             if (kotlin.math.abs(bestRawX - dragState.lastRawX) > 5) {
                 val returnDist = kotlin.math.abs(bestX - currentX)
-                val returnDuration = (returnDist * 4f).toInt().coerceIn(300, 2000)
                 status("$statusPrefix กลับไปตำแหน่ง valley...")
 
-                val returnScript = buildSendeventMicroMove(
+                // Stage 1: Move to 90% of the way back (prevent overshoot)
+                val intermediateX = currentX + (bestX - currentX) * 0.90f
+                val (intRawX, intRawY) = dragState.logicalToRaw(intermediateX, sliderY, screenW, screenH)
+                val returnDuration1 = (returnDist * 0.9f * 5f).toInt().coerceIn(400, 2500)
+                val returnScript1 = buildSendeventMicroMove(
+                    device.devicePath,
+                    dragState.lastRawX, dragState.lastRawY,
+                    intRawX, intRawY,
+                    steps = 20, durationMs = returnDuration1
+                )
+                execShellAny("sh -c '$returnScript1'")
+                dragState.lastRawX = intRawX
+                dragState.lastRawY = intRawY
+                delay(200)
+
+                // Stage 2: Creep the last 10% slowly
+                val returnDuration2 = (returnDist * 0.1f * 8f).toInt().coerceIn(200, 600)
+                val returnScript2 = buildSendeventMicroMove(
                     device.devicePath,
                     dragState.lastRawX, dragState.lastRawY,
                     bestRawX, bestRawY,
-                    steps = 15, durationMs = returnDuration
+                    steps = 10, durationMs = returnDuration2
                 )
-                execShellAny("sh -c '$returnScript'")
+                execShellAny("sh -c '$returnScript2'")
                 dragState.lastRawX = bestRawX
                 dragState.lastRawY = bestRawY
             }
 
-            // === Phase 5: Fine-tune with 2 verification rounds ===
-            for (round in 1..2) {
+            // === Phase 5: Fine-tune with white border + gap detection (3 rounds) ===
+            var fineCurrentX = bestX
+            for (round in 1..3) {
                 delay(300)
                 val verifyShot = PuzzleScreenCapture.captureScreen()
                 if (verifyShot != null) {
+                    // Try white border detection first (more precise)
+                    val wbScore = PuzzleSolver.measureWhiteBorderScore(
+                        verifyShot, sliderY.toInt(), fineCurrentX.toInt(), 100
+                    )
+
                     val gap = PuzzleSolver.findGapRegion(verifyShot, sliderY.toInt())
                     verifyShot.recycle()
+
                     if (gap != null) {
                         val gapCenterX = (gap.left + gap.right) / 2f
-                        val currentPieceX = bestX + (if (round == 1) 0f else
-                            (dragState.lastRawX - bestRawX).toFloat()) // approx
-                        val drift = gapCenterX - currentPieceX
-                        if (kotlin.math.abs(drift) in 8f..150f) {
-                            val adjustX = currentPieceX + drift * 0.7f // conservative 70%
+                        val drift = gapCenterX - fineCurrentX
+                        Log.d(TAG, "ScanDrag fine-tune round=$round drift=${drift.toInt()} wb=$wbScore")
+
+                        if (kotlin.math.abs(drift) in 5f..150f) {
+                            // Use 85% of drift (more aggressive than before but still conservative)
+                            val adjustX = fineCurrentX + drift * 0.85f
                             val (adjRawX, adjRawY) = dragState.logicalToRaw(
                                 adjustX, sliderY, screenW, screenH)
-                            status("$statusPrefix ปรับรอบ $round: ${drift.toInt()}px...")
+                            status("$statusPrefix ปรับรอบ $round: ${drift.toInt()}px (wb=$wbScore)...")
                             val adjScript = buildSendeventMicroMove(
                                 device.devicePath,
                                 dragState.lastRawX, dragState.lastRawY,
                                 adjRawX, adjRawY,
-                                steps = 8, durationMs = 400
+                                steps = 10, durationMs = 500
                             )
                             execShellAny("sh -c '$adjScript'")
                             dragState.lastRawX = adjRawX
                             dragState.lastRawY = adjRawY
-                        } else if (kotlin.math.abs(drift) < 8f) {
-                            status("$statusPrefix ตรงเป้า! (drift=${drift.toInt()}px)")
+                            fineCurrentX = adjustX
+                        } else if (kotlin.math.abs(drift) < 5f) {
+                            status("$statusPrefix ตรงเป้า! (drift=${drift.toInt()}px, wb=$wbScore)")
                             break
                         }
                     } else {
                         // Gap not visible = piece covering it perfectly
-                        status("$statusPrefix ตรงเป้า! (gap ไม่เห็น)")
+                        status("$statusPrefix ตรงเป้า! (gap ไม่เห็น, wb=$wbScore)")
                         break
                     }
                 }
@@ -1956,36 +1994,60 @@ object PuzzleCaptchaAction {
             "depth=${"%.1f".format(valleyDepth)}%")
         status("$statusPrefix พบ valley ที่ x=${bestX.toInt()} (${valleyDepth.toInt()}%)")
 
-        // === Phase 4: Move back to valley ===
+        // === Phase 4: Move back to valley (2 stages to prevent overshoot) ===
         if (kotlin.math.abs(bestX - currentX) > 10f) {
-            val returnDuration = (kotlin.math.abs(bestX - currentX) * 4f).toLong().coerceIn(400, 2000)
+            val returnDist = kotlin.math.abs(bestX - currentX)
             status("$statusPrefix กลับไปตำแหน่ง valley...")
-            val returnResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
+
+            // Stage 1: Move to 90% of the way back
+            val intermediateX = currentX + (bestX - currentX) * 0.90f
+            val returnDuration1 = (returnDist * 0.9f * 5f).toLong().coerceIn(400, 2500)
+            val returnResult1 = CompletableDeferred<GestureDescription.StrokeDescription?>()
+            service.swipeWithContinuation(
+                currentX, sliderY, intermediateX, sliderY,
+                returnDuration1, willContinue = true, previousStroke = currentStroke
+            ) { returnResult1.complete(it) }
+            val stroke1 = withTimeoutOrNull(returnDuration1 + 5000L) { returnResult1.await() }
+            if (stroke1 != null) {
+                currentStroke = stroke1
+                currentX = intermediateX
+            }
+            delay(200)
+
+            // Stage 2: Creep the last 10% slowly
+            val returnDuration2 = (returnDist * 0.1f * 8f).toLong().coerceIn(200, 600)
+            val returnResult2 = CompletableDeferred<GestureDescription.StrokeDescription?>()
             service.swipeWithContinuation(
                 currentX, sliderY, bestX, sliderY,
-                returnDuration, willContinue = true, previousStroke = currentStroke
-            ) { returnResult.complete(it) }
-            val returnStroke = withTimeoutOrNull(returnDuration + 5000L) { returnResult.await() }
-            if (returnStroke != null) {
-                currentStroke = returnStroke
+                returnDuration2, willContinue = true, previousStroke = currentStroke
+            ) { returnResult2.complete(it) }
+            val stroke2 = withTimeoutOrNull(returnDuration2 + 5000L) { returnResult2.await() }
+            if (stroke2 != null) {
+                currentStroke = stroke2
                 currentX = bestX
             }
         }
 
-        // === Phase 5: Fine-tune (2 rounds) ===
-        for (round in 1..2) {
+        // === Phase 5: Fine-tune with white border + gap detection (3 rounds) ===
+        for (round in 1..3) {
             delay(300)
             val verifyShot = PuzzleScreenCapture.captureScreen()
             if (verifyShot != null) {
+                val wbScore = PuzzleSolver.measureWhiteBorderScore(
+                    verifyShot, sliderY.toInt(), currentX.toInt(), 100
+                )
                 val gap = PuzzleSolver.findGapRegion(verifyShot, sliderY.toInt())
                 verifyShot.recycle()
+
                 if (gap != null) {
                     val gapCenterX = (gap.left + gap.right) / 2f
                     val drift = gapCenterX - currentX
-                    if (kotlin.math.abs(drift) in 8f..150f) {
-                        val adjustX = currentX + drift * 0.7f
-                        val adjustDuration = (kotlin.math.abs(drift) * 3f).toLong().coerceIn(200, 600)
-                        status("$statusPrefix ปรับรอบ $round: ${drift.toInt()}px...")
+                    Log.d(TAG, "ScanDragGesture fine-tune round=$round drift=${drift.toInt()} wb=$wbScore")
+
+                    if (kotlin.math.abs(drift) in 5f..150f) {
+                        val adjustX = currentX + drift * 0.85f
+                        val adjustDuration = (kotlin.math.abs(drift) * 4f).toLong().coerceIn(250, 800)
+                        status("$statusPrefix ปรับรอบ $round: ${drift.toInt()}px (wb=$wbScore)...")
                         val adjustResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
                         service.swipeWithContinuation(
                             currentX, sliderY, adjustX, sliderY,
@@ -1996,12 +2058,12 @@ object PuzzleCaptchaAction {
                             currentStroke = adjStroke
                             currentX = adjustX
                         }
-                    } else if (kotlin.math.abs(drift) < 8f) {
-                        status("$statusPrefix ตรงเป้า!")
+                    } else if (kotlin.math.abs(drift) < 5f) {
+                        status("$statusPrefix ตรงเป้า! (wb=$wbScore)")
                         break
                     }
                 } else {
-                    status("$statusPrefix ตรงเป้า! (gap ไม่เห็น)")
+                    status("$statusPrefix ตรงเป้า! (gap ไม่เห็น, wb=$wbScore)")
                     break
                 }
             }
