@@ -108,15 +108,27 @@ object PuzzleSolver {
                 return resultB
             }
 
-            // Strategy C: Local contrast anomaly (last resort)
-            val resultC = findGapByContrastAnomaly(searchRegion, searchTop, searchWidth, h)
+            // Strategy C: Darkest vertical column band detection
+            // The puzzle gap/shadow is the darkest vertical strip in the image
+            val resultC = findGapByDarkestColumn(searchRegion, searchTop, searchWidth, h)
             if (resultC != null) {
                 Log.d(
                     TAG,
-                    "Gap found via Contrast Anomaly at (${resultC.left},${resultC.top})-(${resultC.right},${resultC.bottom})"
+                    "Gap found via Darkest Column at (${resultC.left},${resultC.top})-(${resultC.right},${resultC.bottom})"
                 )
                 searchRegion.release()
                 return resultC
+            }
+
+            // Strategy D: Local contrast anomaly (last resort)
+            val resultD = findGapByContrastAnomaly(searchRegion, searchTop, searchWidth, h)
+            if (resultD != null) {
+                Log.d(
+                    TAG,
+                    "Gap found via Contrast Anomaly at (${resultD.left},${resultD.top})-(${resultD.right},${resultD.bottom})"
+                )
+                searchRegion.release()
+                return resultD
             }
 
             searchRegion.release()
@@ -355,7 +367,148 @@ object PuzzleSolver {
     }
 
     /**
-     * Strategy C: Local contrast anomaly detection.
+     * Strategy C: Darkest vertical column band detection.
+     * Computes per-column average brightness, then finds the contiguous band of columns
+     * that is significantly darker than the overall image. The gap shadow is always the
+     * darkest vertical strip because the missing piece lets the dark background show through.
+     */
+    private fun findGapByDarkestColumn(
+        searchRegion: Mat,
+        searchTop: Int,
+        width: Int,
+        height: Int
+    ): Rect? {
+        try {
+            if (width < 50 || height < 20) return null
+
+            // Skip left 10% (puzzle piece starting position)
+            val startCol = (width * 0.10).toInt()
+
+            // Compute mean brightness for each column
+            val colMeans = DoubleArray(width)
+            for (x in startCol until width) {
+                val col = searchRegion.col(x)
+                val mean = Core.mean(col).`val`[0]
+                colMeans[x] = mean
+                col.release()
+            }
+
+            // Global mean of the search area (excluding left 10%)
+            val validMeans = colMeans.drop(startCol).filter { it > 0.0 }
+            if (validMeans.isEmpty()) return null
+            val globalMean = validMeans.average()
+            val globalStd = Math.sqrt(validMeans.map { (it - globalMean) * (it - globalMean) }.average())
+
+            // Dark threshold: columns darker than mean - 0.8*std
+            val darkThresh = globalMean - globalStd * 0.8
+            if (darkThresh <= 0) return null
+
+            // Find contiguous bands of dark columns using sliding window
+            // Typical puzzle gap is 40-120px wide
+            val minGapWidth = 25
+            val maxGapWidth = 150
+
+            var bestBandStart = -1
+            var bestBandEnd = -1
+            var bestBandDarkness = Double.MAX_VALUE
+
+            var bandStart = -1
+            for (x in startCol until width) {
+                if (colMeans[x] < darkThresh) {
+                    if (bandStart < 0) bandStart = x
+                } else {
+                    if (bandStart >= 0) {
+                        val bandWidth = x - bandStart
+                        if (bandWidth in minGapWidth..maxGapWidth) {
+                            // Average darkness of this band
+                            val avgDark = colMeans.slice(bandStart until x).average()
+                            if (avgDark < bestBandDarkness) {
+                                bestBandDarkness = avgDark
+                                bestBandStart = bandStart
+                                bestBandEnd = x
+                            }
+                        }
+                        bandStart = -1
+                    }
+                }
+            }
+            // Close any trailing band
+            if (bandStart >= 0) {
+                val bandWidth = width - bandStart
+                if (bandWidth in minGapWidth..maxGapWidth) {
+                    val avgDark = colMeans.slice(bandStart until width).average()
+                    if (avgDark < bestBandDarkness) {
+                        bestBandStart = bandStart
+                        bestBandEnd = width
+                    }
+                }
+            }
+
+            if (bestBandStart < 0) {
+                // Fallback: find the single darkest window of minGapWidth columns
+                for (x in startCol..(width - minGapWidth)) {
+                    val windowAvg = colMeans.slice(x until x + minGapWidth).average()
+                    if (windowAvg < bestBandDarkness) {
+                        bestBandDarkness = windowAvg
+                        bestBandStart = x
+                        bestBandEnd = x + minGapWidth
+                    }
+                }
+            }
+
+            if (bestBandStart < 0) return null
+
+            // The gap must be significantly darker than global mean
+            val darkRatio = bestBandDarkness / globalMean
+            Log.d(TAG, "  [DarkCol] band=$bestBandStart-$bestBandEnd w=${bestBandEnd - bestBandStart} " +
+                "darkAvg=${"%.1f".format(bestBandDarkness)} globalMean=${"%.1f".format(globalMean)} " +
+                "ratio=${"%.2f".format(darkRatio)} thresh=${"%.1f".format(darkThresh)}")
+
+            if (darkRatio > 0.92) {
+                Log.d(TAG, "  [DarkCol] band not dark enough (ratio=${"%.2f".format(darkRatio)})")
+                return null
+            }
+
+            // Now find vertical extent: scan rows in the band to find top/bottom of dark area
+            val bandCenterX = (bestBandStart + bestBandEnd) / 2
+            val bandW = bestBandEnd - bestBandStart
+            var gapTop = 0
+            var gapBottom = height
+            val rowThreshold = globalMean - globalStd * 0.5
+
+            for (y in 0 until height) {
+                val roi = searchRegion.submat(y, y + 1, bestBandStart, bestBandEnd)
+                val rowMean = Core.mean(roi).`val`[0]
+                roi.release()
+                if (rowMean < rowThreshold) {
+                    gapTop = y
+                    break
+                }
+            }
+            for (y in height - 1 downTo 0) {
+                val roi = searchRegion.submat(y, y + 1, bestBandStart, bestBandEnd)
+                val rowMean = Core.mean(roi).`val`[0]
+                roi.release()
+                if (rowMean < rowThreshold) {
+                    gapBottom = y + 1
+                    break
+                }
+            }
+
+            return Rect(
+                bestBandStart,
+                gapTop + searchTop,
+                bestBandEnd,
+                gapBottom + searchTop
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "findGapByDarkestColumn failed: ${e.message}")
+            return null
+        }
+    }
+
+    /**
+     * Strategy D: Local contrast anomaly detection.
      * Divides the search region into blocks and finds the area with notably lower brightness
      * compared to the global mean. Works when the overlay changes local brightness.
      */

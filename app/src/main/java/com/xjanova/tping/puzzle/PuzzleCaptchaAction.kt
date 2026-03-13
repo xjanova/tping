@@ -440,13 +440,14 @@ object PuzzleCaptchaAction {
             }
             status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode+$swipeModeName, ${dragDist.toInt()}px)...")
 
-            val swipeDuration = (dragDist * 4f).toLong().coerceIn(1000, 4000)
+            // Human-like timing: slower swipe = more accurate positioning
+            val swipeDuration = (dragDist * 6f).toLong().coerceIn(1500, 5000)
             val swipeResult: String = when (swipeTier) {
                 0 -> doShellDrag(sliderX, swipeY, targetX, swipeY, swipeDuration, screenW, screenH, rotation)
                 1 -> doSlowSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 2 -> doTapThenSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 else -> doPressHoldDrag(service, sliderX, swipeY, targetX, swipeY,
-                    (dragDist * 5f).toLong().coerceIn(1200, 4000))
+                    (dragDist * 7f).toLong().coerceIn(1500, 5000))
             }
 
             Log.d(
@@ -554,10 +555,35 @@ object PuzzleCaptchaAction {
                         }
                     } else {
                         val remainGapX = (stillHasGap.left + stillHasGap.right) / 2
+                        val sliderDrift = remainGapX - targetX.toInt()
                         DiagnosticReporter.logCaptcha(
                             "Not solved",
-                            "attempt=$attempt, remainGapX=$remainGapX, target=${targetX.toInt()}"
+                            "attempt=$attempt, remainGapX=$remainGapX, target=${targetX.toInt()}, drift=$sliderDrift"
                         )
+
+                        // Correction slide: if the gap is still visible and we can measure
+                        // how far off we were, try a small corrective drag
+                        if (kotlin.math.abs(sliderDrift) in 15..200 && swipeTier == 0) {
+                            status("ครั้งที่ $attempt: ปรับตำแหน่ง (${sliderDrift}px)...")
+                            val correctionTarget = sliderX + (remainGapX.toFloat() - sliderX)
+                            val corrDuration = (kotlin.math.abs(sliderDrift) * 8f).toLong().coerceIn(800, 3000)
+                            doShellDrag(sliderX, sliderY, correctionTarget, sliderY, corrDuration, screenW, screenH, rotation)
+                            delay(2500)
+                            coroutineContext.ensureActive()
+                            // Re-verify after correction
+                            val corrShot = PuzzleScreenCapture.captureScreen()
+                            if (corrShot != null) {
+                                val corrGap = PuzzleSolver.findGapRegion(corrShot, sliderY.toInt())
+                                corrShot.recycle()
+                                if (corrGap == null || isCaptchaGone(service, sliderY.toInt(), screenH)) {
+                                    status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt + correction)")
+                                    DiagnosticReporter.logCaptcha("Solved (correction)", "attempt=$attempt, drift=$sliderDrift")
+                                    try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
+                                    autoSendDiagnostics()
+                                    return
+                                }
+                            }
+                        }
 
                         // Functional failure detection: only for dispatchGesture tiers (tier >= 1).
                         // For shell tier (tier 0), gapDelta is always near 0 because
