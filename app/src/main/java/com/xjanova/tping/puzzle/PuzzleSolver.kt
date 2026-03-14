@@ -124,7 +124,211 @@ object PuzzleSolver {
     }
 
     // =====================================================================
-    // Smart scan: Measure edge count to find where piece fills the gap
+    // v1.2.69 PRIMARY: Detect gap from STATIC screenshot BEFORE dragging
+    // Proven approach: Sobel edges + column analysis + white border peaks
+    // =====================================================================
+
+    /**
+     * PRIMARY gap detection — call BEFORE touching the slider.
+     * Combines multiple signals to find the gap X position from a static screenshot:
+     *   1. Sobel gradient (X+Y) → strong edges at gap boundaries
+     *   2. Column brightness analysis → gap is darker than surroundings
+     *   3. White border peak detection → vertical bright lines at gap edges
+     *
+     * Returns the gap CENTER X in screen coordinates, or null if detection fails.
+     */
+    fun detectGapFromStatic(
+        screenshot: Bitmap, sliderY: Int, sliderX: Float
+    ): Int? {
+        if (!ensureOpenCV()) return null
+        val src = Mat()
+        val gray = Mat()
+        try {
+            val top = (sliderY - 500).coerceAtLeast(0)
+            val bottom = (sliderY - 20).coerceAtLeast(top + 10).coerceAtMost(screenshot.height)
+            if (bottom <= top) return null
+            // Search right of the piece starting position (skip left 15% where piece sits)
+            val searchLeft = (sliderX + 80f).toInt().coerceAtLeast(0)
+            val searchRight = screenshot.width
+            if (searchRight - searchLeft < 50) return null
+
+            Utils.bitmapToMat(screenshot, src)
+            Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
+            val region = gray.submat(top, bottom, searchLeft, searchRight)
+            val regionW = searchRight - searchLeft
+            val regionH = bottom - top
+
+            // === Signal 1: Sobel gradient magnitude per column ===
+            // Gap boundaries create strong vertical edges (Sobel X) and
+            // the shadow inside has low gradient → column dip pattern
+            val blurred = Mat()
+            Imgproc.GaussianBlur(region, blurred, Size(3.0, 3.0), 0.0)
+            val gradX = Mat(); val gradY = Mat()
+            Imgproc.Sobel(blurred, gradX, CvType.CV_16S, 1, 0)
+            Imgproc.Sobel(blurred, gradY, CvType.CV_16S, 0, 1)
+            val absGradX = Mat(); val absGradY = Mat()
+            Core.convertScaleAbs(gradX, absGradX)
+            Core.convertScaleAbs(gradY, absGradY)
+            val grad = Mat()
+            Core.addWeighted(absGradX, 0.5, absGradY, 0.5, 0.0, grad)
+
+            // Column gradient sums
+            val gradColSum = DoubleArray(regionW)
+            for (col in 0 until regionW) {
+                val c = grad.col(col)
+                gradColSum[col] = Core.sumElems(c).`val`[0]
+                c.release()
+            }
+
+            // === Signal 2: Column brightness (darker = more likely gap shadow) ===
+            val brightColSum = DoubleArray(regionW)
+            for (col in 0 until regionW) {
+                val c = region.col(col)
+                brightColSum[col] = Core.mean(c).`val`[0]
+                c.release()
+            }
+            val globalBright = brightColSum.average()
+
+            // === Signal 3: White border detection (brightness > 200 + vertical edge) ===
+            val whiteMask = Mat()
+            Imgproc.threshold(region, whiteMask, 200.0, 255.0, Imgproc.THRESH_BINARY)
+            val edgeMask = Mat()
+            Imgproc.threshold(absGradX, edgeMask, 40.0, 255.0, Imgproc.THRESH_BINARY)
+            val whiteBorder = Mat()
+            Core.bitwise_and(whiteMask, edgeMask, whiteBorder)
+            val wbColSum = DoubleArray(regionW)
+            for (col in 0 until regionW) {
+                val c = whiteBorder.col(col)
+                wbColSum[col] = Core.sumElems(c).`val`[0] / 255.0 // count of white pixels
+                c.release()
+            }
+
+            // Release intermediate
+            whiteBorder.release(); edgeMask.release(); whiteMask.release()
+            grad.release(); absGradY.release(); absGradX.release()
+            gradY.release(); gradX.release(); blurred.release(); region.release()
+
+            // === Combine signals to find gap ===
+            // Method A: Find darkest band (40-120px wide)
+            var bestDarkX: Int? = null
+            var bestDarkScore = Double.MAX_VALUE
+            for (w in 40..120 step 10) {
+                if (w > regionW) break
+                for (x in 0..(regionW - w)) {
+                    val avgBright = brightColSum.slice(x until x + w).average()
+                    if (avgBright < bestDarkScore) {
+                        bestDarkScore = avgBright
+                        bestDarkX = x + w / 2
+                    }
+                }
+            }
+            val darkThreshold = globalBright * 0.92
+            val darkGapX = if (bestDarkScore < darkThreshold && bestDarkX != null)
+                bestDarkX + searchLeft else null
+
+            // Method B: Find white border peak pairs (gap has LEFT and RIGHT white borders)
+            val wbAvg = wbColSum.average()
+            val wbThreshold = (wbAvg * 3.0).coerceAtLeast(3.0)
+            val wbPeaks = mutableListOf<Int>()
+            var inPeak = false; var peakStart = 0
+            for (col in wbColSum.indices) {
+                if (wbColSum[col] > wbThreshold) {
+                    if (!inPeak) { peakStart = col; inPeak = true }
+                } else {
+                    if (inPeak) { wbPeaks.add((peakStart + col - 1) / 2); inPeak = false }
+                }
+            }
+            if (inPeak) wbPeaks.add((peakStart + wbColSum.size - 1) / 2)
+
+            var wbGapX: Int? = null
+            var bestWbScore = 0.0
+            for (i in 0 until wbPeaks.size - 1) {
+                val gap = wbPeaks[i + 1] - wbPeaks[i]
+                if (gap in 30..130) {
+                    val score = wbColSum[wbPeaks[i]] + wbColSum[wbPeaks[i + 1]]
+                    if (score > bestWbScore) {
+                        bestWbScore = score
+                        wbGapX = (wbPeaks[i] + wbPeaks[i + 1]) / 2 + searchLeft
+                    }
+                }
+            }
+
+            // Method C: Find high-gradient peaks (gap edges have strong Sobel response)
+            val gradAvg = gradColSum.average()
+            val gradThreshold = gradAvg * 1.8
+            val gradPeaks = mutableListOf<Int>()
+            inPeak = false; peakStart = 0
+            for (col in gradColSum.indices) {
+                if (gradColSum[col] > gradThreshold) {
+                    if (!inPeak) { peakStart = col; inPeak = true }
+                } else {
+                    if (inPeak) { gradPeaks.add((peakStart + col - 1) / 2); inPeak = false }
+                }
+            }
+            if (inPeak) gradPeaks.add((peakStart + gradColSum.size - 1) / 2)
+
+            var gradGapX: Int? = null
+            var bestGradScore = 0.0
+            for (i in 0 until gradPeaks.size - 1) {
+                val gap = gradPeaks[i + 1] - gradPeaks[i]
+                if (gap in 30..130) {
+                    val score = gradColSum[gradPeaks[i]] + gradColSum[gradPeaks[i + 1]]
+                    if (score > bestGradScore) {
+                        bestGradScore = score
+                        gradGapX = (gradPeaks[i] + gradPeaks[i + 1]) / 2 + searchLeft
+                    }
+                }
+            }
+
+            // === Consensus: pick best result ===
+            val candidates = mutableListOf<Pair<Int, String>>()
+            if (darkGapX != null) candidates.add(darkGapX to "dark")
+            if (wbGapX != null) candidates.add(wbGapX to "whiteBorder")
+            if (gradGapX != null) candidates.add(gradGapX to "gradient")
+
+            Log.d(TAG, "detectGapFromStatic: dark=$darkGapX(score=${"%.1f".format(bestDarkScore)}/" +
+                "${"%.1f".format(darkThreshold)}), wb=$wbGapX(peaks=${wbPeaks.size}), " +
+                "grad=$gradGapX(peaks=${gradPeaks.size}), candidates=${candidates.size}")
+
+            if (candidates.isEmpty()) {
+                // Fallback: use findGapRegion
+                Log.d(TAG, "detectGapFromStatic: no candidates, falling back to findGapRegion")
+                return null
+            }
+
+            // If multiple methods agree (within 40px), use their average
+            if (candidates.size >= 2) {
+                val sorted = candidates.sortedBy { it.first }
+                for (i in 0 until sorted.size - 1) {
+                    if (kotlin.math.abs(sorted[i].first - sorted[i + 1].first) < 40) {
+                        val avg = (sorted[i].first + sorted[i + 1].first) / 2
+                        Log.d(TAG, "detectGapFromStatic: consensus ${sorted[i].second}+${sorted[i + 1].second} → x=$avg")
+                        return avg
+                    }
+                }
+            }
+
+            // Single best: prefer whiteBorder > gradient > dark
+            val result = wbGapX ?: gradGapX ?: darkGapX
+            if (result != null) {
+                val method = when (result) {
+                    wbGapX -> "whiteBorder"
+                    gradGapX -> "gradient"
+                    else -> "dark"
+                }
+                Log.d(TAG, "detectGapFromStatic: single-method $method → x=$result")
+            }
+            return result
+        } catch (e: Exception) {
+            Log.e(TAG, "detectGapFromStatic failed: ${e.message}")
+            return null
+        } finally {
+            src.release(); gray.release()
+        }
+    }
+
+    // =====================================================================
+    // Legacy scan support: Measure edge count (used by scan approach)
     // =====================================================================
 
     /**
