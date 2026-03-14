@@ -25,7 +25,19 @@ import kotlin.coroutines.coroutineContext
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.73
+ * Puzzle CAPTCHA solver — v1.2.75
+ *
+ * v1.2.75 — Proven production solver approach (GeeTest/Tencent-style):
+ * - REWRITE: 3-method detection with consensus voting:
+ *   A) EDGE template: GaussianBlur(5×5) → Canny(100,200) → TM_CCOEFF_NORMED
+ *      (proven approach used by all successful puzzle CAPTCHA solvers)
+ *   B) SILHOUETTE template: diff mask edges (no texture noise)
+ *   C) LOCAL CONTRAST scan: darker-than-neighbors column analysis
+ * - Any 2 methods agree within 30px → CONSENSUS (highest confidence)
+ * - Morphological erode/dilate on diff mask (clean noise, restore shape)
+ * - Adaptive contrast threshold for white/bright images
+ * - Overshoot correction on ALL detection paths (diff: -8px, static: -12px)
+ * - Longer refresh delay on attempt 3+ (3500ms)
  *
  * v1.2.73 — Smarter detection (silhouette + local contrast):
  * - FIX: Template matching now uses piece SILHOUETTE edges (from diff binary mask)
