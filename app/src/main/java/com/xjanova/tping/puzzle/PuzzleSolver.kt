@@ -994,4 +994,193 @@ object PuzzleSolver {
         }
     }
 
+    // =====================================================================
+    // v1.2.72 PRIMARY: Diff-based gap detection (Before/After + Template Match)
+    // =====================================================================
+
+    /**
+     * Detect gap by comparing screenshots BEFORE and AFTER moving the piece.
+     *
+     * 1. Compute |after - before| → diff mask shows where piece moved
+     * 2. Extract piece shape from the diff (blob near new piece position)
+     * 3. Convert piece to Canny edges → piece template
+     * 4. Convert puzzle area (before image) to Canny edges
+     * 5. Template-match piece edges against puzzle edges → best match = gap
+     *
+     * This is the most reliable method because it uses the ACTUAL piece shape
+     * rather than guessing from darkness/edges.
+     *
+     * @param before Screenshot taken BEFORE moving the piece
+     * @param after Screenshot taken AFTER moving the piece right by [moveDistance]
+     * @param sliderY Y coordinate of slider
+     * @param sliderX Original X of slider (piece starting position)
+     * @param moveDistance How far the piece was moved (in pixels)
+     * @return Gap center X in screen coordinates, or null if detection failed
+     */
+    fun detectGapByDiff(
+        before: Bitmap, after: Bitmap,
+        sliderY: Int, sliderX: Float, moveDistance: Float
+    ): Int? {
+        if (!ensureOpenCV()) return null
+
+        val matBefore = Mat()
+        val matAfter = Mat()
+        val grayBefore = Mat()
+        val grayAfter = Mat()
+
+        try {
+            val top = (sliderY - 500).coerceAtLeast(0)
+            val bottom = (sliderY - 20).coerceAtLeast(top + 10).coerceAtMost(before.height)
+            if (bottom - top < 50) return null
+            val w = before.width
+
+            Utils.bitmapToMat(before, matBefore)
+            Utils.bitmapToMat(after, matAfter)
+            Imgproc.cvtColor(matBefore, grayBefore, Imgproc.COLOR_RGBA2GRAY)
+            Imgproc.cvtColor(matAfter, grayAfter, Imgproc.COLOR_RGBA2GRAY)
+
+            val regionBefore = grayBefore.submat(top, bottom, 0, w)
+            val regionAfter = grayAfter.submat(top, bottom, 0, w)
+
+            // === Step 1: Compute diff ===
+            val diff = Mat()
+            Core.absdiff(regionBefore, regionAfter, diff)
+
+            val blurDiff = Mat()
+            Imgproc.GaussianBlur(diff, blurDiff, Size(5.0, 5.0), 0.0)
+
+            val binaryDiff = Mat()
+            Imgproc.threshold(blurDiff, binaryDiff, 20.0, 255.0, Imgproc.THRESH_BINARY)
+
+            val closeK = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(7.0, 7.0))
+            Imgproc.morphologyEx(binaryDiff, binaryDiff, Imgproc.MORPH_CLOSE, closeK)
+            closeK.release()
+
+            debugCounter++
+            saveMat(diff, "diff_raw")
+            saveMat(binaryDiff, "diff_binary")
+
+            // === Step 2: Find piece contour in diff ===
+            // The diff has 2 blobs: one at old position (piece left), one at new position (piece arrived)
+            // We want the one near (sliderX + moveDistance)
+            val contours = mutableListOf<MatOfPoint>()
+            val hierarchy = Mat()
+            val diffForContours = binaryDiff.clone()
+            Imgproc.findContours(
+                diffForContours, contours, hierarchy,
+                Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
+            )
+            diffForContours.release()
+            hierarchy.release()
+
+            val expectedNewX = sliderX + moveDistance
+            var pieceRect: org.opencv.core.Rect? = null
+            var bestDist = Float.MAX_VALUE
+
+            for (contour in contours) {
+                val rect = Imgproc.boundingRect(contour)
+                val area = Imgproc.contourArea(contour)
+                contour.release()
+
+                // Filter: piece should be 25-200px in each dimension, area > 800
+                if (area < 800 || rect.width < 25 || rect.height < 25) continue
+                if (rect.width > 200 || rect.height > 200) continue
+
+                val cx = rect.x + rect.width / 2f
+                val d = kotlin.math.abs(cx - expectedNewX)
+                if (d < bestDist) {
+                    bestDist = d
+                    pieceRect = rect
+                }
+            }
+
+            if (pieceRect == null) {
+                Log.w(TAG, "detectGapByDiff: no piece contour in diff " +
+                    "(${contours.size} contours, expectedX=${expectedNewX.toInt()})")
+                diff.release(); blurDiff.release(); binaryDiff.release()
+                regionBefore.release(); regionAfter.release()
+                return null
+            }
+
+            Log.d(TAG, "detectGapByDiff: piece rect " +
+                "(${pieceRect.x},${pieceRect.y}) ${pieceRect.width}x${pieceRect.height}")
+
+            // === Step 3: Extract piece edges from AFTER image ===
+            val pT = pieceRect.y.coerceAtLeast(0)
+            val pB = (pieceRect.y + pieceRect.height).coerceAtMost(regionAfter.rows())
+            val pL = pieceRect.x.coerceAtLeast(0)
+            val pR = (pieceRect.x + pieceRect.width).coerceAtMost(regionAfter.cols())
+            if (pR - pL < 20 || pB - pT < 20) {
+                diff.release(); blurDiff.release(); binaryDiff.release()
+                regionBefore.release(); regionAfter.release()
+                return null
+            }
+
+            val piece = regionAfter.submat(pT, pB, pL, pR)
+            val pieceEdges = Mat()
+            Imgproc.Canny(piece, pieceEdges, 50.0, 150.0)
+
+            saveMat(piece, "piece_crop")
+            saveMat(pieceEdges, "piece_edges")
+
+            // === Step 4: Search for gap in BEFORE image ===
+            // Search area: right of piece start + piece width (gap is never under the piece)
+            val searchLeft = (sliderX.toInt() + pieceRect.width).coerceIn(0, w - 1)
+            val searchRight = w
+            if (searchRight - searchLeft < pieceRect.width + 10) {
+                Log.w(TAG, "detectGapByDiff: search area too narrow")
+                piece.release(); pieceEdges.release()
+                diff.release(); blurDiff.release(); binaryDiff.release()
+                regionBefore.release(); regionAfter.release()
+                return null
+            }
+
+            val searchArea = regionBefore.submat(0, regionBefore.rows(), searchLeft, searchRight)
+            val searchEdges = Mat()
+            Imgproc.Canny(searchArea, searchEdges, 50.0, 150.0)
+
+            saveMat(searchEdges, "search_edges")
+
+            // === Step 5: Template match ===
+            if (searchEdges.cols() < pieceEdges.cols() || searchEdges.rows() < pieceEdges.rows()) {
+                Log.w(TAG, "detectGapByDiff: template larger than search area")
+                piece.release(); pieceEdges.release()
+                searchArea.release(); searchEdges.release()
+                diff.release(); blurDiff.release(); binaryDiff.release()
+                regionBefore.release(); regionAfter.release()
+                return null
+            }
+
+            val matchResult = Mat()
+            Imgproc.matchTemplate(
+                searchEdges, pieceEdges, matchResult, Imgproc.TM_CCOEFF_NORMED
+            )
+
+            val loc = Core.minMaxLoc(matchResult)
+            val gapX = loc.maxLoc.x.toInt() + pieceRect.width / 2 + searchLeft
+            val confidence = loc.maxVal
+
+            Log.d(TAG, "detectGapByDiff: match x=$gapX confidence=${"%.3f".format(confidence)}")
+
+            // Cleanup
+            piece.release(); pieceEdges.release()
+            searchArea.release(); searchEdges.release(); matchResult.release()
+            diff.release(); blurDiff.release(); binaryDiff.release()
+            regionBefore.release(); regionAfter.release()
+
+            if (confidence < 0.10) {
+                Log.w(TAG, "detectGapByDiff: confidence too low (${"%.3f".format(confidence)})")
+                return null
+            }
+
+            return gapX
+        } catch (e: Exception) {
+            Log.e(TAG, "detectGapByDiff failed: ${e.message}")
+            return null
+        } finally {
+            matBefore.release(); matAfter.release()
+            grayBefore.release(); grayAfter.release()
+        }
+    }
+
 }

@@ -25,7 +25,15 @@ import kotlin.coroutines.coroutineContext
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.71
+ * Puzzle CAPTCHA solver — v1.2.72
+ *
+ * v1.2.72 — Diff-based gap detection (Before/After + Edge Template Matching):
+ * - NEW: detectGapByDiff() — moves piece 60px, diffs before/after screenshots,
+ *   extracts piece shape, uses Canny edge template matching to find gap.
+ *   Much more accurate than static detection (darkness/edges/white border).
+ * - Rewrite doScanDrag flow: press → explore 60px → screenshot → diff detect → move to gap
+ * - Static detection (detectGapFromStatic) kept as fallback with -10px correction
+ * - Conservative fine-tune: 1 round, 40% drift, uses gap left edge as reference
  *
  * v1.2.71 — Code cleanup + bug fixes:
  * - DELETED legacy code: blind drag, smart drag, doSmartDragWithVerify,
@@ -1368,77 +1376,30 @@ object PuzzleCaptchaAction {
             nativeW, nativeH, rotation, 0, 0
         )
 
-        // === Phase 1: DETECT gap from STATIC screenshot (BEFORE touching slider) ===
+        // === Phase 1: Take BEFORE screenshot ===
         status("$statusPrefix วิเคราะห์ภาพ...")
         val preScreenshot = PuzzleScreenCapture.captureScreen()
-        var gapTargetX: Float? = null
-
-        if (preScreenshot != null) {
-            // Try the new multi-signal detection first
-            val detected = PuzzleSolver.detectGapFromStatic(
-                preScreenshot, sliderY.toInt(), sliderX
-            )
-            if (detected != null) {
-                gapTargetX = detected.toFloat()
-                Log.d(TAG, "DirectDrag: detectGapFromStatic → x=$detected")
-                status("$statusPrefix พบช่องว่างที่ x=$detected (Sobel+WB)")
-            }
-
-            // If that fails, try findGapRegion as fallback
-            if (gapTargetX == null) {
-                val gap = PuzzleSolver.findGapRegion(preScreenshot, sliderY.toInt())
-                if (gap != null) {
-                    gapTargetX = (gap.left + gap.right) / 2f
-                    Log.d(TAG, "DirectDrag: findGapRegion fallback → x=${gapTargetX.toInt()}")
-                    status("$statusPrefix พบช่องว่างที่ x=${gapTargetX.toInt()} (contour)")
-                }
-            }
-
-            // Try white border detection as another fallback
-            if (gapTargetX == null) {
-                val wbGap = PuzzleSolver.findGapByWhiteBorder(
-                    preScreenshot, sliderY.toInt(),
-                    (sliderX + 80f).toInt(), screenW
-                )
-                if (wbGap != null) {
-                    gapTargetX = wbGap.toFloat()
-                    Log.d(TAG, "DirectDrag: findGapByWhiteBorder fallback → x=$wbGap")
-                    status("$statusPrefix พบช่องว่างที่ x=$wbGap (whiteBorder)")
-                }
-            }
-
-            preScreenshot.recycle()
-        }
-
-        if (gapTargetX == null) {
-            Log.w(TAG, "DirectDrag: all detection methods failed, cannot find gap")
-            DiagnosticReporter.logCaptcha("DirectDrag-FAIL", "all methods failed")
-            status("$statusPrefix ❌ หาช่องว่างไม่ได้")
+        if (preScreenshot == null) {
+            status("$statusPrefix ❌ จับภาพหน้าจอไม่ได้")
             return "gap_not_detected"
         }
 
-        // Overshoot correction: detection finds the visual center of the gap
-        // shadow/overlay, but the piece snap point is slightly left because:
-        //   a) Jigsaw pieces have a protruding tab on the right side
-        //   b) The gap shadow extends slightly past the actual fit position
-        //   c) Detection tends to include the right border in the gap region
-        // Subtract a small correction proportional to estimated piece width (~60px)
-        val overshootCorrection = 10f
-        val gapX: Float = gapTargetX - overshootCorrection
-
-        // Calculate drag distance
-        val dragDist = gapX - sliderX
-        if (dragDist < 30f) {
-            Log.w(TAG, "DirectDrag: dragDist too small: $dragDist")
-            return "gap_too_close"
+        // Static detection as BACKUP (in case diff fails)
+        var staticGapX: Float? = null
+        val staticDetected = PuzzleSolver.detectGapFromStatic(
+            preScreenshot, sliderY.toInt(), sliderX
+        )
+        if (staticDetected != null) {
+            staticGapX = staticDetected.toFloat()
+            Log.d(TAG, "DirectDrag: static backup → x=$staticDetected")
         }
-
-        Log.d(TAG, "DirectDrag: rawGap=${gapTargetX.toInt()} corrected=${gapX.toInt()} " +
-            "correction=$overshootCorrection slider=$sliderX drag=${dragDist.toInt()} " +
-            "track=${trackWidth.toInt()}")
-        DiagnosticReporter.logCaptcha("DirectDrag-Target",
-            "rawGap=${gapTargetX.toInt()} corrected=${gapX.toInt()} " +
-            "sliderX=${sliderX.toInt()} drag=${dragDist.toInt()} track=${trackWidth.toInt()}")
+        if (staticGapX == null) {
+            val gap = PuzzleSolver.findGapRegion(preScreenshot, sliderY.toInt())
+            if (gap != null) {
+                staticGapX = (gap.left + gap.right) / 2f
+                Log.d(TAG, "DirectDrag: static backup (contour) → x=${staticGapX.toInt()}")
+            }
+        }
 
         val (rawX, rawY) = dragState.logicalToRaw(sliderX, sliderY, screenW, screenH)
         dragState.lastRawX = rawX
@@ -1448,38 +1409,104 @@ object PuzzleCaptchaAction {
             // === Phase 2: Press at slider ===
             val pressScript = buildSendeventPress(device.devicePath, rawX, rawY)
             val pressResult = execShellAny("sh -c '$pressScript'")
-            if (pressResult != "ok") return "press_$pressResult"
+            if (pressResult != "ok") {
+                preScreenshot.recycle()
+                return "press_$pressResult"
+            }
             delay(350)
 
-            // === Phase 3: Drag DIRECTLY to gap position ===
-            // Use human-like easing: fast in middle, slow at start/end
-            val (targetRawX, targetRawY) = dragState.logicalToRaw(gapX, sliderY, screenW, screenH)
-            val dragDuration = (dragDist * 5f).toInt().coerceIn(600, 3000)
+            // === Phase 3: EXPLORATORY move — drag 60px right to create diff ===
+            val exploreDistance = (trackWidth * 0.10f).coerceIn(40f, 80f)
+            val exploreX = sliderX + exploreDistance
+            val (exploreRawX, exploreRawY) = dragState.logicalToRaw(
+                exploreX, sliderY, screenW, screenH
+            )
+            val exploreScript = buildSendeventMicroMove(
+                device.devicePath,
+                dragState.lastRawX, dragState.lastRawY,
+                exploreRawX, exploreRawY,
+                steps = 15, durationMs = 500
+            )
+            execShellAny("sh -c '$exploreScript'")
+            dragState.lastRawX = exploreRawX
+            dragState.lastRawY = exploreRawY
+            delay(400) // wait for UI to update
 
-            status("$statusPrefix ลากไปที่ x=${gapX.toInt()} (${dragDist.toInt()}px)...")
+            // === Phase 4: Take AFTER screenshot and use DIFF to detect gap ===
+            val postScreenshot = PuzzleScreenCapture.captureScreen()
+            var gapX: Float? = null
+            var detectionMethod = "none"
+
+            if (postScreenshot != null) {
+                val diffGap = PuzzleSolver.detectGapByDiff(
+                    preScreenshot, postScreenshot,
+                    sliderY.toInt(), sliderX, exploreDistance
+                )
+                postScreenshot.recycle()
+
+                if (diffGap != null) {
+                    gapX = diffGap.toFloat()
+                    detectionMethod = "diff+template"
+                    Log.d(TAG, "DirectDrag: diff detection → x=$diffGap")
+                    status("$statusPrefix พบช่องว่างที่ x=$diffGap (template match)")
+                }
+            }
+            preScreenshot.recycle()
+
+            // Fall back to static detection if diff failed
+            if (gapX == null && staticGapX != null) {
+                // Apply overshoot correction only for static detection (less accurate)
+                gapX = staticGapX - 10f
+                detectionMethod = "static(corrected)"
+                Log.d(TAG, "DirectDrag: using static backup → x=${gapX.toInt()}")
+                status("$statusPrefix ใช้ค่าสำรอง x=${gapX.toInt()}")
+            }
+
+            if (gapX == null) {
+                Log.w(TAG, "DirectDrag: all detection failed")
+                DiagnosticReporter.logCaptcha("DirectDrag-FAIL", "diff+static all failed")
+                status("$statusPrefix ❌ หาช่องว่างไม่ได้")
+                execShellAny("sh -c '${buildSendeventRelease(device.devicePath)}'")
+                return "gap_not_detected"
+            }
+
+            // Current piece position is at exploreX (sliderX + exploreDistance)
+            val currentPieceX = exploreX
+            val remainDist = gapX - currentPieceX
+            val totalDragDist = gapX - sliderX
+
+            if (totalDragDist < 30f) {
+                Log.w(TAG, "DirectDrag: dragDist too small: $totalDragDist")
+                execShellAny("sh -c '${buildSendeventRelease(device.devicePath)}'")
+                return "gap_too_close"
+            }
+
+            Log.d(TAG, "DirectDrag: gap=${gapX.toInt()} method=$detectionMethod " +
+                "currentX=${currentPieceX.toInt()} remain=${remainDist.toInt()} " +
+                "total=${totalDragDist.toInt()} track=${trackWidth.toInt()}")
+            DiagnosticReporter.logCaptcha("DirectDrag-Target",
+                "gap=${gapX.toInt()} method=$detectionMethod " +
+                "currentX=${currentPieceX.toInt()} remain=${remainDist.toInt()} " +
+                "total=${totalDragDist.toInt()}")
+
+            // === Phase 5: Drag from current position to gap ===
+            val (targetRawX, targetRawY) = dragState.logicalToRaw(gapX, sliderY, screenW, screenH)
+            val dragDuration = (kotlin.math.abs(remainDist) * 5f).toInt().coerceIn(400, 2500)
+
+            status("$statusPrefix ลากไปที่ x=${gapX.toInt()} ($detectionMethod)...")
 
             val dragScript = buildSendeventMicroMove(
                 device.devicePath,
                 dragState.lastRawX, dragState.lastRawY,
                 targetRawX, targetRawY,
-                steps = 25, durationMs = dragDuration
+                steps = 20, durationMs = dragDuration
             )
             execShellAny("sh -c '$dragScript'")
             dragState.lastRawX = targetRawX
             dragState.lastRawY = targetRawY
             delay(300)
 
-            // === Phase 4: Fine-tune with verification (1 round) ===
-            // IMPORTANT: During fine-tune the piece is AT/NEAR the gap.
-            // findGapRegion sees only the UNCOVERED portion of the gap (the part
-            // the piece hasn't covered yet). If piece is slightly LEFT of gap,
-            // the visible contour is the RIGHT part of the gap → its center is
-            // PAST the real gap center → using it as-is causes MORE overshoot.
-            //
-            // Strategy: Use the LEFT edge of the remaining gap as reference.
-            // If piece is slightly left, remaining gap's left edge ≈ piece right edge.
-            // Correct drift = remaining_gap.left - currentX (small positive).
-            // Only adjust by half the remaining gap width leftward to converge.
+            // === Phase 6: Fine-tune (1 round, conservative) ===
             var currentX: Float = gapX
             run fineTune@ {
                 coroutineContext.ensureActive()
@@ -1492,22 +1519,12 @@ object PuzzleCaptchaAction {
                     if (gapRegion != null) {
                         val remainW = gapRegion.right - gapRegion.left
                         val gapLeftEdge = gapRegion.left.toFloat()
-                        // The piece should be centered on the FULL gap.
-                        // Remaining gap left edge is where the piece's right side ends.
-                        // Ideal adjustment: move piece so that its center = gap center.
-                        // Since we can only see the uncovered part, estimate:
-                        //   target = gapLeftEdge - pieceHalfWidth (but we don't know piece width)
-                        // Simpler approach: if remaining gap > 15px, move RIGHT by small amount
-                        // If remaining gap is narrow (piece almost covering it), we're close enough
                         val drift = gapLeftEdge - currentX
                         Log.d(TAG, "DirectDrag fine-tune: remainW=$remainW " +
-                            "gapLeft=${gapLeftEdge.toInt()} gapRight=${gapRegion.right} " +
-                            "currentX=${currentX.toInt()} drift=${drift.toInt()}")
+                            "gapLeft=${gapLeftEdge.toInt()} currentX=${currentX.toInt()} " +
+                            "drift=${drift.toInt()}")
 
-                        // Only adjust if the gap center is significantly off AND
-                        // the remaining gap is wide enough to be meaningful
                         if (remainW > 15 && kotlin.math.abs(drift) in 8f..100f) {
-                            // Conservative: move only 40% of the drift to avoid overshoot
                             val adjustX = currentX + drift * 0.40f
                             val (adjRawX, adjRawY) = dragState.logicalToRaw(
                                 adjustX, sliderY, screenW, screenH)
@@ -1522,28 +1539,28 @@ object PuzzleCaptchaAction {
                             dragState.lastRawX = adjRawX
                             dragState.lastRawY = adjRawY
                             currentX = adjustX
-                        } else if (remainW <= 15 || kotlin.math.abs(drift) < 8f) {
+                        } else {
                             status("$statusPrefix ตรงเป้า! (remain=${remainW}px)")
                         }
                     } else {
-                        // Gap not visible = piece is covering it perfectly
                         status("$statusPrefix ตรงเป้า! (gap ไม่เห็น)")
                     }
                 }
             }
 
-            // === Phase 5: Release ===
+            // === Phase 7: Release ===
             delay(250)
             execShellAny("sh -c '${buildSendeventRelease(device.devicePath)}'")
 
-            val msg = "completed(directDrag, target=${gapX.toInt()}, " +
-                "drag=${dragDist.toInt()})"
+            val msg = "completed($detectionMethod, target=${gapX.toInt()}, " +
+                "total=${totalDragDist.toInt()})"
             Log.d(TAG, "DirectDrag: $msg")
             DiagnosticReporter.logCaptcha("DirectDrag", msg)
             return "completed"
 
         } catch (e: Exception) {
             Log.e(TAG, "DirectDrag: error: ${e.message}")
+            try { preScreenshot.recycle() } catch (_: Exception) {}
             try {
                 execShellAny("sh -c '${buildSendeventRelease(device.devicePath)}'")
             } catch (_: Exception) {}
@@ -1552,8 +1569,8 @@ object PuzzleCaptchaAction {
     }
 
     /**
-     * Direct drag using gesture continuation — v1.2.69 rewrite.
-     * Same detect-first-then-drag approach as doScanDrag but using accessibility gestures.
+     * Diff-based drag using gesture continuation — v1.2.72 rewrite.
+     * Same approach as doScanDrag: exploratory move → diff detection → move to gap.
      */
     private suspend fun doScanDragGesture(
         service: TpingAccessibilityService,
@@ -1564,46 +1581,24 @@ object PuzzleCaptchaAction {
     ): String {
         if (trackWidth < 100) return "track_too_short"
 
-        // === Phase 1: DETECT gap from STATIC screenshot ===
+        // === Phase 1: Take BEFORE screenshot ===
         status("$statusPrefix วิเคราะห์ภาพ...")
         val preScreenshot = PuzzleScreenCapture.captureScreen()
-        var gapTargetX: Float? = null
-
-        if (preScreenshot != null) {
-            val detected = PuzzleSolver.detectGapFromStatic(
-                preScreenshot, sliderY.toInt(), sliderX
-            )
-            if (detected != null) {
-                gapTargetX = detected.toFloat()
-                status("$statusPrefix พบช่องว่างที่ x=$detected")
-            }
-            if (gapTargetX == null) {
-                val gap = PuzzleSolver.findGapRegion(preScreenshot, sliderY.toInt())
-                if (gap != null) gapTargetX = (gap.left + gap.right) / 2f
-            }
-            if (gapTargetX == null) {
-                val wbGap = PuzzleSolver.findGapByWhiteBorder(
-                    preScreenshot, sliderY.toInt(),
-                    (sliderX + 80f).toInt(), preScreenshot.width
-                )
-                if (wbGap != null) gapTargetX = wbGap.toFloat()
-            }
-            preScreenshot.recycle()
-        }
-
-        if (gapTargetX == null) {
-            status("$statusPrefix ❌ หาช่องว่างไม่ได้")
+        if (preScreenshot == null) {
+            status("$statusPrefix ❌ จับภาพหน้าจอไม่ได้")
             return "gap_not_detected"
         }
 
-        // Same overshoot correction as shell drag
-        val overshootCorrection = 10f
-        val gapX: Float = gapTargetX - overshootCorrection
-        val dragDist = gapX - sliderX
-        if (dragDist < 30f) return "gap_too_close"
-
-        Log.d(TAG, "DirectDragGesture: rawGap=${gapTargetX.toInt()} " +
-            "corrected=${gapX.toInt()} drag=${dragDist.toInt()}")
+        // Static detection as backup
+        var staticGapX: Float? = null
+        val staticDetected = PuzzleSolver.detectGapFromStatic(
+            preScreenshot, sliderY.toInt(), sliderX
+        )
+        if (staticDetected != null) staticGapX = staticDetected.toFloat()
+        if (staticGapX == null) {
+            val gap = PuzzleSolver.findGapRegion(preScreenshot, sliderY.toInt())
+            if (gap != null) staticGapX = (gap.left + gap.right) / 2f
+        }
 
         // === Phase 2: Press slider ===
         val phase1 = CompletableDeferred<GestureDescription.StrokeDescription?>()
@@ -1613,27 +1608,97 @@ object PuzzleCaptchaAction {
         ) { phase1.complete(it) }
 
         var currentStroke = withTimeoutOrNull(5000L) { phase1.await() }
-            ?: return "gesture_press_failed"
+        if (currentStroke == null) {
+            preScreenshot.recycle()
+            return "gesture_press_failed"
+        }
         var currentX = sliderX + 2f
 
-        // === Phase 3: Drag directly to gap ===
-        val dragDuration = (dragDist * 5f).toLong().coerceIn(600, 3000)
-        status("$statusPrefix ลากไปที่ x=${gapX.toInt()} (${dragDist.toInt()}px)...")
+        // === Phase 3: Exploratory move (60px right) ===
+        val exploreDistance = (trackWidth * 0.10f).coerceIn(40f, 80f)
+        val exploreX = sliderX + exploreDistance
+        val exploreDuration = 500L
 
-        val dragResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
+        val exploreResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
+        service.swipeWithContinuation(
+            currentX, sliderY, exploreX, sliderY,
+            exploreDuration, willContinue = true, previousStroke = currentStroke
+        ) { exploreResult.complete(it) }
+        val exploreStroke = withTimeoutOrNull(exploreDuration + 5000L) { exploreResult.await() }
+        if (exploreStroke != null) {
+            currentStroke = exploreStroke
+            currentX = exploreX
+        }
+        delay(400) // wait for UI
+
+        // === Phase 4: AFTER screenshot + diff detection ===
+        val postScreenshot = PuzzleScreenCapture.captureScreen()
+        var gapX: Float? = null
+        var detectionMethod = "none"
+
+        if (postScreenshot != null) {
+            val diffGap = PuzzleSolver.detectGapByDiff(
+                preScreenshot, postScreenshot,
+                sliderY.toInt(), sliderX, exploreDistance
+            )
+            postScreenshot.recycle()
+            if (diffGap != null) {
+                gapX = diffGap.toFloat()
+                detectionMethod = "diff+template"
+                status("$statusPrefix พบช่องว่างที่ x=$diffGap (template match)")
+            }
+        }
+        preScreenshot.recycle()
+
+        // Fall back to static
+        if (gapX == null && staticGapX != null) {
+            gapX = staticGapX - 10f
+            detectionMethod = "static(corrected)"
+        }
+
+        if (gapX == null) {
+            // Release gesture and return failure
+            val rel = CompletableDeferred<GestureDescription.StrokeDescription?>()
+            service.swipeWithContinuation(
+                currentX, sliderY, currentX + 1f, sliderY,
+                100L, willContinue = false, previousStroke = currentStroke
+            ) { rel.complete(it) }
+            withTimeoutOrNull(3000L) { rel.await() }
+            return "gap_not_detected"
+        }
+
+        val totalDragDist = gapX - sliderX
+        if (totalDragDist < 30f) {
+            val rel = CompletableDeferred<GestureDescription.StrokeDescription?>()
+            service.swipeWithContinuation(
+                currentX, sliderY, currentX + 1f, sliderY,
+                100L, willContinue = false, previousStroke = currentStroke
+            ) { rel.complete(it) }
+            withTimeoutOrNull(3000L) { rel.await() }
+            return "gap_too_close"
+        }
+
+        Log.d(TAG, "DirectDragGesture: gap=${gapX.toInt()} method=$detectionMethod " +
+            "currentX=${currentX.toInt()} total=${totalDragDist.toInt()}")
+
+        // === Phase 5: Drag from current position to gap ===
+        val remainDist = gapX - currentX
+        val dragDuration = (kotlin.math.abs(remainDist) * 5f).toLong().coerceIn(400, 2500)
+        status("$statusPrefix ลากไปที่ x=${gapX.toInt()} ($detectionMethod)...")
+
+        val dragResult2 = CompletableDeferred<GestureDescription.StrokeDescription?>()
         service.swipeWithContinuation(
             currentX, sliderY, gapX, sliderY,
             dragDuration, willContinue = true, previousStroke = currentStroke
-        ) { dragResult.complete(it) }
-        val dragStroke = withTimeoutOrNull(dragDuration + 5000L) { dragResult.await() }
-        if (dragStroke != null) {
-            currentStroke = dragStroke
+        ) { dragResult2.complete(it) }
+        val dragStroke2 = withTimeoutOrNull(dragDuration + 5000L) { dragResult2.await() }
+        if (dragStroke2 != null) {
+            currentStroke = dragStroke2
             currentX = gapX
         }
         delay(300)
 
-        // === Phase 4: Fine-tune (1 round, conservative) ===
-        // Same logic as shell: use LEFT edge of remaining gap, 40% drift correction
+        // === Phase 6: Fine-tune (1 round, conservative) ===
         run fineTuneGesture@ {
             coroutineContext.ensureActive()
             delay(400)
@@ -1641,24 +1706,18 @@ object PuzzleCaptchaAction {
             if (verifyShot != null) {
                 val gapRegion = PuzzleSolver.findGapRegion(verifyShot, sliderY.toInt())
                 verifyShot.recycle()
-
                 if (gapRegion != null) {
                     val remainW = gapRegion.right - gapRegion.left
-                    val gapLeftEdge = gapRegion.left.toFloat()
-                    val drift = gapLeftEdge - currentX
-                    Log.d(TAG, "DirectDragGesture fine-tune: remainW=$remainW " +
-                        "gapLeft=${gapLeftEdge.toInt()} drift=${drift.toInt()}")
-
+                    val drift = gapRegion.left.toFloat() - currentX
                     if (remainW > 15 && kotlin.math.abs(drift) in 8f..100f) {
                         val adjustX = currentX + drift * 0.40f
-                        val adjustDuration = (kotlin.math.abs(drift) * 3f).toLong().coerceIn(200, 600)
-                        status("$statusPrefix ปรับ: ${(drift * 0.40f).toInt()}px...")
-                        val adjustResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
+                        val adjDur = (kotlin.math.abs(drift) * 3f).toLong().coerceIn(200, 600)
+                        val adjResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
                         service.swipeWithContinuation(
                             currentX, sliderY, adjustX, sliderY,
-                            adjustDuration, willContinue = true, previousStroke = currentStroke
-                        ) { adjustResult.complete(it) }
-                        val adjStroke = withTimeoutOrNull(adjustDuration + 5000L) { adjustResult.await() }
+                            adjDur, willContinue = true, previousStroke = currentStroke
+                        ) { adjResult.complete(it) }
+                        val adjStroke = withTimeoutOrNull(adjDur + 5000L) { adjResult.await() }
                         if (adjStroke != null) {
                             currentStroke = adjStroke
                             currentX = adjustX
@@ -1672,7 +1731,7 @@ object PuzzleCaptchaAction {
             }
         }
 
-        // === Phase 5: Release ===
+        // === Phase 7: Release ===
         delay(250)
         val release = CompletableDeferred<GestureDescription.StrokeDescription?>()
         service.swipeWithContinuation(
@@ -1681,7 +1740,8 @@ object PuzzleCaptchaAction {
         ) { release.complete(it) }
         withTimeoutOrNull(5000L) { release.await() }
 
-        val msg = "completed(gestureDirectDrag, target=${gapX.toInt()}, drag=${dragDist.toInt()})"
+        val msg = "completed(gesture-$detectionMethod, target=${gapX.toInt()}, " +
+            "total=${totalDragDist.toInt()})"
         Log.d(TAG, "DirectDragGesture: $msg")
         DiagnosticReporter.logCaptcha("DirectDragGesture", msg)
         return "completed"
