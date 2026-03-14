@@ -25,84 +25,33 @@ import kotlin.coroutines.coroutineContext
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.69
+ * Puzzle CAPTCHA solver — v1.2.71
  *
- * v1.2.69 — COMPLETE ALGORITHM REWRITE: Detect-first, direct-drag:
- * - OLD (broken): Scan across track measuring edges → find valley → move back
- *   Problem: valley detection unreliable, overshoot on return, slow
- * - NEW (proven): Screenshot BEFORE touching → detect gap from static image → drag directly
- *   Based on PuzzleCaptchaSolver/geetest-solver proven approaches
- * - NEW: detectGapFromStatic() — 3-signal gap detection:
+ * v1.2.71 — Code cleanup + bug fixes:
+ * - DELETED legacy code: blind drag, smart drag, doSmartDragWithVerify,
+ *   scan loop, functional failure escalation — all interfered with new algorithm
+ * - FIX: Detection failure ("gap_not_detected") now refreshes puzzle instead of
+ *   escalating swipe tier (shell → gesture). Old behavior caused CAPTCHA rejection
+ *   because gesture creates isTrusted=false events.
+ * - FIX: Fine-tune now uses findGapRegion (full-image search) instead of
+ *   detectGapFromStatic with wrong sliderX origin after piece moved.
+ * - Deleted unused PuzzleSolver methods: measurePuzzleEdges, measureEdgesAtX,
+ *   measureWhiteBorderScore, findGapByDiffMatch, measureEdgeStrength,
+ *   findDarkRegion, measureDarkness, findGapOffset, etc.
+ *
+ * v1.2.69 — Detect-first, direct-drag:
+ * - detectGapFromStatic() — 3-signal gap detection:
  *   a) Sobel gradient (X+Y) column analysis → gap boundary peaks
  *   b) Column brightness → darkest band = gap shadow
  *   c) White border peaks → vertical bright lines at gap edges
- *   d) Consensus of multiple methods for reliability
- * - Direct drag to detected position (no scanning, no return movement)
- * - Fine-tune with 3 rounds using 90% drift correction
+ * - Direct drag to detected position (no scanning)
  * - Falls back to findGapRegion + findGapByWhiteBorder if primary fails
  *
- * v1.2.68 — White border detection + overshoot fix:
- * - try-finally around main loop → overlay touch ALWAYS restored
+ * Slide strategy:
+ *   0. SHELL INPUT: sendevent press-hold-drag (isTrusted=true)
+ *   1+. DISPATCH GESTURE: dispatchGesture continuation chains (fallback)
  *
- * v1.2.66 — COMPLETE REWRITE of scan strategy:
- * - NEW: Edge-measurement slow scan — measure Canny edge count at each position
- *   When puzzle piece fills the gap, gap shadow/border edges DISAPPEAR
- *   → measurable valley in edge profile → find minimum = gap position
- * - TWO signals: puzzleEdges (global) + stripEdges (local at piece X), combined score
- * - Smoothing (moving average) to reduce noise, find clean valley
- * - ~20 positions per scan (15-20px steps) — slow but thorough
- * - Fine-tune with 2 verification rounds (70% conservative drift correction)
- * - Removed: diff+template matching approach (unreliable)
- *
- * v1.2.64 fixes:
- * - Gesture-based scan drag for non-rooted devices (doScanDragGesture)
- *   Uses dispatchGesture + willContinue continuation chains to scan entire track,
- *   find where puzzle piece covers the gap, then MOVE BACK to best position.
- * - Scan drag now works for ALL tiers (shell + gesture), not just shell tier 0
- * - Better status messages showing which scan mode is active
- *
- * v1.2.62 fixes:
- * - Drag duration reduced from ×10 to ×4 (was unnaturally slow, CAPTCHA may detect bot)
- * - Smart drag verify delays reduced (400/500ms instead of 600/800ms)
- * - Post-swipe verify delay reduced to 1800ms (was 3000ms)
- * - Sendevent middle speed factor 0.6 (was 0.9) for more natural fast-middle curve
- * - Drift threshold for "too far" increased handling (partial adjust instead of skip)
- * - Added 50px undershoot compensation for far targets to prevent overshoot
- * - Refresh wait reduced to 2500ms (was 3500ms)
- *
- * v1.2.45 fixes:
- *   - Shell timeout 5s→15s (prevents premature drag termination on far targets)
- *   - Slower drag speed (×10 multiplier, was ×6; 40 steps, was 25)
- *   - Smart drag used for ALL modes (blind+smart) when shell+OpenCV available
- *   - Post-refresh delay 2000ms→3500ms (wait for new puzzle to load)
- *   - More verify-adjust rounds (5, was 3) with longer delays
- *   - Smoother speed curve (no rapid middle phase)
- *
- * Slide strategy (4 tiers):
- *   0. SHELL INPUT: Hardware-level touch events (isTrusted=true).
- *      Priority: sh → su
- *      Three sub-strategies tried in order:
- *        a) sendevent: Individual touch events (DOWN→hold→MOVE with easing→UP)
- *           Most human-like: press-and-hold, ease-out curve, Y jitter
- *        b) input draganddrop: Built-in long press (~500ms) + linear drag
- *        c) input swipe: Direct swipe (no hold, last resort)
- *   1. ACCESSIBILITY SCROLL: performAction(ACTION_SCROLL_FORWARD/RIGHT)
- *   2. DISPATCH GESTURE: Direct slow swipe via dispatchGesture (fallback).
- *   3. TAP+SWIPE: Tap slider handle, delay, then swipe (fallback).
- *
- * Key insight (v1.2.36): dispatchGesture → isTrusted=false → CAPTCHA rejects.
- * v1.2.41: Shell input as primary method.
- * v1.2.43: Press-hold-drag via sendevent for realistic human behavior.
- * v1.2.44: Fix coordinate mapping for screen orientation/rotation.
- *   - Use WindowManager.getRealSize() instead of displayMetrics
- *     (displayMetrics in AccessibilityService can return stale orientation)
- *   - Detect orientation mismatch between recording and execution
- *   - Fix sendevent raw coordinate mapping for rotated displays
- *   - Extensive diagnostic logging for coordinate debugging
- *   CAPTCHA sliders need: touchDown → hold 300ms → slow drag → release.
- *   `input swipe` skips the hold phase. sendevent gives full control.
- *
- * Also hides overlay during CAPTCHA (FLAG_NOT_TOUCHABLE) to prevent
+ * Hides overlay during CAPTCHA (FLAG_NOT_TOUCHABLE) to prevent
  * FLAG_WINDOW_IS_PARTIALLY_OBSCURED on MotionEvents.
  */
 object PuzzleCaptchaAction {
@@ -394,8 +343,7 @@ object PuzzleCaptchaAction {
         val blindFixedOffsets = intArrayOf(200, 350, 500, 150, 450, 300, 550)
         var blindIndex = 0
         var consecutiveGestureFailures = 0
-        var functionalFailures = 0  // gesture "completed" but slider didn't move
-        var swipeTier = if (useShellSwipe) 0 else 1  // 0=shell, 1=slow-swipe, 2=tap+swipe, 3=press-hold-drag
+        var swipeTier = if (useShellSwipe) 0 else 1  // 0=shell, 1=gesture
 
         // ============================================================
         // === MAIN SOLVING LOOP ===
@@ -415,11 +363,7 @@ object PuzzleCaptchaAction {
             val useScanDrag = opencvOk && trackWidth > 100
             val useScanShell = useScanDrag && swipeTier == 0
             val useScanGesture = useScanDrag && swipeTier >= 1
-            val swipeY = sliderY + when {
-                functionalFailures == 1 -> -4f
-                functionalFailures >= 2 -> 4f
-                else -> 0f
-            }
+            val swipeY = sliderY
 
             var targetX: Float = sliderX + trackWidth * 0.5f  // default for non-scan paths
             var dragMode: String = "scan"
@@ -445,92 +389,26 @@ object PuzzleCaptchaAction {
                 ) { status(it) }
                 dragMode = "scan-gesture"
             } else {
-                // === LEGACY: Determine target X for non-scan tiers ===
-                if (opencvOk) {
-                    val screenshot = PuzzleScreenCapture.captureScreen()
-                    if (screenshot != null) {
-                        val gap = PuzzleSolver.findGapRegion(screenshot, sliderY.toInt())
-                        screenshot.recycle()
-                        if (gap != null) {
-                            val gapCenterX = (gap.left + gap.right) / 2f
-                            if (trackWidth > 50) {
-                                val dragDistance = gapCenterX - sliderX
-                                targetX = sliderX + dragDistance.coerceIn(20f, trackWidth - 10f)
-                                dragMode = if (hasTrack) "smart-track" else "smart-auto"
-                                val pct = ((dragDistance / trackWidth) * 100).toInt()
-                                status("ครั้งที่ $attempt: พบช่องว่าง track=$pct%")
-                            } else {
-                                targetX = gapCenterX
-                                dragMode = "smart"
-                            }
-                        } else {
-                            val result = getBlindTarget(
-                                hasTrack, trackWidth, sliderX, trackEndX, screenW,
-                                blindPercentages, blindFixedOffsets, blindIndex
-                            )
-                            targetX = result.first
-                            dragMode = result.second
-                            blindIndex++
-                        }
-                    } else {
-                        val result = getBlindTarget(
-                            hasTrack, trackWidth, sliderX, trackEndX, screenW,
-                            blindPercentages, blindFixedOffsets, blindIndex
-                        )
-                        targetX = result.first
-                        dragMode = result.second
-                        blindIndex++
-                    }
-                } else {
-                    val result = getBlindTarget(
-                        hasTrack, trackWidth, sliderX, trackEndX, screenW,
-                        blindPercentages, blindFixedOffsets, blindIndex
-                    )
-                    targetX = result.first
-                    dragMode = result.second
-                    blindIndex++
-                }
-
+                // === FALLBACK: No OpenCV or track too short — blind drag ===
+                val result = getBlindTarget(
+                    hasTrack, trackWidth, sliderX, trackEndX, screenW,
+                    blindPercentages, blindFixedOffsets, blindIndex
+                )
+                targetX = result.first
+                dragMode = result.second
+                blindIndex++
                 dragDist = targetX - sliderX
                 if (dragDist < 40) {
-                    if (dragMode.startsWith("smart") && trackWidth > 50) {
-                        val result = getBlindTarget(
-                            hasTrack, trackWidth, sliderX, trackEndX, screenW,
-                            blindPercentages, blindFixedOffsets, blindIndex
-                        )
-                        targetX = result.first
-                        dragMode = result.second + "(fallback)"
-                        blindIndex++
-                        dragDist = targetX - sliderX
-                        if (dragDist < 40) {
-                            status("⚠ ระยะน้อยเกินไป (${"%.0f".format(dragDist)}px)")
-                            continue
-                        }
-                    } else {
-                        status("⚠ ระยะน้อยเกินไป (${"%.0f".format(dragDist)}px)")
-                        continue
-                    }
+                    status("⚠ ระยะน้อยเกินไป (${"%.0f".format(dragDist)}px)")
+                    continue
                 }
-
-                // === Execute non-scan swipe ===
-                val swipeModeName = when (swipeTier) {
-                    0 -> "shell"; 1 -> "slow-swipe"; 2 -> "tap+swipe"; else -> "press-hold-drag"
-                }
-                status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode+$swipeModeName, ${dragDist.toInt()}px)...")
 
                 val swipeDuration = (dragDist * 4f).toLong().coerceIn(800, 3500)
-                val useSmartDrag = swipeTier == 0 && opencvOk
-                swipeResult = when {
-                    useSmartDrag -> doSmartDragWithVerify(
-                        sliderX, swipeY, targetX,
-                        screenW, screenH, rotation,
-                        "ครั้งที่ $attempt:"
-                    ) { status(it) }
-                    swipeTier == 0 -> doShellDrag(sliderX, swipeY, targetX, swipeY, swipeDuration, screenW, screenH, rotation)
-                    swipeTier == 1 -> doSlowSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
-                    swipeTier == 2 -> doTapThenSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
-                    else -> doPressHoldDrag(service, sliderX, swipeY, targetX, swipeY,
-                        (dragDist * 7f).toLong().coerceIn(1500, 5000))
+                status("ครั้งที่ $attempt: เลื่อนสไลด์ ($dragMode, ${dragDist.toInt()}px)...")
+                swipeResult = if (swipeTier == 0) {
+                    doShellDrag(sliderX, swipeY, targetX, swipeY, swipeDuration, screenW, screenH, rotation)
+                } else {
+                    doSlowSwipe(service, sliderX, swipeY, targetX, swipeY, dragDist)
                 }
             }
 
@@ -544,8 +422,30 @@ object PuzzleCaptchaAction {
                 "result=$swipeResult, mode=$dragMode, " +
                     "start=(${sliderX.toInt()},${swipeY.toInt()}), " +
                     "dist=${"%.0f".format(dragDist)}, target=${targetX.toInt()}, " +
-                    "trackW=${trackWidth.toInt()}, tier=$swipeTier, funcFails=$functionalFailures"
+                    "trackW=${trackWidth.toInt()}, tier=$swipeTier"
             )
+
+            // === Handle detection failure: refresh and retry, DON'T escalate tier ===
+            if (swipeResult == "gap_not_detected" || swipeResult == "gap_too_close") {
+                status("⚠ หาช่องว่างไม่ได้ — กดรีเฟรชแล้วลองใหม่")
+                DiagnosticReporter.logCaptcha(
+                    "Detection failed",
+                    "result=$swipeResult, attempt=$attempt, tier=$swipeTier"
+                )
+                // Refresh to get a new puzzle image (detection may work on different puzzle)
+                if (hasRefresh) {
+                    if (useShellSwipe) doShellTap(refreshX, refreshY)
+                    else {
+                        val tapDone = CompletableDeferred<Unit>()
+                        service.tapAtCoordinates(refreshX, refreshY) { tapDone.complete(Unit) }
+                        withTimeoutOrNull(3000) { tapDone.await() }
+                    }
+                    delay(2500)
+                } else {
+                    delay(1500)
+                }
+                continue
+            }
 
             if (swipeResult != "completed") {
                 consecutiveGestureFailures++
@@ -562,8 +462,7 @@ object PuzzleCaptchaAction {
                 if (consecutiveGestureFailures >= escalateThreshold && swipeTier < 3) {
                     swipeTier++
                     consecutiveGestureFailures = 0
-                    functionalFailures = 0
-                    status("🔄 เปลี่ยนเป็นโหมด ${when(swipeTier) { 0 -> "shell"; 1 -> "slow-swipe"; 2 -> "tap+swipe"; else -> "press-hold-drag" }}...")
+                    status("🔄 เปลี่ยนเป็นโหมด ${when(swipeTier) { 0 -> "shell"; 1 -> "gesture"; else -> "gesture-tier$swipeTier" }}...")
                     doWarmupTap(service, screenW, screenH)
                     delay(300)
                     continue
@@ -644,34 +543,6 @@ object PuzzleCaptchaAction {
                             "Not solved",
                             "attempt=$attempt, remainGapX=$remainGapX, target=${targetX.toInt()}, drift=$sliderDrift"
                         )
-
-                        // Note: correction is now handled BEFORE release in doSmartDragWithVerify()
-                        // (hold-verify-adjust-release flow). No post-release correction needed.
-
-                        // Functional failure detection: only for dispatchGesture tiers (tier >= 1).
-                        // For shell tier (tier 0), gapDelta is always near 0 because
-                        // targetX ≈ gapCenterX (gap is fixed in background). Escalating away
-                        // from the shell tier based on this is wrong — shell already gives
-                        // isTrusted=true events; the issue is gap position accuracy, not the
-                        // swipe method.
-                        if (swipeTier >= 1) {
-                            val gapDelta = kotlin.math.abs(remainGapX - targetX).toInt()
-                            if (gapDelta < 30) {
-                                functionalFailures++
-                                DiagnosticReporter.logCaptcha(
-                                    "Functional failure",
-                                    "tier=$swipeTier, funcFails=$functionalFailures, gapDelta=$gapDelta"
-                                )
-                                // Escalate tier if gesture keeps "completing" but slider doesn't move
-                                if (functionalFailures >= 2 && swipeTier < 3) {
-                                    swipeTier++
-                                    functionalFailures = 0
-                                    status("🔄 สไลด์ไม่ขยับ — เปลี่ยนโหมดเป็น ${when(swipeTier) { 1 -> "slow-swipe"; 2 -> "tap+swipe"; else -> "press-hold-drag" }}")
-                                    doWarmupTap(service, screenW, screenH)
-                                    delay(300)
-                                }
-                            }
-                        }
                     }
                 }
             } else {
@@ -1460,179 +1331,7 @@ object PuzzleCaptchaAction {
     }
 
     /**
-     * Smart drag with hold-verify-adjust-release flow.
-     *
-     * 1. Press and drag to target position (finger stays down)
-     * 2. Take screenshot while holding → check if gap is covered
-     * 3. If gap still visible → micro-adjust toward gap center
-     * 4. Repeat verification up to maxAdjustments times
-     * 5. Release finger
-     *
-     * This is much more accurate than drag-release-retry because we
-     * fine-tune the position BEFORE releasing, and CAPTCHA only validates on release.
-     */
-    private suspend fun doSmartDragWithVerify(
-        sliderX: Float, sliderY: Float,
-        targetX: Float,
-        screenW: Int, screenH: Int,
-        rotation: Int,
-        statusPrefix: String,
-        status: (String) -> Unit
-    ): String {
-        val device = detectTouchDevice() ?: return "no_device"
-
-        // Compute native dimensions
-        val nativeW: Int
-        val nativeH: Int
-        if (rotation == Surface.ROTATION_90 || rotation == Surface.ROTATION_270) {
-            nativeW = screenH; nativeH = screenW
-        } else {
-            nativeW = screenW; nativeH = screenH
-        }
-
-        val dragState = ActiveDragState(
-            device.devicePath, device.xMax, device.yMax,
-            nativeW, nativeH, rotation, 0, 0
-        )
-
-        val dragDist = targetX - sliderX
-        val holdMs = 350
-        val steps = 30
-        // v1.2.62: ×4 for natural human speed (was ×10 — unnaturally slow)
-        val dragMs = (dragDist * 4f).toLong().toInt().coerceIn(600, 3000)
-        // v1.2.62: Undershoot far targets by 20px to prevent overshoot, then adjust in verify loop
-        val undershootPx = if (dragDist > 200) 20f else 0f
-        val adjustedTargetX = targetX - undershootPx
-
-        // Map coordinates (use adjustedTargetX for initial drag, then verify loop corrects)
-        val (rawX1, rawY1) = dragState.logicalToRaw(sliderX, sliderY, screenW, screenH)
-        val (rawX2, rawY2) = dragState.logicalToRaw(adjustedTargetX, sliderY, screenW, screenH)
-        dragState.lastRawX = rawX2
-        dragState.lastRawY = rawY2
-
-        Log.d(TAG, "SmartDrag: start=(${sliderX.toInt()},${sliderY.toInt()}) " +
-            "target=${targetX.toInt()} dist=${"%.0f".format(dragDist)}")
-
-        // Phase 1: Drag to target WITHOUT releasing
-        val dragScript = buildSendeventDragNoRelease(
-            device.devicePath, rawX1, rawY1, rawX2, rawY2,
-            holdMs, dragMs, steps
-        )
-        val dragResult = execShellAny("sh -c '$dragScript'")
-        if (dragResult != "ok") {
-            // Fallback: release just in case, then return failure
-            execShellAny("sh -c '${buildSendeventRelease(device.devicePath)}'")
-            return "drag_hold_$dragResult"
-        }
-
-        // Phase 2: Verify and adjust while holding
-        // v1.2.62: 4 rounds max, faster verify (350/450ms — was 600/800)
-        val maxAdjustments = 4
-        var adjustments = 0
-        var currentLogicalX = adjustedTargetX
-        var verified = false
-
-        for (adj in 1..maxAdjustments) {
-            // Wait for UI to render piece at current position
-            // v1.2.62: Faster verification — 350ms first, 450ms subsequent
-            delay(if (adj == 1) 350 else 450)
-
-            val screenshot = PuzzleScreenCapture.captureScreen()
-            if (screenshot == null) {
-                Log.w(TAG, "SmartDrag: screenshot failed during hold")
-                break
-            }
-
-            val gap = PuzzleSolver.findGapRegion(screenshot, sliderY.toInt())
-            screenshot.recycle()
-
-            if (gap == null) {
-                // Gap is gone = piece is covering it perfectly!
-                Log.d(TAG, "SmartDrag: gap covered after adj=$adjustments — releasing")
-                status("$statusPrefix ตรงเป้า! ปล่อย...")
-                verified = true
-                break
-            }
-
-            // Gap is still visible → calculate adjustment needed
-            val gapCenterX = (gap.left + gap.right) / 2f
-            val drift = gapCenterX - currentLogicalX
-            Log.d(TAG, "SmartDrag: adj=$adj gap=${gapCenterX.toInt()} current=${currentLogicalX.toInt()} drift=${"%.0f".format(drift)}")
-
-            if (kotlin.math.abs(drift) < 10) {
-                // Close enough — release
-                Log.d(TAG, "SmartDrag: drift < 10px, close enough")
-                status("$statusPrefix เกือบตรง (${drift.toInt()}px) ปล่อย...")
-                verified = true
-                break
-            }
-
-            if (kotlin.math.abs(drift) > 400) {
-                // Too far off — something is wrong, don't adjust
-                Log.w(TAG, "SmartDrag: drift too large (${drift.toInt()}px), skipping adjust")
-                break
-            }
-            // v1.2.62: For large drift (>150px), only move 80% to avoid overshoot
-            val adjustFactor = if (kotlin.math.abs(drift) > 150) 0.8f else 1.0f
-
-            // Micro-adjust toward gap center
-            val newTargetX = currentLogicalX + drift * adjustFactor
-            val (newRawX, newRawY) = dragState.logicalToRaw(newTargetX, sliderY, screenW, screenH)
-
-            status("$statusPrefix ปรับ ${drift.toInt()}px...")
-            val moveScript = buildSendeventMicroMove(
-                device.devicePath,
-                dragState.lastRawX, dragState.lastRawY,
-                newRawX, newRawY,
-                steps = 10,
-                durationMs = (kotlin.math.abs(drift) * 5f).toInt().coerceIn(300, 1500)
-            )
-            execShellAny("sh -c '$moveScript'")
-
-            dragState.lastRawX = newRawX
-            dragState.lastRawY = newRawY
-            currentLogicalX = newTargetX
-            adjustments++
-        }
-
-        // Phase 3: Brief pause then release
-        // v1.2.62: 250ms (was 500ms — too slow)
-        delay(250)
-        val releaseScript = buildSendeventRelease(device.devicePath)
-        execShellAny("sh -c '$releaseScript'")
-
-        val resultMsg = if (verified) "completed(verified,adj=$adjustments)" else "completed(unverified,adj=$adjustments)"
-        Log.d(TAG, "SmartDrag: $resultMsg")
-        DiagnosticReporter.logCaptcha("SmartDrag", resultMsg)
-        return "completed"
-    }
-
-    // ============================================================
-    // === SCAN DRAG: Press → Scan entire track → Find best → Release ===
-    // ============================================================
-
-    /**
-     * Scan drag strategy: instead of detecting the gap first and dragging to it,
-     * we press-hold and scan the ENTIRE track, taking screenshots at each position
-     * to find where the puzzle piece best covers the gap. Then move back to that
-     * position and release.
-     *
-     * v1.2.62: New approach — more reliable than pre-detecting gap position.
-     *
-     * Flow:
-     * 1. Press at slider start, hold 350ms
-     * 2. Scan 8 positions (10%-95% of track)
-     *    - At each: micro-move → wait → screenshot → findGapRegion
-     *    - Score = gap area (smaller = piece covers gap better)
-     *    - Score 0 = gap invisible = piece covering it perfectly (early exit!)
-     * 3. Move back to best position
-     * 4. Fine-tune with 1 verify round
-     * 5. Release
-     *
-     * Returns "completed" or error string.
-     */
-    /**
-     * Direct drag — v1.2.69 complete rewrite.
+     * Direct drag — v1.2.70 detect-first-then-drag.
      *
      * NEW STRATEGY: Detect gap from STATIC screenshot BEFORE touching slider,
      * then drag DIRECTLY to the detected position. No more slow scanning.
@@ -1763,26 +1462,21 @@ object PuzzleCaptchaAction {
             dragState.lastRawY = targetRawY
             delay(300)
 
-            // === Phase 4: Fine-tune with verification (3 rounds) ===
+            // === Phase 4: Fine-tune with verification (2 rounds) ===
+            // NOTE: During fine-tune, piece is at ~gapX position.
+            // Use findGapRegion (searches full image) instead of detectGapFromStatic
+            // (which uses sliderX as search origin — wrong after piece moved).
             var currentX: Float = gapX
-            for (round in 1..3) {
+            for (round in 1..2) {
                 coroutineContext.ensureActive()
                 delay(300)
                 val verifyShot = PuzzleScreenCapture.captureScreen()
                 if (verifyShot != null) {
-                    // Use detectGapFromStatic for precise position
-                    val verifyGap = PuzzleSolver.detectGapFromStatic(
-                        verifyShot, sliderY.toInt(), sliderX
-                    )
-                    // Also try findGapRegion
                     val gapRegion = PuzzleSolver.findGapRegion(verifyShot, sliderY.toInt())
                     verifyShot.recycle()
 
-                    val gapCenterX = if (verifyGap != null) verifyGap.toFloat()
-                        else if (gapRegion != null) (gapRegion.left + gapRegion.right) / 2f
-                        else null
-
-                    if (gapCenterX != null) {
+                    if (gapRegion != null) {
+                        val gapCenterX = (gapRegion.left + gapRegion.right) / 2f
                         val drift = gapCenterX - currentX
                         Log.d(TAG, "DirectDrag fine-tune round=$round drift=${drift.toInt()}")
 
@@ -1910,23 +1604,18 @@ object PuzzleCaptchaAction {
         }
         delay(300)
 
-        // === Phase 4: Fine-tune (3 rounds) ===
-        for (round in 1..3) {
+        // === Phase 4: Fine-tune (2 rounds) ===
+        // Use findGapRegion (full image search) since piece has moved from sliderX
+        for (round in 1..2) {
             coroutineContext.ensureActive()
             delay(300)
             val verifyShot = PuzzleScreenCapture.captureScreen()
             if (verifyShot != null) {
-                val verifyGap = PuzzleSolver.detectGapFromStatic(
-                    verifyShot, sliderY.toInt(), sliderX
-                )
                 val gapRegion = PuzzleSolver.findGapRegion(verifyShot, sliderY.toInt())
                 verifyShot.recycle()
 
-                val gapCenterX = if (verifyGap != null) verifyGap.toFloat()
-                    else if (gapRegion != null) (gapRegion.left + gapRegion.right) / 2f
-                    else null
-
-                if (gapCenterX != null) {
+                if (gapRegion != null) {
+                    val gapCenterX = (gapRegion.left + gapRegion.right) / 2f
                     val drift = gapCenterX - currentX
                     if (kotlin.math.abs(drift) in 5f..200f) {
                         val adjustX = currentX + drift * 0.90f
