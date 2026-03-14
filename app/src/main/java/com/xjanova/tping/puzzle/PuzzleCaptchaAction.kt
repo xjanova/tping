@@ -25,14 +25,22 @@ import kotlin.coroutines.coroutineContext
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.72
+ * Puzzle CAPTCHA solver — v1.2.73
+ *
+ * v1.2.73 — Smarter detection (silhouette + local contrast):
+ * - FIX: Template matching now uses piece SILHOUETTE edges (from diff binary mask)
+ *   instead of image crop edges. Silhouette has clean outline without texture noise.
+ * - NEW: Local contrast column scan — finds band that is darker than its LEFT and
+ *   RIGHT neighbors (not globally darkest). Handles varied image backgrounds.
+ * - Dual-method consensus: if silhouette match and local contrast agree → high confidence.
+ * - Explore distance increased to 80-120px to ensure diff blobs don't overlap.
+ * - detectGapFromStatic also improved: dark band now uses local contrast.
  *
  * v1.2.72 — Diff-based gap detection (Before/After + Edge Template Matching):
- * - NEW: detectGapByDiff() — moves piece 60px, diffs before/after screenshots,
- *   extracts piece shape, uses Canny edge template matching to find gap.
- *   Much more accurate than static detection (darkness/edges/white border).
- * - Rewrite doScanDrag flow: press → explore 60px → screenshot → diff detect → move to gap
- * - Static detection (detectGapFromStatic) kept as fallback with -10px correction
+ * - detectGapByDiff() — moves piece, diffs before/after screenshots,
+ *   extracts piece shape, uses template matching to find gap.
+ * - doScanDrag flow: press → explore → screenshot → diff detect → move to gap
+ * - Static detection kept as fallback with -10px correction
  * - Conservative fine-tune: 1 round, 40% drift, uses gap left edge as reference
  *
  * v1.2.71 — Code cleanup + bug fixes:
@@ -1415,8 +1423,9 @@ object PuzzleCaptchaAction {
             }
             delay(350)
 
-            // === Phase 3: EXPLORATORY move — drag 60px right to create diff ===
-            val exploreDistance = (trackWidth * 0.10f).coerceIn(40f, 80f)
+            // === Phase 3: EXPLORATORY move — drag ~100px right to create diff ===
+            // Must be larger than piece width (~60-80px) so diff blobs don't overlap
+            val exploreDistance = (trackWidth * 0.15f).coerceIn(80f, 120f)
             val exploreX = sliderX + exploreDistance
             val (exploreRawX, exploreRawY) = dragState.logicalToRaw(
                 exploreX, sliderY, screenW, screenH
@@ -1614,8 +1623,8 @@ object PuzzleCaptchaAction {
         }
         var currentX = sliderX + 2f
 
-        // === Phase 3: Exploratory move (60px right) ===
-        val exploreDistance = (trackWidth * 0.10f).coerceIn(40f, 80f)
+        // === Phase 3: Exploratory move (~100px right) ===
+        val exploreDistance = (trackWidth * 0.15f).coerceIn(80f, 120f)
         val exploreX = sliderX + exploreDistance
         val exploreDuration = 500L
 

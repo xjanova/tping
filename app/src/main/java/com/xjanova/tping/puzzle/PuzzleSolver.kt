@@ -201,22 +201,27 @@ object PuzzleSolver {
             gradY.release(); gradX.release(); blurred.release(); region.release()
 
             // === Combine signals to find gap ===
-            // Method A: Find darkest band (40-80px wide)
-            // Narrower max window avoids overshooting (gap is typically 50-70px)
+            // Method A: Find band with highest LOCAL CONTRAST (darker than neighbors)
+            // NOT globally darkest — handles images with naturally dark regions
             var bestDarkX: Int? = null
-            var bestDarkScore = Double.MAX_VALUE
+            var bestLocalContrast = 0.0
             for (w in 40..80 step 10) {
-                if (w > regionW) break
-                for (x in 0..(regionW - w)) {
-                    val avgBright = brightColSum.slice(x until x + w).average()
-                    if (avgBright < bestDarkScore) {
-                        bestDarkScore = avgBright
+                if (w * 3 > regionW) break  // need room for left+center+right windows
+                for (x in w..(regionW - w * 2)) {
+                    val windowAvg = brightColSum.slice(x until x + w).average()
+                    val leftAvg = brightColSum.slice((x - w) until x).average()
+                    val rightEnd = (x + w * 2).coerceAtMost(regionW)
+                    val rightAvg = brightColSum.slice((x + w) until rightEnd).average()
+                    // Local contrast: how much darker than both neighbors
+                    val localContrast = ((leftAvg + rightAvg) / 2.0) - windowAvg
+                    if (localContrast > bestLocalContrast) {
+                        bestLocalContrast = localContrast
                         bestDarkX = x + w / 2
                     }
                 }
             }
-            val darkThreshold = globalBright * 0.92
-            val darkGapX = if (bestDarkScore < darkThreshold && bestDarkX != null)
+            // Require at least 3 brightness levels of local contrast
+            val darkGapX = if (bestLocalContrast > 3.0 && bestDarkX != null)
                 bestDarkX + searchLeft else null
 
             // Method B: Find white border peak pairs (gap has LEFT and RIGHT white borders)
@@ -279,8 +284,8 @@ object PuzzleSolver {
             if (wbGapX != null) candidates.add(wbGapX to "whiteBorder")
             if (gradGapX != null) candidates.add(gradGapX to "gradient")
 
-            Log.d(TAG, "detectGapFromStatic: dark=$darkGapX(score=${"%.1f".format(bestDarkScore)}/" +
-                "${"%.1f".format(darkThreshold)}), wb=$wbGapX(peaks=${wbPeaks.size}), " +
+            Log.d(TAG, "detectGapFromStatic: dark=$darkGapX(localContrast=${"%.1f".format(bestLocalContrast)}), " +
+                "wb=$wbGapX(peaks=${wbPeaks.size}), " +
                 "grad=$gradGapX(peaks=${gradPeaks.size}), candidates=${candidates.size}")
 
             if (candidates.isEmpty()) {
@@ -995,27 +1000,28 @@ object PuzzleSolver {
     }
 
     // =====================================================================
-    // v1.2.72 PRIMARY: Diff-based gap detection (Before/After + Template Match)
+    // v1.2.73 PRIMARY: Diff-based detection + dual methods
+    // (A) Silhouette edge template matching
+    // (B) Local contrast column scan with known piece width
     // =====================================================================
 
     /**
-     * Detect gap by comparing screenshots BEFORE and AFTER moving the piece.
+     * Detect gap by comparing BEFORE/AFTER screenshots.
      *
-     * 1. Compute |after - before| → diff mask shows where piece moved
-     * 2. Extract piece shape from the diff (blob near new piece position)
-     * 3. Convert piece to Canny edges → piece template
-     * 4. Convert puzzle area (before image) to Canny edges
-     * 5. Template-match piece edges against puzzle edges → best match = gap
+     * TWO detection methods, combined by consensus:
      *
-     * This is the most reliable method because it uses the ACTUAL piece shape
-     * rather than guessing from darkness/edges.
+     * Method A — Silhouette template matching:
+     *   1. Diff → binary mask → piece SILHOUETTE (clean outline, no texture noise)
+     *   2. Canny edges of silhouette → template
+     *   3. Match template against Canny edges of puzzle area
      *
-     * @param before Screenshot taken BEFORE moving the piece
-     * @param after Screenshot taken AFTER moving the piece right by [moveDistance]
-     * @param sliderY Y coordinate of slider
-     * @param sliderX Original X of slider (piece starting position)
-     * @param moveDistance How far the piece was moved (in pixels)
-     * @return Gap center X in screen coordinates, or null if detection failed
+     * Method B — Local contrast column scan (uses piece width from diff):
+     *   1. Precompute per-column mean brightness in BEFORE image
+     *   2. For each position, compare window of pieceWidth to LEFT and RIGHT neighbors
+     *   3. Position with maximum local contrast (darker than neighbors) = gap
+     *
+     * If both methods agree (within 40px), use their average.
+     * Otherwise, prefer whichever has higher confidence.
      */
     fun detectGapByDiff(
         before: Bitmap, after: Bitmap,
@@ -1042,17 +1048,18 @@ object PuzzleSolver {
             val regionBefore = grayBefore.submat(top, bottom, 0, w)
             val regionAfter = grayAfter.submat(top, bottom, 0, w)
 
-            // === Step 1: Compute diff ===
+            // === Step 1: Compute diff with stronger noise filtering ===
             val diff = Mat()
             Core.absdiff(regionBefore, regionAfter, diff)
 
             val blurDiff = Mat()
-            Imgproc.GaussianBlur(diff, blurDiff, Size(5.0, 5.0), 0.0)
+            Imgproc.GaussianBlur(diff, blurDiff, Size(7.0, 7.0), 0.0)
 
             val binaryDiff = Mat()
-            Imgproc.threshold(blurDiff, binaryDiff, 20.0, 255.0, Imgproc.THRESH_BINARY)
+            // Higher threshold (30) to filter animation/watermark noise
+            Imgproc.threshold(blurDiff, binaryDiff, 30.0, 255.0, Imgproc.THRESH_BINARY)
 
-            val closeK = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(7.0, 7.0))
+            val closeK = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(9.0, 9.0))
             Imgproc.morphologyEx(binaryDiff, binaryDiff, Imgproc.MORPH_CLOSE, closeK)
             closeK.release()
 
@@ -1061,18 +1068,17 @@ object PuzzleSolver {
             saveMat(binaryDiff, "diff_binary")
 
             // === Step 2: Find piece contour in diff ===
-            // The diff has 2 blobs: one at old position (piece left), one at new position (piece arrived)
-            // We want the one near (sliderX + moveDistance)
             val contours = mutableListOf<MatOfPoint>()
             val hierarchy = Mat()
-            val diffForContours = binaryDiff.clone()
+            val diffClone = binaryDiff.clone()
             Imgproc.findContours(
-                diffForContours, contours, hierarchy,
+                diffClone, contours, hierarchy,
                 Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
             )
-            diffForContours.release()
+            diffClone.release()
             hierarchy.release()
 
+            // Log ALL contours for debugging
             val expectedNewX = sliderX + moveDistance
             var pieceRect: org.opencv.core.Rect? = null
             var bestDist = Float.MAX_VALUE
@@ -1082,9 +1088,11 @@ object PuzzleSolver {
                 val area = Imgproc.contourArea(contour)
                 contour.release()
 
-                // Filter: piece should be 25-200px in each dimension, area > 800
-                if (area < 800 || rect.width < 25 || rect.height < 25) continue
-                if (rect.width > 200 || rect.height > 200) continue
+                Log.d(TAG, "detectGapByDiff: contour (${rect.x},${rect.y}) " +
+                    "${rect.width}x${rect.height} area=${"%.0f".format(area)}")
+
+                if (area < 500 || rect.width < 20 || rect.height < 20) continue
+                if (rect.width > 250 || rect.height > 250) continue
 
                 val cx = rect.x + rect.width / 2f
                 val d = kotlin.math.abs(cx - expectedNewX)
@@ -1097,89 +1105,193 @@ object PuzzleSolver {
             if (pieceRect == null) {
                 Log.w(TAG, "detectGapByDiff: no piece contour in diff " +
                     "(${contours.size} contours, expectedX=${expectedNewX.toInt()})")
+                // Still try local contrast with estimated piece width
+                val estimatedPieceW = 60
+                val contrastResult = localContrastScan(regionBefore, w, estimatedPieceW, sliderX)
                 diff.release(); blurDiff.release(); binaryDiff.release()
                 regionBefore.release(); regionAfter.release()
-                return null
+                return contrastResult
             }
 
-            Log.d(TAG, "detectGapByDiff: piece rect " +
-                "(${pieceRect.x},${pieceRect.y}) ${pieceRect.width}x${pieceRect.height}")
+            val pieceW = pieceRect.width
+            val pieceH = pieceRect.height
+            Log.d(TAG, "detectGapByDiff: piece ${pieceW}x${pieceH} " +
+                "at (${pieceRect.x},${pieceRect.y}), dist from expected=${bestDist.toInt()}")
 
-            // === Step 3: Extract piece edges from AFTER image ===
+            // === Step 3: METHOD A — Silhouette edge template matching ===
             val pT = pieceRect.y.coerceAtLeast(0)
-            val pB = (pieceRect.y + pieceRect.height).coerceAtMost(regionAfter.rows())
+            val pB = (pieceRect.y + pieceH).coerceAtMost(binaryDiff.rows())
             val pL = pieceRect.x.coerceAtLeast(0)
-            val pR = (pieceRect.x + pieceRect.width).coerceAtMost(regionAfter.cols())
-            if (pR - pL < 20 || pB - pT < 20) {
-                diff.release(); blurDiff.release(); binaryDiff.release()
-                regionBefore.release(); regionAfter.release()
-                return null
+            val pR = (pieceRect.x + pieceW).coerceAtMost(binaryDiff.cols())
+
+            var templateGapX: Int? = null
+            var templateConfidence = 0.0
+
+            if (pR - pL >= 20 && pB - pT >= 20) {
+                // KEY FIX: Use BINARY MASK for edges — gives clean piece OUTLINE
+                // without internal texture noise that confuses template matching
+                val pieceMask = binaryDiff.submat(pT, pB, pL, pR)
+                val silhouetteEdges = Mat()
+                Imgproc.Canny(pieceMask, silhouetteEdges, 50.0, 150.0)
+
+                // Also save the image crop for debugging comparison
+                val pieceCrop = regionAfter.submat(pT, pB, pL, pR)
+                saveMat(pieceCrop, "piece_crop")
+                saveMat(pieceMask, "piece_silhouette")
+                saveMat(silhouetteEdges, "piece_silhouette_edges")
+
+                // Search from right of piece original position
+                val searchLeft = (sliderX + pieceW * 0.5f).toInt().coerceIn(0, w - 1)
+                if (w - searchLeft > pieceW + 10) {
+                    val searchArea = regionBefore.submat(
+                        0, regionBefore.rows(), searchLeft, w
+                    )
+                    val searchEdges = Mat()
+                    Imgproc.Canny(searchArea, searchEdges, 50.0, 150.0)
+                    saveMat(searchEdges, "search_edges")
+
+                    if (searchEdges.cols() >= silhouetteEdges.cols() &&
+                        searchEdges.rows() >= silhouetteEdges.rows()) {
+                        val matchResult = Mat()
+                        Imgproc.matchTemplate(
+                            searchEdges, silhouetteEdges, matchResult,
+                            Imgproc.TM_CCOEFF_NORMED
+                        )
+                        val loc = Core.minMaxLoc(matchResult)
+                        templateGapX = loc.maxLoc.x.toInt() + pieceW / 2 + searchLeft
+                        templateConfidence = loc.maxVal
+                        matchResult.release()
+
+                        Log.d(TAG, "detectGapByDiff: [A] template x=$templateGapX " +
+                            "confidence=${"%.3f".format(templateConfidence)}")
+                    }
+                    searchArea.release(); searchEdges.release()
+                }
+                silhouetteEdges.release()
+                // pieceMask and pieceCrop are submats — don't release
             }
 
-            val piece = regionAfter.submat(pT, pB, pL, pR)
-            val pieceEdges = Mat()
-            Imgproc.Canny(piece, pieceEdges, 50.0, 150.0)
+            // === Step 4: METHOD B — Local contrast column scan ===
+            val contrastGapX = localContrastScan(regionBefore, w, pieceW, sliderX)
 
-            saveMat(piece, "piece_crop")
-            saveMat(pieceEdges, "piece_edges")
-
-            // === Step 4: Search for gap in BEFORE image ===
-            // Search area: right of piece start + piece width (gap is never under the piece)
-            val searchLeft = (sliderX.toInt() + pieceRect.width).coerceIn(0, w - 1)
-            val searchRight = w
-            if (searchRight - searchLeft < pieceRect.width + 10) {
-                Log.w(TAG, "detectGapByDiff: search area too narrow")
-                piece.release(); pieceEdges.release()
-                diff.release(); blurDiff.release(); binaryDiff.release()
-                regionBefore.release(); regionAfter.release()
-                return null
-            }
-
-            val searchArea = regionBefore.submat(0, regionBefore.rows(), searchLeft, searchRight)
-            val searchEdges = Mat()
-            Imgproc.Canny(searchArea, searchEdges, 50.0, 150.0)
-
-            saveMat(searchEdges, "search_edges")
-
-            // === Step 5: Template match ===
-            if (searchEdges.cols() < pieceEdges.cols() || searchEdges.rows() < pieceEdges.rows()) {
-                Log.w(TAG, "detectGapByDiff: template larger than search area")
-                piece.release(); pieceEdges.release()
-                searchArea.release(); searchEdges.release()
-                diff.release(); blurDiff.release(); binaryDiff.release()
-                regionBefore.release(); regionAfter.release()
-                return null
-            }
-
-            val matchResult = Mat()
-            Imgproc.matchTemplate(
-                searchEdges, pieceEdges, matchResult, Imgproc.TM_CCOEFF_NORMED
-            )
-
-            val loc = Core.minMaxLoc(matchResult)
-            val gapX = loc.maxLoc.x.toInt() + pieceRect.width / 2 + searchLeft
-            val confidence = loc.maxVal
-
-            Log.d(TAG, "detectGapByDiff: match x=$gapX confidence=${"%.3f".format(confidence)}")
-
-            // Cleanup
-            piece.release(); pieceEdges.release()
-            searchArea.release(); searchEdges.release(); matchResult.release()
+            // Cleanup intermediate mats
             diff.release(); blurDiff.release(); binaryDiff.release()
             regionBefore.release(); regionAfter.release()
 
-            if (confidence < 0.10) {
-                Log.w(TAG, "detectGapByDiff: confidence too low (${"%.3f".format(confidence)})")
-                return null
+            // === Step 5: Combine results ===
+            Log.d(TAG, "detectGapByDiff: [A] template=$templateGapX " +
+                "(conf=${"%.3f".format(templateConfidence)}), " +
+                "[B] contrast=$contrastGapX")
+
+            // Both methods have results — check consensus
+            if (templateGapX != null && contrastGapX != null) {
+                if (kotlin.math.abs(templateGapX - contrastGapX) < 40) {
+                    val consensus = (templateGapX + contrastGapX) / 2
+                    Log.d(TAG, "detectGapByDiff: CONSENSUS x=$consensus " +
+                        "(template=$templateGapX, contrast=$contrastGapX)")
+                    return consensus
+                }
+                // Disagree — prefer template if confident, else contrast
+                return if (templateConfidence >= 0.20) {
+                    Log.d(TAG, "detectGapByDiff: using template (high conf)")
+                    templateGapX
+                } else {
+                    Log.d(TAG, "detectGapByDiff: using contrast (template low conf)")
+                    contrastGapX
+                }
             }
 
-            return gapX
+            // Only one method has result
+            if (templateGapX != null && templateConfidence >= 0.08) {
+                Log.d(TAG, "detectGapByDiff: template-only x=$templateGapX")
+                return templateGapX
+            }
+            if (contrastGapX != null) {
+                Log.d(TAG, "detectGapByDiff: contrast-only x=$contrastGapX")
+                return contrastGapX
+            }
+
+            Log.w(TAG, "detectGapByDiff: both methods failed")
+            return null
         } catch (e: Exception) {
             Log.e(TAG, "detectGapByDiff failed: ${e.message}")
             return null
         } finally {
             matBefore.release(); matAfter.release()
             grayBefore.release(); grayAfter.release()
+        }
+    }
+
+    /**
+     * Scan for gap using LOCAL CONTRAST — find the band that is darkest
+     * relative to its LEFT and RIGHT neighbors (not globally darkest).
+     *
+     * This handles varied backgrounds where parts of the image are naturally dark.
+     * The gap shadow is always darker than its IMMEDIATE surroundings.
+     *
+     * @param region Grayscale puzzle region
+     * @param width Image width
+     * @param pieceW Estimated piece width (from diff or default 60)
+     * @param sliderX Slider position (skip area around piece)
+     * @return Gap center X in region coordinates, or null
+     */
+    private fun localContrastScan(
+        region: Mat, width: Int, pieceW: Int, sliderX: Float
+    ): Int? {
+        try {
+            // Precompute per-column mean brightness
+            val colMeans = DoubleArray(width)
+            for (x in 0 until width) {
+                val col = region.col(x)
+                colMeans[x] = Core.mean(col).`val`[0]
+                col.release()
+            }
+
+            // Scan: for each candidate position, compare window to left/right neighbors
+            val scanStart = (sliderX + pieceW * 0.5f).toInt().coerceAtLeast(pieceW)
+            val scanEnd = width - pieceW
+            if (scanStart >= scanEnd) return null
+
+            var bestX: Int? = null
+            var bestContrast = 0.0
+
+            for (x in scanStart..scanEnd) {
+                // Center window
+                val windowAvg = colMeans.slice(x until (x + pieceW)).average()
+
+                // Left neighbor (same width as piece, or whatever fits)
+                val leftEnd = x
+                val leftStart = (x - pieceW).coerceAtLeast(0)
+                if (leftEnd <= leftStart) continue
+                val leftAvg = colMeans.slice(leftStart until leftEnd).average()
+
+                // Right neighbor
+                val rightStart = x + pieceW
+                val rightEnd = (rightStart + pieceW).coerceAtMost(width)
+                if (rightEnd <= rightStart) continue
+                val rightAvg = colMeans.slice(rightStart until rightEnd).average()
+
+                // Local contrast = how much darker than BOTH neighbors
+                val contrast = ((leftAvg + rightAvg) / 2.0) - windowAvg
+
+                if (contrast > bestContrast) {
+                    bestContrast = contrast
+                    bestX = x + pieceW / 2
+                }
+            }
+
+            // Require minimum contrast (at least 3 brightness levels darker)
+            if (bestContrast < 3.0 || bestX == null) {
+                Log.d(TAG, "localContrastScan: best contrast only ${"%.1f".format(bestContrast)}")
+                return null
+            }
+
+            Log.d(TAG, "localContrastScan: gap x=$bestX " +
+                "contrast=${"%.1f".format(bestContrast)} pieceW=$pieceW")
+            return bestX
+        } catch (e: Exception) {
+            Log.e(TAG, "localContrastScan failed: ${e.message}")
+            return null
         }
     }
 
