@@ -201,10 +201,11 @@ object PuzzleSolver {
             gradY.release(); gradX.release(); blurred.release(); region.release()
 
             // === Combine signals to find gap ===
-            // Method A: Find darkest band (40-120px wide)
+            // Method A: Find darkest band (40-80px wide)
+            // Narrower max window avoids overshooting (gap is typically 50-70px)
             var bestDarkX: Int? = null
             var bestDarkScore = Double.MAX_VALUE
-            for (w in 40..120 step 10) {
+            for (w in 40..80 step 10) {
                 if (w > regionW) break
                 for (x in 0..(regionW - w)) {
                     val avgBright = brightColSum.slice(x until x + w).average()

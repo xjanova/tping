@@ -1417,8 +1417,14 @@ object PuzzleCaptchaAction {
             return "gap_not_detected"
         }
 
-        // Non-null shadow for smart cast
-        val gapX: Float = gapTargetX
+        // Overshoot correction: detection finds the visual center of the gap
+        // shadow/overlay, but the piece snap point is slightly left because:
+        //   a) Jigsaw pieces have a protruding tab on the right side
+        //   b) The gap shadow extends slightly past the actual fit position
+        //   c) Detection tends to include the right border in the gap region
+        // Subtract a small correction proportional to estimated piece width (~60px)
+        val overshootCorrection = 10f
+        val gapX: Float = gapTargetX - overshootCorrection
 
         // Calculate drag distance
         val dragDist = gapX - sliderX
@@ -1427,11 +1433,12 @@ object PuzzleCaptchaAction {
             return "gap_too_close"
         }
 
-        Log.d(TAG, "DirectDrag: gap=$gapX slider=$sliderX drag=${dragDist.toInt()} " +
+        Log.d(TAG, "DirectDrag: rawGap=${gapTargetX.toInt()} corrected=${gapX.toInt()} " +
+            "correction=$overshootCorrection slider=$sliderX drag=${dragDist.toInt()} " +
             "track=${trackWidth.toInt()}")
         DiagnosticReporter.logCaptcha("DirectDrag-Target",
-            "gapX=${gapX.toInt()} sliderX=${sliderX.toInt()} " +
-            "drag=${dragDist.toInt()} track=${trackWidth.toInt()}")
+            "rawGap=${gapTargetX.toInt()} corrected=${gapX.toInt()} " +
+            "sliderX=${sliderX.toInt()} drag=${dragDist.toInt()} track=${trackWidth.toInt()}")
 
         val (rawX, rawY) = dragState.logicalToRaw(sliderX, sliderY, screenW, screenH)
         dragState.lastRawX = rawX
@@ -1462,47 +1469,65 @@ object PuzzleCaptchaAction {
             dragState.lastRawY = targetRawY
             delay(300)
 
-            // === Phase 4: Fine-tune with verification (2 rounds) ===
-            // NOTE: During fine-tune, piece is at ~gapX position.
-            // Use findGapRegion (searches full image) instead of detectGapFromStatic
-            // (which uses sliderX as search origin — wrong after piece moved).
+            // === Phase 4: Fine-tune with verification (1 round) ===
+            // IMPORTANT: During fine-tune the piece is AT/NEAR the gap.
+            // findGapRegion sees only the UNCOVERED portion of the gap (the part
+            // the piece hasn't covered yet). If piece is slightly LEFT of gap,
+            // the visible contour is the RIGHT part of the gap → its center is
+            // PAST the real gap center → using it as-is causes MORE overshoot.
+            //
+            // Strategy: Use the LEFT edge of the remaining gap as reference.
+            // If piece is slightly left, remaining gap's left edge ≈ piece right edge.
+            // Correct drift = remaining_gap.left - currentX (small positive).
+            // Only adjust by half the remaining gap width leftward to converge.
             var currentX: Float = gapX
-            for (round in 1..2) {
+            run fineTune@ {
                 coroutineContext.ensureActive()
-                delay(300)
+                delay(400)
                 val verifyShot = PuzzleScreenCapture.captureScreen()
                 if (verifyShot != null) {
                     val gapRegion = PuzzleSolver.findGapRegion(verifyShot, sliderY.toInt())
                     verifyShot.recycle()
 
                     if (gapRegion != null) {
-                        val gapCenterX = (gapRegion.left + gapRegion.right) / 2f
-                        val drift = gapCenterX - currentX
-                        Log.d(TAG, "DirectDrag fine-tune round=$round drift=${drift.toInt()}")
+                        val remainW = gapRegion.right - gapRegion.left
+                        val gapLeftEdge = gapRegion.left.toFloat()
+                        // The piece should be centered on the FULL gap.
+                        // Remaining gap left edge is where the piece's right side ends.
+                        // Ideal adjustment: move piece so that its center = gap center.
+                        // Since we can only see the uncovered part, estimate:
+                        //   target = gapLeftEdge - pieceHalfWidth (but we don't know piece width)
+                        // Simpler approach: if remaining gap > 15px, move RIGHT by small amount
+                        // If remaining gap is narrow (piece almost covering it), we're close enough
+                        val drift = gapLeftEdge - currentX
+                        Log.d(TAG, "DirectDrag fine-tune: remainW=$remainW " +
+                            "gapLeft=${gapLeftEdge.toInt()} gapRight=${gapRegion.right} " +
+                            "currentX=${currentX.toInt()} drift=${drift.toInt()}")
 
-                        if (kotlin.math.abs(drift) in 5f..200f) {
-                            val adjustX = currentX + drift * 0.90f
+                        // Only adjust if the gap center is significantly off AND
+                        // the remaining gap is wide enough to be meaningful
+                        if (remainW > 15 && kotlin.math.abs(drift) in 8f..100f) {
+                            // Conservative: move only 40% of the drift to avoid overshoot
+                            val adjustX = currentX + drift * 0.40f
                             val (adjRawX, adjRawY) = dragState.logicalToRaw(
                                 adjustX, sliderY, screenW, screenH)
-                            status("$statusPrefix ปรับรอบ $round: ${drift.toInt()}px...")
+                            status("$statusPrefix ปรับ: ${(drift * 0.40f).toInt()}px...")
                             val adjScript = buildSendeventMicroMove(
                                 device.devicePath,
                                 dragState.lastRawX, dragState.lastRawY,
                                 adjRawX, adjRawY,
-                                steps = 12, durationMs = 600
+                                steps = 10, durationMs = 400
                             )
                             execShellAny("sh -c '$adjScript'")
                             dragState.lastRawX = adjRawX
                             dragState.lastRawY = adjRawY
                             currentX = adjustX
-                        } else if (kotlin.math.abs(drift) < 5f) {
-                            status("$statusPrefix ตรงเป้า! (drift=${drift.toInt()}px)")
-                            break
+                        } else if (remainW <= 15 || kotlin.math.abs(drift) < 8f) {
+                            status("$statusPrefix ตรงเป้า! (remain=${remainW}px)")
                         }
                     } else {
                         // Gap not visible = piece is covering it perfectly
                         status("$statusPrefix ตรงเป้า! (gap ไม่เห็น)")
-                        break
                     }
                 }
             }
@@ -1571,11 +1596,14 @@ object PuzzleCaptchaAction {
             return "gap_not_detected"
         }
 
-        val gapX: Float = gapTargetX
+        // Same overshoot correction as shell drag
+        val overshootCorrection = 10f
+        val gapX: Float = gapTargetX - overshootCorrection
         val dragDist = gapX - sliderX
         if (dragDist < 30f) return "gap_too_close"
 
-        Log.d(TAG, "DirectDragGesture: gap=${gapX.toInt()} drag=${dragDist.toInt()}")
+        Log.d(TAG, "DirectDragGesture: rawGap=${gapTargetX.toInt()} " +
+            "corrected=${gapX.toInt()} drag=${dragDist.toInt()}")
 
         // === Phase 2: Press slider ===
         val phase1 = CompletableDeferred<GestureDescription.StrokeDescription?>()
@@ -1604,23 +1632,27 @@ object PuzzleCaptchaAction {
         }
         delay(300)
 
-        // === Phase 4: Fine-tune (2 rounds) ===
-        // Use findGapRegion (full image search) since piece has moved from sliderX
-        for (round in 1..2) {
+        // === Phase 4: Fine-tune (1 round, conservative) ===
+        // Same logic as shell: use LEFT edge of remaining gap, 40% drift correction
+        run fineTuneGesture@ {
             coroutineContext.ensureActive()
-            delay(300)
+            delay(400)
             val verifyShot = PuzzleScreenCapture.captureScreen()
             if (verifyShot != null) {
                 val gapRegion = PuzzleSolver.findGapRegion(verifyShot, sliderY.toInt())
                 verifyShot.recycle()
 
                 if (gapRegion != null) {
-                    val gapCenterX = (gapRegion.left + gapRegion.right) / 2f
-                    val drift = gapCenterX - currentX
-                    if (kotlin.math.abs(drift) in 5f..200f) {
-                        val adjustX = currentX + drift * 0.90f
-                        val adjustDuration = (kotlin.math.abs(drift) * 4f).toLong().coerceIn(250, 800)
-                        status("$statusPrefix ปรับรอบ $round: ${drift.toInt()}px...")
+                    val remainW = gapRegion.right - gapRegion.left
+                    val gapLeftEdge = gapRegion.left.toFloat()
+                    val drift = gapLeftEdge - currentX
+                    Log.d(TAG, "DirectDragGesture fine-tune: remainW=$remainW " +
+                        "gapLeft=${gapLeftEdge.toInt()} drift=${drift.toInt()}")
+
+                    if (remainW > 15 && kotlin.math.abs(drift) in 8f..100f) {
+                        val adjustX = currentX + drift * 0.40f
+                        val adjustDuration = (kotlin.math.abs(drift) * 3f).toLong().coerceIn(200, 600)
+                        status("$statusPrefix ปรับ: ${(drift * 0.40f).toInt()}px...")
                         val adjustResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
                         service.swipeWithContinuation(
                             currentX, sliderY, adjustX, sliderY,
@@ -1631,13 +1663,11 @@ object PuzzleCaptchaAction {
                             currentStroke = adjStroke
                             currentX = adjustX
                         }
-                    } else if (kotlin.math.abs(drift) < 5f) {
-                        status("$statusPrefix ตรงเป้า!")
-                        break
+                    } else {
+                        status("$statusPrefix ตรงเป้า! (remain=${remainW}px)")
                     }
                 } else {
                     status("$statusPrefix ตรงเป้า! (gap ไม่เห็น)")
-                    break
                 }
             }
         }
