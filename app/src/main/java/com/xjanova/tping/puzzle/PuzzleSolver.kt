@@ -220,8 +220,9 @@ object PuzzleSolver {
                     }
                 }
             }
-            // Require at least 3 brightness levels of local contrast
-            val darkGapX = if (bestLocalContrast > 3.0 && bestDarkX != null)
+            // Adaptive threshold: use relative contrast for white/bright images
+            val minDarkContrast = (globalBright * 0.012).coerceIn(1.5, 5.0)
+            val darkGapX = if (bestLocalContrast > minDarkContrast && bestDarkX != null)
                 bestDarkX + searchLeft else null
 
             // Method B: Find white border peak pairs (gap has LEFT and RIGHT white borders)
@@ -1280,9 +1281,14 @@ object PuzzleSolver {
                 }
             }
 
-            // Require minimum contrast (at least 3 brightness levels darker)
-            if (bestContrast < 3.0 || bestX == null) {
-                Log.d(TAG, "localContrastScan: best contrast only ${"%.1f".format(bestContrast)}")
+            // Adaptive threshold: use relative contrast for white/bright images
+            // White image (mean ~200): absolute 3.0 is too high → use 1.0% of mean
+            val globalMean = colMeans.slice(scanStart..scanEnd).average()
+            val minContrast = (globalMean * 0.012).coerceIn(1.5, 5.0)
+
+            if (bestContrast < minContrast || bestX == null) {
+                Log.d(TAG, "localContrastScan: contrast ${"%.1f".format(bestContrast)} " +
+                    "< threshold ${"%.1f".format(minContrast)} (mean=${"%.0f".format(globalMean)})")
                 return null
             }
 

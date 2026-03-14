@@ -583,8 +583,10 @@ object PuzzleCaptchaAction {
                     service.tapAtCoordinates(refreshX, refreshY) { tapDone.complete(Unit) }
                     withTimeoutOrNull(3000) { tapDone.await() }
                 }
-                // v1.2.62: 2500ms for new puzzle to load (was 3500ms — too slow)
-                delay(2500)
+                // Wait for new puzzle to load — longer on later attempts
+                // (CAPTCHA may show transition animation or load slower image)
+                val refreshDelay = if (attempt >= 3) 3500L else 2500L
+                delay(refreshDelay)
                 coroutineContext.ensureActive()
             }
         }
@@ -1454,18 +1456,21 @@ object PuzzleCaptchaAction {
                 postScreenshot.recycle()
 
                 if (diffGap != null) {
-                    gapX = diffGap.toFloat()
+                    // Overshoot correction: piece snap point is slightly LEFT
+                    // of detected gap center (jigsaw tab + shadow offset)
+                    val diffCorrection = 8f
+                    gapX = diffGap.toFloat() - diffCorrection
                     detectionMethod = "diff+template"
-                    Log.d(TAG, "DirectDrag: diff detection → x=$diffGap")
-                    status("$statusPrefix พบช่องว่างที่ x=$diffGap (template match)")
+                    Log.d(TAG, "DirectDrag: diff detection raw=$diffGap corrected=${gapX!!.toInt()}")
+                    status("$statusPrefix พบช่องว่างที่ x=${gapX!!.toInt()} (template match)")
                 }
             }
             preScreenshot.recycle()
 
             // Fall back to static detection if diff failed
             if (gapX == null && staticGapX != null) {
-                // Apply overshoot correction only for static detection (less accurate)
-                gapX = staticGapX - 10f
+                // Larger correction for static (less accurate than diff)
+                gapX = staticGapX - 12f
                 detectionMethod = "static(corrected)"
                 Log.d(TAG, "DirectDrag: using static backup → x=${gapX.toInt()}")
                 status("$statusPrefix ใช้ค่าสำรอง x=${gapX.toInt()}")
@@ -1652,16 +1657,17 @@ object PuzzleCaptchaAction {
             )
             postScreenshot.recycle()
             if (diffGap != null) {
-                gapX = diffGap.toFloat()
+                val diffCorrection = 8f
+                gapX = diffGap.toFloat() - diffCorrection
                 detectionMethod = "diff+template"
-                status("$statusPrefix พบช่องว่างที่ x=$diffGap (template match)")
+                status("$statusPrefix พบช่องว่างที่ x=${gapX!!.toInt()} (template match)")
             }
         }
         preScreenshot.recycle()
 
         // Fall back to static
         if (gapX == null && staticGapX != null) {
-            gapX = staticGapX - 10f
+            gapX = staticGapX - 12f
             detectionMethod = "static(corrected)"
         }
 
