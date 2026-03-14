@@ -1189,17 +1189,21 @@ object PuzzleSolver {
             var silhouetteConfidence = 0.0
 
             if (pR - pL >= 20 && pB - pT >= 20) {
-                // === CRITICAL FIX: Search area covers the ENTIRE puzzle region ===
-                // Old code started at sliderX which could MISS the gap entirely!
-                // The gap can be anywhere in the puzzle image.
-                // Start from a reasonable left margin, EXCLUDING the new piece position.
-                val searchLeft = (oldPiece.rect.x - pieceW).coerceAtLeast(0)
-                // Exclude area where the new piece currently sits (would give false match)
-                val excludeLeft = (newPiece.rect.x - 10).coerceAtLeast(0)
-                val excludeRight = (newPiece.rect.x + newPiece.rect.width + 10).coerceAtMost(w)
+                // === v1.2.78 CRITICAL FIX: Exclude BOTH old and new piece positions ===
+                // Old code only excluded newPiece → template matching found the old piece
+                // itself as best match (100% match!) → gapDist=0 → gap_too_close every time!
+                //
+                // Search zones (all exclude BOTH piece positions):
+                // Zone A: LEFT of old piece [0, oldExcL)
+                // Zone B: BETWEEN old and new piece (oldExcR, newExcL)
+                // Zone C: RIGHT of new piece (newExcR, w)
+                val oldExcL = (oldPiece.rect.x - 10).coerceAtLeast(0)
+                val oldExcR = (oldPiece.rect.x + oldPiece.rect.width + 10).coerceAtMost(w)
+                val newExcL = (newPiece.rect.x - 10).coerceAtLeast(0)
+                val newExcR = (newPiece.rect.x + newPiece.rect.width + 10).coerceAtMost(w)
 
-                Log.d(TAG, "detectGapByDiff: searchLeft=$searchLeft " +
-                    "exclude=($excludeLeft→$excludeRight) width=$w")
+                Log.d(TAG, "detectGapByDiff: oldExc=($oldExcL→$oldExcR) " +
+                    "newExc=($newExcL→$newExcR) width=$w")
 
                 // Crop piece template from AFTER image at new position
                 val pieceCrop = regionAfter.submat(pT, pB, pL, pR)
@@ -1213,70 +1217,59 @@ object PuzzleSolver {
                 saveMat(pieceCrop, "piece_crop")
                 saveMat(pieceEdges, "piece_edges_blurred")
 
-                // Search in LEFT part (before the new piece)
-                if (excludeLeft - searchLeft > pieceW + 10) {
-                    val searchSubL = regionBefore.submat(
-                        0, regionBefore.rows(), searchLeft, excludeLeft
-                    )
-                    val searchBlurL = Mat()
-                    Imgproc.GaussianBlur(searchSubL, searchBlurL, Size(5.0, 5.0), 0.0)
-                    val searchEdgesL = Mat()
-                    Imgproc.Canny(searchBlurL, searchEdgesL, 100.0, 200.0)
+                // Define search zones: between pieces, and right of new piece
+                // Zone B: between old piece right edge and new piece left edge
+                data class SearchZone(val left: Int, val right: Int, val name: String)
+                val zones = mutableListOf<SearchZone>()
 
-                    saveMat(searchEdgesL, "search_edges_left")
-
-                    if (searchEdgesL.cols() >= pieceEdges.cols() &&
-                        searchEdgesL.rows() >= pieceEdges.rows()) {
-                        val resultL = Mat()
-                        Imgproc.matchTemplate(
-                            searchEdgesL, pieceEdges, resultL,
-                            Imgproc.TM_CCOEFF_NORMED
-                        )
-                        val locL = Core.minMaxLoc(resultL)
-                        val candidateX = locL.maxLoc.x.toInt() + pieceW / 2 + searchLeft
-                        if (locL.maxVal > edgeConfidence) {
-                            edgeGapX = candidateX
-                            edgeConfidence = locL.maxVal
-                        }
-                        resultL.release()
-                        Log.d(TAG, "detectGapByDiff: [A-edge-L] x=$candidateX " +
-                            "conf=${"%.3f".format(locL.maxVal)}")
-                    }
-                    searchBlurL.release(); searchEdgesL.release()
-                    searchSubL.release()
+                // Zone A: left of old piece (rarely has gap, but check anyway)
+                if (oldExcL > pieceW + 10) {
+                    zones.add(SearchZone(0, oldExcL, "leftOfOld"))
+                }
+                // Zone B: between old and new piece
+                if (newExcL - oldExcR > pieceW + 10) {
+                    zones.add(SearchZone(oldExcR, newExcL, "between"))
+                }
+                // Zone C: right of new piece
+                if (w - newExcR > pieceW + 10) {
+                    zones.add(SearchZone(newExcR, w, "rightOfNew"))
                 }
 
-                // Search in RIGHT part (after the new piece)
-                if (w - excludeRight > pieceW + 10) {
-                    val searchSubR = regionBefore.submat(
-                        0, regionBefore.rows(), excludeRight, w
+                Log.d(TAG, "detectGapByDiff: ${zones.size} search zones: " +
+                    zones.joinToString { "${it.name}(${it.left}→${it.right})" })
+
+                // Search all zones for Method A (edge template)
+                for (zone in zones) {
+                    val searchSub = regionBefore.submat(
+                        0, regionBefore.rows(), zone.left, zone.right
                     )
-                    val searchBlurR = Mat()
-                    Imgproc.GaussianBlur(searchSubR, searchBlurR, Size(5.0, 5.0), 0.0)
-                    val searchEdgesR = Mat()
-                    Imgproc.Canny(searchBlurR, searchEdgesR, 100.0, 200.0)
+                    val searchBlur = Mat()
+                    Imgproc.GaussianBlur(searchSub, searchBlur, Size(5.0, 5.0), 0.0)
+                    val searchEdges = Mat()
+                    Imgproc.Canny(searchBlur, searchEdges, 100.0, 200.0)
 
-                    saveMat(searchEdgesR, "search_edges_right")
+                    if (zone.name == "between") saveMat(searchEdges, "search_edges_between")
+                    if (zone.name == "rightOfNew") saveMat(searchEdges, "search_edges_right")
 
-                    if (searchEdgesR.cols() >= pieceEdges.cols() &&
-                        searchEdgesR.rows() >= pieceEdges.rows()) {
-                        val resultR = Mat()
+                    if (searchEdges.cols() >= pieceEdges.cols() &&
+                        searchEdges.rows() >= pieceEdges.rows()) {
+                        val result = Mat()
                         Imgproc.matchTemplate(
-                            searchEdgesR, pieceEdges, resultR,
+                            searchEdges, pieceEdges, result,
                             Imgproc.TM_CCOEFF_NORMED
                         )
-                        val locR = Core.minMaxLoc(resultR)
-                        val candidateX = locR.maxLoc.x.toInt() + pieceW / 2 + excludeRight
-                        if (locR.maxVal > edgeConfidence) {
+                        val loc = Core.minMaxLoc(result)
+                        val candidateX = loc.maxLoc.x.toInt() + pieceW / 2 + zone.left
+                        if (loc.maxVal > edgeConfidence) {
                             edgeGapX = candidateX
-                            edgeConfidence = locR.maxVal
+                            edgeConfidence = loc.maxVal
                         }
-                        resultR.release()
-                        Log.d(TAG, "detectGapByDiff: [A-edge-R] x=$candidateX " +
-                            "conf=${"%.3f".format(locR.maxVal)}")
+                        result.release()
+                        Log.d(TAG, "detectGapByDiff: [A-edge-${zone.name}] x=$candidateX " +
+                            "conf=${"%.3f".format(loc.maxVal)}")
                     }
-                    searchBlurR.release(); searchEdgesR.release()
-                    searchSubR.release()
+                    searchBlur.release(); searchEdges.release()
+                    searchSub.release()
                 }
 
                 Log.d(TAG, "detectGapByDiff: [A-edge-BEST] x=$edgeGapX " +
@@ -1288,60 +1281,32 @@ object PuzzleSolver {
                 Imgproc.Canny(pieceMask, silEdges, 50.0, 150.0)
                 saveMat(silEdges, "piece_silhouette_edges")
 
-                // Search LEFT part for silhouette
-                if (excludeLeft - searchLeft > pieceW + 10) {
-                    val searchSubL2 = regionBefore.submat(
-                        0, regionBefore.rows(), searchLeft, excludeLeft
+                // Search all zones for Method B (silhouette)
+                for (zone in zones) {
+                    val searchSub2 = regionBefore.submat(
+                        0, regionBefore.rows(), zone.left, zone.right
                     )
-                    val searchEdgesL2 = Mat()
-                    Imgproc.Canny(searchSubL2, searchEdgesL2, 50.0, 150.0)
+                    val searchEdges2 = Mat()
+                    Imgproc.Canny(searchSub2, searchEdges2, 50.0, 150.0)
 
-                    if (searchEdgesL2.cols() >= silEdges.cols() &&
-                        searchEdgesL2.rows() >= silEdges.rows()) {
-                        val resultL2 = Mat()
+                    if (searchEdges2.cols() >= silEdges.cols() &&
+                        searchEdges2.rows() >= silEdges.rows()) {
+                        val result2 = Mat()
                         Imgproc.matchTemplate(
-                            searchEdgesL2, silEdges, resultL2,
+                            searchEdges2, silEdges, result2,
                             Imgproc.TM_CCOEFF_NORMED
                         )
-                        val locL2 = Core.minMaxLoc(resultL2)
-                        val candidateX = locL2.maxLoc.x.toInt() + pieceW / 2 + searchLeft
-                        if (locL2.maxVal > silhouetteConfidence) {
+                        val loc2 = Core.minMaxLoc(result2)
+                        val candidateX = loc2.maxLoc.x.toInt() + pieceW / 2 + zone.left
+                        if (loc2.maxVal > silhouetteConfidence) {
                             silhouetteGapX = candidateX
-                            silhouetteConfidence = locL2.maxVal
+                            silhouetteConfidence = loc2.maxVal
                         }
-                        resultL2.release()
-                        Log.d(TAG, "detectGapByDiff: [B-sil-L] x=$candidateX " +
-                            "conf=${"%.3f".format(locL2.maxVal)}")
+                        result2.release()
+                        Log.d(TAG, "detectGapByDiff: [B-sil-${zone.name}] x=$candidateX " +
+                            "conf=${"%.3f".format(loc2.maxVal)}")
                     }
-                    searchEdgesL2.release(); searchSubL2.release()
-                }
-
-                // Search RIGHT part for silhouette
-                if (w - excludeRight > pieceW + 10) {
-                    val searchSubR2 = regionBefore.submat(
-                        0, regionBefore.rows(), excludeRight, w
-                    )
-                    val searchEdgesR2 = Mat()
-                    Imgproc.Canny(searchSubR2, searchEdgesR2, 50.0, 150.0)
-
-                    if (searchEdgesR2.cols() >= silEdges.cols() &&
-                        searchEdgesR2.rows() >= silEdges.rows()) {
-                        val resultR2 = Mat()
-                        Imgproc.matchTemplate(
-                            searchEdgesR2, silEdges, resultR2,
-                            Imgproc.TM_CCOEFF_NORMED
-                        )
-                        val locR2 = Core.minMaxLoc(resultR2)
-                        val candidateX = locR2.maxLoc.x.toInt() + pieceW / 2 + excludeRight
-                        if (locR2.maxVal > silhouetteConfidence) {
-                            silhouetteGapX = candidateX
-                            silhouetteConfidence = locR2.maxVal
-                        }
-                        resultR2.release()
-                        Log.d(TAG, "detectGapByDiff: [B-sil-R] x=$candidateX " +
-                            "conf=${"%.3f".format(locR2.maxVal)}")
-                    }
-                    searchEdgesR2.release(); searchSubR2.release()
+                    searchEdges2.release(); searchSub2.release()
                 }
 
                 pieceBlur.release(); pieceEdges.release()
@@ -1349,8 +1314,8 @@ object PuzzleSolver {
             }
 
             // === METHOD C: Local contrast column scan ===
-            // Use old piece position for scan start instead of sliderX
-            val contrastScanStart = oldPiece.cx - pieceW
+            // Start AFTER the old piece position to avoid detecting the piece itself
+            val contrastScanStart = (oldPiece.rect.x + oldPiece.rect.width + 5).toFloat()
             val contrastGapX = localContrastScan(
                 regionBefore, w, pieceW, contrastScanStart.coerceAtLeast(0f)
             )
