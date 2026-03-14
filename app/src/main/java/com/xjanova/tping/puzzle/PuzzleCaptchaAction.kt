@@ -25,7 +25,21 @@ import kotlin.coroutines.coroutineContext
 import java.util.concurrent.TimeUnit
 
 /**
- * Puzzle CAPTCHA solver — v1.2.75
+ * Puzzle CAPTCHA solver — v1.2.77
+ *
+ * v1.2.77 — FIX: Piece-to-slider coordinate mapping + search area:
+ * - CRITICAL FIX: detectGapByDiff now returns DiffResult with SLIDER TARGET
+ *   (not image gap position). Accounts for piece-to-slider movement ratio.
+ * - FIX: Search area now covers ENTIRE puzzle region, not just right of sliderX.
+ *   Old code started at sliderX+pieceW/2 which EXCLUDED the gap on many puzzles.
+ * - FIX: Contour selection uses old/new piece positions from diff instead of
+ *   assuming piece starts at sliderX (wrong for WebView-rendered CAPTCHAs).
+ * - FIX: Movement ratio calculated from actual piece movement in diff vs
+ *   slider moveDistance, handles non-1:1 puzzle image scaling.
+ * - Search split into LEFT and RIGHT parts, excluding new piece position
+ *   to avoid false template matches on the piece itself.
+ * - Confidence threshold raised from 0.05 to 0.10 to reduce false positives.
+ * - Overshoot correction scales with scaleFactor (not fixed 8px).
  *
  * v1.2.75 — Proven production solver approach (GeeTest/Tencent-style):
  * - REWRITE: 3-method detection with consensus voting:
@@ -1461,20 +1475,23 @@ object PuzzleCaptchaAction {
             var detectionMethod = "none"
 
             if (postScreenshot != null) {
-                val diffGap = PuzzleSolver.detectGapByDiff(
+                val diffResult = PuzzleSolver.detectGapByDiff(
                     preScreenshot, postScreenshot,
                     sliderY.toInt(), sliderX, exploreDistance
                 )
                 postScreenshot.recycle()
 
-                if (diffGap != null) {
-                    // Overshoot correction: piece snap point is slightly LEFT
-                    // of detected gap center (jigsaw tab + shadow offset)
-                    val diffCorrection = 8f
-                    gapX = diffGap.toFloat() - diffCorrection
-                    detectionMethod = "diff+template"
-                    Log.d(TAG, "DirectDrag: diff detection raw=$diffGap corrected=${gapX!!.toInt()}")
-                    status("$statusPrefix พบช่องว่างที่ x=${gapX!!.toInt()} (template match)")
+                if (diffResult != null) {
+                    // DiffResult.sliderTarget already accounts for piece-to-slider ratio
+                    // Small overshoot correction for jigsaw tab/shadow
+                    val correction = (4f * diffResult.scaleFactor).coerceIn(2f, 8f)
+                    gapX = diffResult.sliderTarget.toFloat() - correction
+                    detectionMethod = "diff+${diffResult.method}"
+                    Log.d(TAG, "DirectDrag: diff sliderTarget=${diffResult.sliderTarget} " +
+                        "gapImageX=${diffResult.gapImageX} scale=${"%.3f".format(diffResult.scaleFactor)} " +
+                        "corrected=${gapX!!.toInt()} conf=${"%.3f".format(diffResult.confidence)}")
+                    status("$statusPrefix พบช่องว่าง (${diffResult.method}, " +
+                        "scale=${"%.2f".format(diffResult.scaleFactor)})")
                 }
             }
             preScreenshot.recycle()
@@ -1663,16 +1680,21 @@ object PuzzleCaptchaAction {
         var detectionMethod = "none"
 
         if (postScreenshot != null) {
-            val diffGap = PuzzleSolver.detectGapByDiff(
+            val diffResult = PuzzleSolver.detectGapByDiff(
                 preScreenshot, postScreenshot,
                 sliderY.toInt(), sliderX, exploreDistance
             )
             postScreenshot.recycle()
-            if (diffGap != null) {
-                val diffCorrection = 8f
-                gapX = diffGap.toFloat() - diffCorrection
-                detectionMethod = "diff+template"
-                status("$statusPrefix พบช่องว่างที่ x=${gapX!!.toInt()} (template match)")
+            if (diffResult != null) {
+                // DiffResult.sliderTarget already accounts for piece-to-slider ratio
+                val correction = (4f * diffResult.scaleFactor).coerceIn(2f, 8f)
+                gapX = diffResult.sliderTarget.toFloat() - correction
+                detectionMethod = "diff+${diffResult.method}"
+                Log.d(TAG, "DirectDragGesture: diff sliderTarget=${diffResult.sliderTarget} " +
+                    "gapImageX=${diffResult.gapImageX} scale=${"%.3f".format(diffResult.scaleFactor)} " +
+                    "corrected=${gapX!!.toInt()} conf=${"%.3f".format(diffResult.confidence)}")
+                status("$statusPrefix พบช่องว่าง (${diffResult.method}, " +
+                    "scale=${"%.2f".format(diffResult.scaleFactor)})")
             }
         }
         preScreenshot.recycle()

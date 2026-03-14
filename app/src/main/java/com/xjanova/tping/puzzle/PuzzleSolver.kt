@@ -1027,10 +1027,26 @@ object PuzzleSolver {
      *   Scans for band darker than its LEFT+RIGHT neighbors.
      *   Works on any image type, especially white/bright images.
      */
+    /**
+     * Result from diff-based gap detection.
+     * Returns the SLIDER TARGET position (not the image gap position).
+     * Accounts for piece-to-slider movement ratio automatically.
+     */
+    data class DiffResult(
+        val sliderTarget: Int,   // Where the slider should be moved to (screen X)
+        val gapImageX: Int,      // Gap center in image coordinates
+        val pieceOldCx: Int,     // Piece old position center X (image coords)
+        val pieceNewCx: Int,     // Piece new position center X (image coords)
+        val pieceMovement: Int,  // Actual piece movement in image pixels
+        val scaleFactor: Float,  // slider_movement / piece_movement
+        val confidence: Double,
+        val method: String
+    )
+
     fun detectGapByDiff(
         before: Bitmap, after: Bitmap,
         sliderY: Int, sliderX: Float, moveDistance: Float
-    ): Int? {
+    ): DiffResult? {
         if (!ensureOpenCV()) return null
 
         val matBefore = Mat()
@@ -1043,6 +1059,10 @@ object PuzzleSolver {
             val bottom = (sliderY - 20).coerceAtLeast(top + 10).coerceAtMost(before.height)
             if (bottom - top < 50) return null
             val w = before.width
+
+            Log.d(TAG, "detectGapByDiff: bitmap=${before.width}x${before.height} " +
+                "sliderX=${"%.0f".format(sliderX)} sliderY=$sliderY move=${"%.0f".format(moveDistance)} " +
+                "region=($top→$bottom, 0→$w)")
 
             Utils.bitmapToMat(before, matBefore)
             Utils.bitmapToMat(after, matAfter)
@@ -1074,7 +1094,8 @@ object PuzzleSolver {
             saveMat(diff, "diff_raw")
             saveMat(binaryDiff, "diff_binary")
 
-            // === Step 2: Find piece contour in diff ===
+            // === Step 2: Find ALL valid contours in diff ===
+            // Diff produces TWO blobs: old piece pos (where it left) and new piece pos (where it arrived)
             val contours = mutableListOf<MatOfPoint>()
             val hierarchy = Mat()
             val diffClone = binaryDiff.clone()
@@ -1085,9 +1106,8 @@ object PuzzleSolver {
             diffClone.release()
             hierarchy.release()
 
-            val expectedNewX = sliderX + moveDistance
-            var pieceRect: org.opencv.core.Rect? = null
-            var bestDist = Float.MAX_VALUE
+            data class ContourInfo(val rect: org.opencv.core.Rect, val area: Double, val cx: Float)
+            val validContours = mutableListOf<ContourInfo>()
 
             for (contour in contours) {
                 val rect = Imgproc.boundingRect(contour)
@@ -1098,29 +1118,65 @@ object PuzzleSolver {
                     "${rect.width}x${rect.height} area=${"%.0f".format(area)}")
 
                 if (area < 500 || rect.width < 20 || rect.height < 20) continue
-                if (rect.width > 250 || rect.height > 250) continue
+                if (rect.width > 300 || rect.height > 300) continue
 
                 val cx = rect.x + rect.width / 2f
-                val d = kotlin.math.abs(cx - expectedNewX)
-                if (d < bestDist) {
-                    bestDist = d
-                    pieceRect = rect
-                }
+                validContours.add(ContourInfo(rect, area, cx))
             }
 
-            if (pieceRect == null) {
-                Log.w(TAG, "detectGapByDiff: no piece contour in diff " +
-                    "(${contours.size} contours, expectedX=${expectedNewX.toInt()})")
-                val contrastResult = localContrastScan(regionBefore, w, 60, sliderX)
+            if (validContours.isEmpty()) {
+                Log.w(TAG, "detectGapByDiff: no valid contours in diff (${contours.size} total)")
                 diff.release(); blurDiff.release(); binaryDiff.release()
                 regionBefore.release(); regionAfter.release()
-                return contrastResult
+                return null
             }
 
-            val pieceW = pieceRect.width
-            val pieceH = pieceRect.height
-            Log.d(TAG, "detectGapByDiff: piece ${pieceW}x${pieceH} " +
-                "at (${pieceRect.x},${pieceRect.y})")
+            // Sort by X position — leftmost = old piece pos, rightmost = new piece pos
+            validContours.sortBy { it.cx }
+
+            // Identify OLD (leftmost) and NEW (rightmost) piece positions
+            val oldPiece: ContourInfo
+            val newPiece: ContourInfo
+
+            if (validContours.size >= 2) {
+                oldPiece = validContours.first()
+                newPiece = validContours.last()
+            } else {
+                // Only 1 contour — can't determine movement; use as new piece
+                newPiece = validContours.first()
+                // Estimate old position from slider movement
+                val estimatedOldCx = newPiece.cx - moveDistance
+                oldPiece = ContourInfo(
+                    org.opencv.core.Rect(
+                        (estimatedOldCx - newPiece.rect.width / 2).toInt().coerceAtLeast(0),
+                        newPiece.rect.y,
+                        newPiece.rect.width,
+                        newPiece.rect.height
+                    ),
+                    newPiece.area,
+                    estimatedOldCx
+                )
+                Log.d(TAG, "detectGapByDiff: single contour, estimated oldCx=${estimatedOldCx.toInt()}")
+            }
+
+            // === Step 3: Calculate piece-to-slider movement ratio ===
+            val pieceMovement = newPiece.cx - oldPiece.cx
+            val scaleFactor: Float
+            if (pieceMovement > 5f) {
+                scaleFactor = moveDistance / pieceMovement
+            } else {
+                // Piece barely moved — assume 1:1 ratio
+                scaleFactor = 1.0f
+                Log.w(TAG, "detectGapByDiff: piece barely moved (${pieceMovement.toInt()}px), assuming 1:1 ratio")
+            }
+
+            Log.d(TAG, "detectGapByDiff: oldPiece cx=${oldPiece.cx.toInt()} " +
+                "newPiece cx=${newPiece.cx.toInt()} " +
+                "pieceMove=${pieceMovement.toInt()} scaleFactor=${"%.3f".format(scaleFactor)}")
+
+            val pieceW = newPiece.rect.width
+            val pieceH = newPiece.rect.height
+            val pieceRect = newPiece.rect
 
             val pT = pieceRect.y.coerceAtLeast(0)
             val pB = (pieceRect.y + pieceH).coerceAtMost(regionBefore.rows())
@@ -1133,82 +1189,171 @@ object PuzzleSolver {
             var silhouetteConfidence = 0.0
 
             if (pR - pL >= 20 && pB - pT >= 20) {
-                // Search area: right of piece starting position
-                val searchLeft = (sliderX + pieceW * 0.5f).toInt().coerceIn(0, w - 1)
-                if (w - searchLeft > pieceW + 10) {
-                    val searchSub = regionBefore.submat(
-                        0, regionBefore.rows(), searchLeft, w
+                // === CRITICAL FIX: Search area covers the ENTIRE puzzle region ===
+                // Old code started at sliderX which could MISS the gap entirely!
+                // The gap can be anywhere in the puzzle image.
+                // Start from a reasonable left margin, EXCLUDING the new piece position.
+                val searchLeft = (oldPiece.rect.x - pieceW).coerceAtLeast(0)
+                // Exclude area where the new piece currently sits (would give false match)
+                val excludeLeft = (newPiece.rect.x - 10).coerceAtLeast(0)
+                val excludeRight = (newPiece.rect.x + newPiece.rect.width + 10).coerceAtMost(w)
+
+                Log.d(TAG, "detectGapByDiff: searchLeft=$searchLeft " +
+                    "exclude=($excludeLeft→$excludeRight) width=$w")
+
+                // Crop piece template from AFTER image at new position
+                val pieceCrop = regionAfter.submat(pT, pB, pL, pR)
+
+                // === METHOD A: Piece image edges (PROVEN approach) ===
+                val pieceBlur = Mat()
+                Imgproc.GaussianBlur(pieceCrop, pieceBlur, Size(5.0, 5.0), 0.0)
+                val pieceEdges = Mat()
+                Imgproc.Canny(pieceBlur, pieceEdges, 100.0, 200.0)
+
+                saveMat(pieceCrop, "piece_crop")
+                saveMat(pieceEdges, "piece_edges_blurred")
+
+                // Search in LEFT part (before the new piece)
+                if (excludeLeft - searchLeft > pieceW + 10) {
+                    val searchSubL = regionBefore.submat(
+                        0, regionBefore.rows(), searchLeft, excludeLeft
                     )
+                    val searchBlurL = Mat()
+                    Imgproc.GaussianBlur(searchSubL, searchBlurL, Size(5.0, 5.0), 0.0)
+                    val searchEdgesL = Mat()
+                    Imgproc.Canny(searchBlurL, searchEdgesL, 100.0, 200.0)
 
-                    // === METHOD A: Piece image edges (PROVEN approach) ===
-                    // Key insight from production solvers:
-                    // GaussianBlur kills texture noise, Canny(100,200) keeps only
-                    // strong shape edges. The jigsaw outline survives blur+high-threshold.
-                    val pieceCrop = regionAfter.submat(pT, pB, pL, pR)
-                    val pieceBlur = Mat()
-                    Imgproc.GaussianBlur(pieceCrop, pieceBlur, Size(5.0, 5.0), 0.0)
-                    val pieceEdges = Mat()
-                    Imgproc.Canny(pieceBlur, pieceEdges, 100.0, 200.0)
+                    saveMat(searchEdgesL, "search_edges_left")
 
-                    val searchBlur = Mat()
-                    Imgproc.GaussianBlur(searchSub, searchBlur, Size(5.0, 5.0), 0.0)
-                    val searchEdges = Mat()
-                    Imgproc.Canny(searchBlur, searchEdges, 100.0, 200.0)
-
-                    saveMat(pieceCrop, "piece_crop")
-                    saveMat(pieceEdges, "piece_edges_blurred")
-                    saveMat(searchEdges, "search_edges_blurred")
-
-                    if (searchEdges.cols() >= pieceEdges.cols() &&
-                        searchEdges.rows() >= pieceEdges.rows()) {
-                        val result = Mat()
+                    if (searchEdgesL.cols() >= pieceEdges.cols() &&
+                        searchEdgesL.rows() >= pieceEdges.rows()) {
+                        val resultL = Mat()
                         Imgproc.matchTemplate(
-                            searchEdges, pieceEdges, result,
+                            searchEdgesL, pieceEdges, resultL,
                             Imgproc.TM_CCOEFF_NORMED
                         )
-                        val loc = Core.minMaxLoc(result)
-                        edgeGapX = loc.maxLoc.x.toInt() + pieceW / 2 + searchLeft
-                        edgeConfidence = loc.maxVal
-                        result.release()
-
-                        Log.d(TAG, "detectGapByDiff: [A-edge] x=$edgeGapX " +
-                            "conf=${"%.3f".format(edgeConfidence)}")
+                        val locL = Core.minMaxLoc(resultL)
+                        val candidateX = locL.maxLoc.x.toInt() + pieceW / 2 + searchLeft
+                        if (locL.maxVal > edgeConfidence) {
+                            edgeGapX = candidateX
+                            edgeConfidence = locL.maxVal
+                        }
+                        resultL.release()
+                        Log.d(TAG, "detectGapByDiff: [A-edge-L] x=$candidateX " +
+                            "conf=${"%.3f".format(locL.maxVal)}")
                     }
-                    pieceBlur.release(); pieceEdges.release()
-                    searchBlur.release(); searchEdges.release()
-
-                    // === METHOD B: Silhouette edges (backup for textured images) ===
-                    val pieceMask = binaryDiff.submat(pT, pB, pL, pR)
-                    val silEdges = Mat()
-                    Imgproc.Canny(pieceMask, silEdges, 50.0, 150.0)
-                    saveMat(silEdges, "piece_silhouette_edges")
-
-                    // Use lighter blur on search for silhouette matching
-                    val searchEdges2 = Mat()
-                    Imgproc.Canny(searchSub, searchEdges2, 50.0, 150.0)
-
-                    if (searchEdges2.cols() >= silEdges.cols() &&
-                        searchEdges2.rows() >= silEdges.rows()) {
-                        val result2 = Mat()
-                        Imgproc.matchTemplate(
-                            searchEdges2, silEdges, result2,
-                            Imgproc.TM_CCOEFF_NORMED
-                        )
-                        val loc2 = Core.minMaxLoc(result2)
-                        silhouetteGapX = loc2.maxLoc.x.toInt() + pieceW / 2 + searchLeft
-                        silhouetteConfidence = loc2.maxVal
-                        result2.release()
-
-                        Log.d(TAG, "detectGapByDiff: [B-sil] x=$silhouetteGapX " +
-                            "conf=${"%.3f".format(silhouetteConfidence)}")
-                    }
-                    silEdges.release(); searchEdges2.release()
-                    searchSub.release()
+                    searchBlurL.release(); searchEdgesL.release()
+                    searchSubL.release()
                 }
+
+                // Search in RIGHT part (after the new piece)
+                if (w - excludeRight > pieceW + 10) {
+                    val searchSubR = regionBefore.submat(
+                        0, regionBefore.rows(), excludeRight, w
+                    )
+                    val searchBlurR = Mat()
+                    Imgproc.GaussianBlur(searchSubR, searchBlurR, Size(5.0, 5.0), 0.0)
+                    val searchEdgesR = Mat()
+                    Imgproc.Canny(searchBlurR, searchEdgesR, 100.0, 200.0)
+
+                    saveMat(searchEdgesR, "search_edges_right")
+
+                    if (searchEdgesR.cols() >= pieceEdges.cols() &&
+                        searchEdgesR.rows() >= pieceEdges.rows()) {
+                        val resultR = Mat()
+                        Imgproc.matchTemplate(
+                            searchEdgesR, pieceEdges, resultR,
+                            Imgproc.TM_CCOEFF_NORMED
+                        )
+                        val locR = Core.minMaxLoc(resultR)
+                        val candidateX = locR.maxLoc.x.toInt() + pieceW / 2 + excludeRight
+                        if (locR.maxVal > edgeConfidence) {
+                            edgeGapX = candidateX
+                            edgeConfidence = locR.maxVal
+                        }
+                        resultR.release()
+                        Log.d(TAG, "detectGapByDiff: [A-edge-R] x=$candidateX " +
+                            "conf=${"%.3f".format(locR.maxVal)}")
+                    }
+                    searchBlurR.release(); searchEdgesR.release()
+                    searchSubR.release()
+                }
+
+                Log.d(TAG, "detectGapByDiff: [A-edge-BEST] x=$edgeGapX " +
+                    "conf=${"%.3f".format(edgeConfidence)}")
+
+                // === METHOD B: Silhouette edges ===
+                val pieceMask = binaryDiff.submat(pT, pB, pL, pR)
+                val silEdges = Mat()
+                Imgproc.Canny(pieceMask, silEdges, 50.0, 150.0)
+                saveMat(silEdges, "piece_silhouette_edges")
+
+                // Search LEFT part for silhouette
+                if (excludeLeft - searchLeft > pieceW + 10) {
+                    val searchSubL2 = regionBefore.submat(
+                        0, regionBefore.rows(), searchLeft, excludeLeft
+                    )
+                    val searchEdgesL2 = Mat()
+                    Imgproc.Canny(searchSubL2, searchEdgesL2, 50.0, 150.0)
+
+                    if (searchEdgesL2.cols() >= silEdges.cols() &&
+                        searchEdgesL2.rows() >= silEdges.rows()) {
+                        val resultL2 = Mat()
+                        Imgproc.matchTemplate(
+                            searchEdgesL2, silEdges, resultL2,
+                            Imgproc.TM_CCOEFF_NORMED
+                        )
+                        val locL2 = Core.minMaxLoc(resultL2)
+                        val candidateX = locL2.maxLoc.x.toInt() + pieceW / 2 + searchLeft
+                        if (locL2.maxVal > silhouetteConfidence) {
+                            silhouetteGapX = candidateX
+                            silhouetteConfidence = locL2.maxVal
+                        }
+                        resultL2.release()
+                        Log.d(TAG, "detectGapByDiff: [B-sil-L] x=$candidateX " +
+                            "conf=${"%.3f".format(locL2.maxVal)}")
+                    }
+                    searchEdgesL2.release(); searchSubL2.release()
+                }
+
+                // Search RIGHT part for silhouette
+                if (w - excludeRight > pieceW + 10) {
+                    val searchSubR2 = regionBefore.submat(
+                        0, regionBefore.rows(), excludeRight, w
+                    )
+                    val searchEdgesR2 = Mat()
+                    Imgproc.Canny(searchSubR2, searchEdgesR2, 50.0, 150.0)
+
+                    if (searchEdgesR2.cols() >= silEdges.cols() &&
+                        searchEdgesR2.rows() >= silEdges.rows()) {
+                        val resultR2 = Mat()
+                        Imgproc.matchTemplate(
+                            searchEdgesR2, silEdges, resultR2,
+                            Imgproc.TM_CCOEFF_NORMED
+                        )
+                        val locR2 = Core.minMaxLoc(resultR2)
+                        val candidateX = locR2.maxLoc.x.toInt() + pieceW / 2 + excludeRight
+                        if (locR2.maxVal > silhouetteConfidence) {
+                            silhouetteGapX = candidateX
+                            silhouetteConfidence = locR2.maxVal
+                        }
+                        resultR2.release()
+                        Log.d(TAG, "detectGapByDiff: [B-sil-R] x=$candidateX " +
+                            "conf=${"%.3f".format(locR2.maxVal)}")
+                    }
+                    searchEdgesR2.release(); searchSubR2.release()
+                }
+
+                pieceBlur.release(); pieceEdges.release()
+                silEdges.release()
             }
 
             // === METHOD C: Local contrast column scan ===
-            val contrastGapX = localContrastScan(regionBefore, w, pieceW, sliderX)
+            // Use old piece position for scan start instead of sliderX
+            val contrastScanStart = oldPiece.cx - pieceW
+            val contrastGapX = localContrastScan(
+                regionBefore, w, pieceW, contrastScanStart.coerceAtLeast(0f)
+            )
 
             // Cleanup
             diff.release(); blurDiff.release(); binaryDiff.release()
@@ -1222,9 +1367,9 @@ object PuzzleSolver {
             // Collect valid candidates with scores
             data class Candidate(val x: Int, val conf: Double, val name: String)
             val candidates = mutableListOf<Candidate>()
-            if (edgeGapX != null && edgeConfidence >= 0.05)
+            if (edgeGapX != null && edgeConfidence >= 0.10)
                 candidates.add(Candidate(edgeGapX, edgeConfidence, "edge"))
-            if (silhouetteGapX != null && silhouetteConfidence >= 0.05)
+            if (silhouetteGapX != null && silhouetteConfidence >= 0.10)
                 candidates.add(Candidate(silhouetteGapX, silhouetteConfidence, "sil"))
             if (contrastGapX != null)
                 candidates.add(Candidate(contrastGapX, 0.5, "contrast"))
@@ -1234,23 +1379,73 @@ object PuzzleSolver {
                 return null
             }
 
+            // Determine best gap position in IMAGE coordinates
+            var bestGapImageX: Int
+            var bestConf: Double
+            var bestMethod: String
+
             // Check for consensus: any 2 methods within 30px
+            var consensusFound = false
             for (i in 0 until candidates.size) {
                 for (j in i + 1 until candidates.size) {
                     if (kotlin.math.abs(candidates[i].x - candidates[j].x) < 30) {
-                        val avg = (candidates[i].x + candidates[j].x) / 2
-                        Log.d(TAG, "detectGapByDiff: CONSENSUS ${candidates[i].name}+" +
-                            "${candidates[j].name} → x=$avg")
-                        return avg
+                        bestGapImageX = (candidates[i].x + candidates[j].x) / 2
+                        bestConf = maxOf(candidates[i].conf, candidates[j].conf)
+                        bestMethod = "${candidates[i].name}+${candidates[j].name}"
+
+                        Log.d(TAG, "detectGapByDiff: CONSENSUS $bestMethod → imageX=$bestGapImageX")
+
+                        // Convert image gap position → slider target
+                        val gapDistFromPieceStart = bestGapImageX - oldPiece.cx
+                        val sliderDist = gapDistFromPieceStart * scaleFactor
+                        val sliderTarget = (sliderX + sliderDist).toInt()
+
+                        Log.d(TAG, "detectGapByDiff: gapDist=${gapDistFromPieceStart.toInt()} " +
+                            "× scale=${"%.3f".format(scaleFactor)} = sliderDist=${sliderDist.toInt()} " +
+                            "→ sliderTarget=$sliderTarget")
+
+                        return DiffResult(
+                            sliderTarget = sliderTarget,
+                            gapImageX = bestGapImageX,
+                            pieceOldCx = oldPiece.cx.toInt(),
+                            pieceNewCx = newPiece.cx.toInt(),
+                            pieceMovement = pieceMovement.toInt(),
+                            scaleFactor = scaleFactor,
+                            confidence = bestConf,
+                            method = bestMethod
+                        )
                     }
                 }
             }
 
             // No consensus — pick best by confidence
             val best = candidates.maxByOrNull { it.conf }!!
-            Log.d(TAG, "detectGapByDiff: no consensus, using ${best.name} x=${best.x} " +
-                "conf=${"%.3f".format(best.conf)}")
-            return best.x
+            bestGapImageX = best.x
+            bestConf = best.conf
+            bestMethod = best.name
+
+            Log.d(TAG, "detectGapByDiff: no consensus, using $bestMethod imageX=$bestGapImageX " +
+                "conf=${"%.3f".format(bestConf)}")
+
+            // Convert image gap position → slider target
+            val gapDistFromPieceStart = bestGapImageX - oldPiece.cx
+            val sliderDist = gapDistFromPieceStart * scaleFactor
+            val sliderTarget = (sliderX + sliderDist).toInt()
+
+            Log.d(TAG, "detectGapByDiff: gapDist=${gapDistFromPieceStart.toInt()} " +
+                "× scale=${"%.3f".format(scaleFactor)} = sliderDist=${sliderDist.toInt()} " +
+                "→ sliderTarget=$sliderTarget")
+
+            return DiffResult(
+                sliderTarget = sliderTarget,
+                gapImageX = bestGapImageX,
+                pieceOldCx = oldPiece.cx.toInt(),
+                pieceNewCx = newPiece.cx.toInt(),
+                pieceMovement = pieceMovement.toInt(),
+                scaleFactor = scaleFactor,
+                confidence = bestConf,
+                method = bestMethod
+            )
         } catch (e: Exception) {
             Log.e(TAG, "detectGapByDiff failed: ${e.message}")
             return null
