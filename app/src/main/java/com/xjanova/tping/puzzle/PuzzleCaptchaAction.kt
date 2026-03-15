@@ -1548,45 +1548,98 @@ object PuzzleCaptchaAction {
     ): String {
         if (trackWidth < 100) return "track_too_short"
 
-        // === Step 1: Take ONE screenshot and find the gap ===
-        status("$statusPrefix หาตำแหน่งช่องว่าง...")
-        val screenshot = PuzzleScreenCapture.captureScreen()
-        if (screenshot == null) {
-            status("$statusPrefix ❌ จับภาพหน้าจอไม่ได้")
+        // === v1.2.81: DIFF-BASED approach (proven production method) ===
+        // 1. Screenshot BEFORE
+        // 2. Press slider + move 100px
+        // 3. Screenshot AFTER
+        // 4. Diff → piece shape → Canny edges → template
+        // 5. Canny on BEFORE image → zero out piece position → ONE template match
+        // 6. Gap position → drag there
+
+        // --- Phase 1: BEFORE screenshot ---
+        status("$statusPrefix จับภาพก่อนเลื่อน...")
+        val preScreenshot = PuzzleScreenCapture.captureScreen()
+        if (preScreenshot == null) {
+            status("$statusPrefix ❌ จับภาพไม่ได้")
             return "gap_not_detected"
         }
 
+        // Also get static detection as backup (from BEFORE image)
+        val staticGapX = PuzzleSolver.detectGapFromStatic(
+            preScreenshot, sliderY.toInt(), sliderX
+        )
+
+        // --- Phase 2: Press slider ---
+        val press = CompletableDeferred<GestureDescription.StrokeDescription?>()
+        service.swipeWithContinuation(
+            sliderX, sliderY, sliderX + 2f, sliderY,
+            300L, willContinue = true, previousStroke = null
+        ) { press.complete(it) }
+        var currentStroke = withTimeoutOrNull(5000L) { press.await() }
+        if (currentStroke == null) {
+            preScreenshot.recycle()
+            return "gesture_press_failed"
+        }
+        var currentX = sliderX + 2f
+
+        // --- Phase 3: Exploratory move ~100px right ---
+        val exploreDistance = (trackWidth * 0.15f).coerceIn(80f, 120f)
+        val exploreX = sliderX + exploreDistance
+        val exploreResult = CompletableDeferred<GestureDescription.StrokeDescription?>()
+        service.swipeWithContinuation(
+            currentX, sliderY, exploreX, sliderY,
+            500L, willContinue = true, previousStroke = currentStroke
+        ) { exploreResult.complete(it) }
+        val exploreStroke = withTimeoutOrNull(5500L) { exploreResult.await() }
+        if (exploreStroke != null) {
+            currentStroke = exploreStroke
+            currentX = exploreX
+        }
+        delay(400) // wait for UI to update
+
+        // --- Phase 4: AFTER screenshot + diff detection ---
+        val postScreenshot = PuzzleScreenCapture.captureScreen()
         var gapX: Float? = null
         var detectionMethod = "none"
 
-        // Primary: find gap by white border + local contrast + gradient
-        val staticResult = PuzzleSolver.detectGapFromStatic(
-            screenshot, sliderY.toInt(), sliderX
-        )
-        if (staticResult != null) {
-            gapX = staticResult.toFloat()
+        if (postScreenshot != null) {
+            val diffGapX = PuzzleSolver.detectGapSimple(
+                preScreenshot, postScreenshot,
+                sliderY.toInt(), sliderX, exploreDistance
+            )
+            postScreenshot.recycle()
+            if (diffGapX != null) {
+                gapX = diffGapX.toFloat()
+                detectionMethod = "diff"
+            }
+        }
+        preScreenshot.recycle()
+
+        // Fall back to static detection
+        if (gapX == null && staticGapX != null) {
+            gapX = staticGapX.toFloat()
             detectionMethod = "static"
         }
 
-        // Backup: contour-based gap region
         if (gapX == null) {
-            val gapRegion = PuzzleSolver.findGapRegion(screenshot, sliderY.toInt())
-            if (gapRegion != null) {
-                gapX = (gapRegion.left + gapRegion.right) / 2f
-                detectionMethod = "contour"
-            }
-        }
-
-        screenshot.recycle()
-
-        if (gapX == null) {
-            Log.w(TAG, "ScanGesture: gap not found in static screenshot")
+            // Release gesture and return failure
+            val rel = CompletableDeferred<GestureDescription.StrokeDescription?>()
+            service.swipeWithContinuation(
+                currentX, sliderY, currentX + 1f, sliderY,
+                100L, willContinue = false, previousStroke = currentStroke
+            ) { rel.complete(it) }
+            withTimeoutOrNull(3000L) { rel.await() }
             return "gap_not_detected"
         }
 
         val totalDragDist = gapX - sliderX
         if (totalDragDist < 30f) {
-            Log.w(TAG, "ScanGesture: gap too close (${"%.0f".format(totalDragDist)}px)")
+            val rel = CompletableDeferred<GestureDescription.StrokeDescription?>()
+            service.swipeWithContinuation(
+                currentX, sliderY, currentX + 1f, sliderY,
+                100L, willContinue = false, previousStroke = currentStroke
+            ) { rel.complete(it) }
+            withTimeoutOrNull(3000L) { rel.await() }
             return "gap_too_close"
         }
 
@@ -1596,18 +1649,7 @@ object PuzzleCaptchaAction {
             "method=$detectionMethod, gap=${gapX.toInt()}, slider=${sliderX.toInt()}, " +
             "dist=${totalDragDist.toInt()}, trackW=${trackWidth.toInt()}")
 
-        // === Step 2: Press slider ===
-        val press = CompletableDeferred<GestureDescription.StrokeDescription?>()
-        service.swipeWithContinuation(
-            sliderX, sliderY, sliderX + 2f, sliderY,
-            300L, willContinue = true, previousStroke = null
-        ) { press.complete(it) }
-
-        var currentStroke = withTimeoutOrNull(5000L) { press.await() }
-        if (currentStroke == null) return "gesture_press_failed"
-        var currentX = sliderX + 2f
-
-        // === Step 3: Drag directly to gap position ===
+        // --- Phase 5: Drag from current position to gap ---
         val dragDist = gapX - currentX
         val dragDuration = (kotlin.math.abs(dragDist) * 5f).toLong().coerceIn(400, 2500)
         status("$statusPrefix ลากไปที่ x=${gapX.toInt()} ($detectionMethod, ${totalDragDist.toInt()}px)...")
@@ -1624,7 +1666,7 @@ object PuzzleCaptchaAction {
         }
         delay(300)
 
-        // === Step 4: Fine-tune (1 round) ===
+        // --- Phase 6: Fine-tune (1 round, use detectGapFromStatic for accuracy) ---
         run {
             coroutineContext.ensureActive()
             delay(400)
@@ -1636,7 +1678,7 @@ object PuzzleCaptchaAction {
                     val remainW = gapRegion.right - gapRegion.left
                     val drift = gapRegion.left.toFloat() - currentX
                     if (remainW > 15 && kotlin.math.abs(drift) in 8f..100f) {
-                        val adjustX = currentX + drift * 0.40f
+                        val adjustX = currentX + drift * 0.50f
                         val adjDur = (kotlin.math.abs(drift) * 3f).toLong().coerceIn(200, 600)
                         val adj = CompletableDeferred<GestureDescription.StrokeDescription?>()
                         service.swipeWithContinuation(
@@ -1653,7 +1695,7 @@ object PuzzleCaptchaAction {
             }
         }
 
-        // === Step 5: Release ===
+        // --- Phase 7: Release ---
         delay(250)
         val release = CompletableDeferred<GestureDescription.StrokeDescription?>()
         service.swipeWithContinuation(
