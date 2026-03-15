@@ -122,12 +122,15 @@ object PuzzleSolver {
 
     /**
      * PRIMARY gap detection — call BEFORE touching the slider.
-     * v1.2.79: Find the gap by detecting the white geometric outline (contour).
-     * The gap always has a thin white border forming a closed jigsaw shape.
-     * We find this contour directly — no column peaks, no gradient signals.
+     * v1.2.80: Find the gap by detecting the white geometric contour shape.
      *
-     * PRIMARY: Find white contour with jigsaw-appropriate size
-     * BACKUP: Local contrast dark band scan
+     * The gap ALWAYS has a thin white border forming a CLOSED geometric shape.
+     * We find this shape by:
+     *   1. Try multiple white thresholds (190, 200, 210, 220)
+     *   2. Morphological close to seal gaps in the outline
+     *   3. Find contours → filter by size + geometric shape (approxPolyDP)
+     *   4. Verify: interior should be darker than exterior (gap shadow)
+     *   5. Pick the best verified candidate
      *
      * Returns the gap CENTER X in screen coordinates, or null if detection fails.
      */
@@ -141,7 +144,6 @@ object PuzzleSolver {
             val top = (sliderY - 500).coerceAtLeast(0)
             val bottom = (sliderY - 20).coerceAtLeast(top + 10).coerceAtMost(screenshot.height)
             if (bottom <= top) return null
-            // Search right of the piece (piece sits near sliderX)
             val searchLeft = (sliderX + 60f).toInt().coerceAtLeast(0)
             val searchRight = screenshot.width
             if (searchRight - searchLeft < 80) return null
@@ -149,122 +151,149 @@ object PuzzleSolver {
             Utils.bitmapToMat(screenshot, src)
             Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
             val region = gray.submat(top, bottom, searchLeft, searchRight)
-
-            // === PRIMARY: Find white geometric outline (contour) ===
-            // The gap has a thin white border that forms a closed geometric shape.
-            // Steps: threshold for white → find contours → filter by size/shape
-
-            // Threshold for bright white pixels
-            val whiteMask = Mat()
-            Imgproc.threshold(region, whiteMask, 200.0, 255.0, Imgproc.THRESH_BINARY)
-
-            // Light blur to connect nearby white pixels into continuous outline
-            val blurredWhite = Mat()
-            Imgproc.GaussianBlur(whiteMask, blurredWhite, Size(3.0, 3.0), 0.0)
-            val cleanMask = Mat()
-            Imgproc.threshold(blurredWhite, cleanMask, 128.0, 255.0, Imgproc.THRESH_BINARY)
-            blurredWhite.release()
-            whiteMask.release()
-
-            // Find contours in the white mask
-            val contours = mutableListOf<MatOfPoint>()
-            val hierarchy = Mat()
-            val maskClone = cleanMask.clone()
-            Imgproc.findContours(
-                maskClone, contours, hierarchy,
-                Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
-            )
-            maskClone.release()
-            hierarchy.release()
-
-            saveMat(cleanMask, "white_mask")
-            cleanMask.release()
-
-            // Filter contours for jigsaw-shaped gap outline
-            // A jigsaw piece is typically 40-120px wide and 40-120px tall
-            data class GapCandidate(val cx: Int, val rect: org.opencv.core.Rect,
-                val perimeter: Double, val area: Double, val score: Double)
-            val candidates = mutableListOf<GapCandidate>()
-
-            for (contour in contours) {
-                val rect = Imgproc.boundingRect(contour)
-                val area = Imgproc.contourArea(contour)
-                val perim = Imgproc.arcLength(MatOfPoint2f(*contour.toArray()), true)
-                contour.release()
-
-                // Size filter: must be jigsaw piece sized
-                if (rect.width < 30 || rect.width > 150) continue
-                if (rect.height < 30 || rect.height > 150) continue
-
-                // Aspect ratio: roughly square-ish (0.4 to 2.5)
-                val aspect = rect.width.toFloat() / rect.height
-                if (aspect < 0.4f || aspect > 2.5f) continue
-
-                // Perimeter must be reasonable for a geometric shape
-                // A simple rectangle: perim = 2*(w+h). Jigsaw has tabs → more perimeter.
-                val minPerim = (rect.width + rect.height).toFloat()
-                if (perim < minPerim) continue
-
-                // Score: prefer larger perimeter (more defined outline) and
-                // shapes that are more "outline-like" (low area relative to perimeter)
-                // An outline has small area but large perimeter
-                val outlineScore = perim / (area.coerceAtLeast(1.0))
-                val cx = rect.x + rect.width / 2 + searchLeft
-
-                Log.d(TAG, "detectGap: contour at x=${rect.x + searchLeft} " +
-                    "${rect.width}x${rect.height} perim=${"%.0f".format(perim)} " +
-                    "area=${"%.0f".format(area)} score=${"%.2f".format(outlineScore)}")
-
-                candidates.add(GapCandidate(cx, rect, perim, area, outlineScore))
-            }
-
-            if (candidates.isNotEmpty()) {
-                // Pick the candidate with highest outline score (most geometric/outline-like)
-                val best = candidates.maxByOrNull { it.score }!!
-                Log.d(TAG, "detectGap: BEST contour cx=${best.cx} " +
-                    "${best.rect.width}x${best.rect.height} score=${"%.2f".format(best.score)}")
-                region.release()
-                return best.cx
-            }
-
-            // === BACKUP: Local contrast scan (darker band between brighter neighbors) ===
-            Log.d(TAG, "detectGap: no white contour found, trying local contrast")
+            val regionH = bottom - top
             val regionW = searchRight - searchLeft
-            val colMeans = DoubleArray(regionW)
-            for (x in 0 until regionW) {
-                val col = region.col(x)
-                colMeans[x] = Core.mean(col).`val`[0]
-                col.release()
-            }
-            region.release()
 
-            var bestX: Int? = null
-            var bestContrast = 0.0
-            for (w in 40..80 step 10) {
-                if (w * 3 > regionW) break
-                for (x in w..(regionW - w * 2)) {
-                    val windowAvg = colMeans.slice(x until x + w).average()
-                    val leftAvg = colMeans.slice((x - w) until x).average()
-                    val rightEnd = (x + w * 2).coerceAtMost(regionW)
-                    val rightAvg = colMeans.slice((x + w) until rightEnd).average()
-                    val contrast = ((leftAvg + rightAvg) / 2.0) - windowAvg
-                    if (contrast > bestContrast) {
-                        bestContrast = contrast
-                        bestX = x + w / 2
+            debugCounter++
+
+            // === Try multiple thresholds to handle different image brightness ===
+            data class GapCandidate(
+                val cx: Int, val cy: Int,
+                val rect: org.opencv.core.Rect,
+                val area: Double, val vertices: Int,
+                val interiorDiff: Double, // negative = interior darker = gap shadow
+                val threshold: Int
+            )
+            val allCandidates = mutableListOf<GapCandidate>()
+
+            for (thresh in intArrayOf(190, 200, 210, 220)) {
+                val whiteMask = Mat()
+                Imgproc.threshold(region, whiteMask, thresh.toDouble(), 255.0, Imgproc.THRESH_BINARY)
+
+                // Morphological close: dilate then erode — seals small gaps in outline
+                val closeK = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
+                Imgproc.morphologyEx(whiteMask, whiteMask, Imgproc.MORPH_CLOSE, closeK)
+                closeK.release()
+
+                if (thresh == 200) saveMat(whiteMask, "white_mask_200")
+
+                val contours = mutableListOf<MatOfPoint>()
+                val hierarchy = Mat()
+                val clone = whiteMask.clone()
+                Imgproc.findContours(
+                    clone, contours, hierarchy,
+                    Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE
+                )
+                clone.release()
+                hierarchy.release()
+                whiteMask.release()
+
+                for (contour in contours) {
+                    val rect = Imgproc.boundingRect(contour)
+                    val area = Imgproc.contourArea(contour)
+
+                    // Size filter: jigsaw piece sized (30-150px)
+                    if (rect.width < 30 || rect.width > 150 ||
+                        rect.height < 30 || rect.height > 150) {
+                        contour.release(); continue
                     }
+
+                    // Aspect ratio check
+                    val aspect = rect.width.toFloat() / rect.height
+                    if (aspect < 0.4f || aspect > 2.5f) {
+                        contour.release(); continue
+                    }
+
+                    // Geometric shape check: approximate to polygon
+                    val contour2f = MatOfPoint2f(*contour.toArray())
+                    val perim = Imgproc.arcLength(contour2f, true)
+                    val approx = MatOfPoint2f()
+                    Imgproc.approxPolyDP(contour2f, approx, perim * 0.02, true)
+                    val vertices = approx.rows()
+                    contour2f.release()
+                    approx.release()
+                    contour.release()
+
+                    // A geometric shape has 4-20 vertices after simplification
+                    // (rectangle=4, jigsaw with tabs=6-16, complex noise=many more)
+                    if (vertices < 4 || vertices > 25) continue
+
+                    // === Verify: interior should be darker than exterior (gap shadow) ===
+                    val innerL = (rect.x + 5).coerceAtLeast(0)
+                    val innerR = (rect.x + rect.width - 5).coerceAtMost(regionW)
+                    val innerT = (rect.y + 5).coerceAtLeast(0)
+                    val innerB = (rect.y + rect.height - 5).coerceAtMost(regionH)
+
+                    if (innerR <= innerL || innerB <= innerT) continue
+
+                    val innerRegion = region.submat(innerT, innerB, innerL, innerR)
+                    val innerMean = Core.mean(innerRegion).`val`[0]
+                    innerRegion.release()
+
+                    // Exterior: sample left and right bands outside the rect
+                    var exteriorMean = 0.0
+                    var extCount = 0
+                    val extBandW = 20
+                    val extL = (rect.x - extBandW).coerceAtLeast(0)
+                    val extR = (rect.x + rect.width + extBandW).coerceAtMost(regionW)
+                    if (rect.x - extL >= 5) {
+                        val leftBand = region.submat(innerT, innerB, extL, rect.x)
+                        exteriorMean += Core.mean(leftBand).`val`[0]
+                        leftBand.release()
+                        extCount++
+                    }
+                    if (extR - (rect.x + rect.width) >= 5) {
+                        val rightBand = region.submat(
+                            innerT, innerB, rect.x + rect.width, extR
+                        )
+                        exteriorMean += Core.mean(rightBand).`val`[0]
+                        rightBand.release()
+                        extCount++
+                    }
+                    if (extCount > 0) exteriorMean /= extCount
+                    else exteriorMean = innerMean // can't verify
+
+                    // Interior-exterior difference (negative = interior darker = gap shadow)
+                    val interiorDiff = innerMean - exteriorMean
+
+                    val cx = rect.x + rect.width / 2 + searchLeft
+                    val cy = rect.y + rect.height / 2
+
+                    Log.d(TAG, "detectGap: thresh=$thresh contour x=$cx " +
+                        "${rect.width}x${rect.height} area=${"%.0f".format(area)} " +
+                        "vertices=$vertices innerDiff=${"%.1f".format(interiorDiff)}")
+
+                    allCandidates.add(GapCandidate(
+                        cx, cy, rect, area, vertices, interiorDiff, thresh
+                    ))
                 }
             }
-            val globalMean = colMeans.average()
-            val minContrast = (globalMean * 0.012).coerceIn(1.5, 5.0)
-            if (bestContrast > minContrast && bestX != null) {
-                val result = bestX + searchLeft
-                Log.d(TAG, "detectGap: local contrast → x=$result " +
-                    "(contrast=${"%.1f".format(bestContrast)})")
-                return result
+
+            region.release()
+
+            if (allCandidates.isEmpty()) {
+                Log.d(TAG, "detectGap: no geometric contour found")
+                return null
             }
 
-            Log.d(TAG, "detectGap: all methods failed")
-            return null
+            // === Select best candidate ===
+            // Priority: interior darker than exterior (negative interiorDiff)
+            // Among those, pick the one with largest area (most well-defined outline)
+            val darkInterior = allCandidates.filter { it.interiorDiff < -2.0 }
+            val best = if (darkInterior.isNotEmpty()) {
+                // Gap has shadow: pick largest area among dark-interior candidates
+                darkInterior.maxByOrNull { it.area }!!
+            } else {
+                // No clear shadow: pick largest area overall
+                allCandidates.maxByOrNull { it.area }!!
+            }
+
+            Log.d(TAG, "detectGap: BEST cx=${best.cx} ${best.rect.width}x${best.rect.height} " +
+                "area=${"%.0f".format(best.area)} vertices=${best.vertices} " +
+                "innerDiff=${"%.1f".format(best.interiorDiff)} thresh=${best.threshold} " +
+                "candidates=${allCandidates.size} darkInterior=${darkInterior.size}")
+
+            return best.cx
         } catch (e: Exception) {
             Log.e(TAG, "detectGapFromStatic failed: ${e.message}")
             return null
