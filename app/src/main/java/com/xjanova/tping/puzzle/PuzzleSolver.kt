@@ -28,6 +28,10 @@ object PuzzleSolver {
     var debugSaveImages = true
     private var debugCounter = 0
 
+    /** Last template matching confidence (0..1) from detectGapSimple */
+    @Volatile var lastConfidence: Double = 0.0
+        private set
+
     /** Set the debug output directory (should be app cache/files dir) */
     var debugDir: File? = null
 
@@ -1172,6 +1176,7 @@ object PuzzleSolver {
             pieceCrop.release()
 
             val gapCenterX = loc.maxLoc.x.toInt() + estimatedPieceW / 2
+            lastConfidence = loc.maxVal
 
             Log.d(TAG, "detectGapSimple: match at x=$gapCenterX " +
                 "conf=${"%.3f".format(loc.maxVal)} " +

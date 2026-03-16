@@ -102,6 +102,12 @@ object PuzzleCaptchaAction {
     private const val TAG = "PuzzleCaptcha"
     private val gson = Gson()
 
+    // Track last detection result for auto-feedback
+    @Volatile var lastDetectedGapX: Int = 0
+        private set
+    @Volatile var lastDetectionMethod: String = "unknown"
+        private set
+
     suspend fun execute(
         service: TpingAccessibilityService,
         action: RecordedAction,
@@ -543,6 +549,14 @@ object PuzzleCaptchaAction {
                     "Solved (UI gone)",
                     "attempt=$attempt, mode=$dragMode, shell=$useShellSwipe"
                 )
+                // Auto-feedback: puzzle solved successfully
+                @Suppress("OPT_IN_USAGE")
+                GlobalScope.launch(Dispatchers.IO) {
+                    DiagnosticReporter.sendPuzzleFeedback(
+                        success = true, detectedGapX = lastDetectedGapX,
+                        attempt = attempt, detectionMethod = lastDetectionMethod
+                    )
+                }
                 try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
                 autoSendDiagnostics()
                 return
@@ -570,6 +584,14 @@ object PuzzleCaptchaAction {
                                 "Solved",
                                 "attempt=$attempt, mode=$dragMode, shell=$useShellSwipe"
                             )
+                            // Auto-feedback: puzzle solved successfully
+                            @Suppress("OPT_IN_USAGE")
+                            GlobalScope.launch(Dispatchers.IO) {
+                                DiagnosticReporter.sendPuzzleFeedback(
+                                    success = true, detectedGapX = lastDetectedGapX,
+                                    attempt = attempt, detectionMethod = lastDetectionMethod
+                                )
+                            }
                             try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
                             autoSendDiagnostics()
                             return
@@ -586,6 +608,15 @@ object PuzzleCaptchaAction {
                             "Not solved",
                             "attempt=$attempt, remainGapX=$remainGapX, target=${targetX.toInt()}, drift=$sliderDrift"
                         )
+                        // Auto-feedback: puzzle NOT solved, send actual gap position
+                        @Suppress("OPT_IN_USAGE")
+                        GlobalScope.launch(Dispatchers.IO) {
+                            DiagnosticReporter.sendPuzzleFeedback(
+                                success = false, detectedGapX = lastDetectedGapX,
+                                actualGapX = remainGapX,
+                                attempt = attempt, detectionMethod = lastDetectionMethod
+                            )
+                        }
                     }
                 }
             } else {
@@ -1565,6 +1596,15 @@ object PuzzleCaptchaAction {
             return "gap_not_detected"
         }
 
+        // Save before screenshot for potential server inference
+        val debugDir = PuzzleSolver.debugDir
+        if (debugDir != null) {
+            try {
+                val beforeFile = java.io.File(debugDir, "before_for_server.png")
+                beforeFile.outputStream().use { preScreenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            } catch (_: Exception) {}
+        }
+
         // Also get static detection as backup (from BEFORE image)
         val staticGapX = PuzzleSolver.detectGapFromStatic(
             preScreenshot, sliderY.toInt(), sliderX
@@ -1604,6 +1644,14 @@ object PuzzleCaptchaAction {
         var detectionMethod = "none"
 
         if (postScreenshot != null) {
+            // Save after screenshot for potential server inference
+            if (debugDir != null) {
+                try {
+                    val afterFile = java.io.File(debugDir, "after_for_server.png")
+                    afterFile.outputStream().use { postScreenshot.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+                } catch (_: Exception) {}
+            }
+
             val diffGapX = PuzzleSolver.detectGapSimple(
                 preScreenshot, postScreenshot,
                 sliderY.toInt(), sliderX, exploreDistance
@@ -1615,6 +1663,29 @@ object PuzzleCaptchaAction {
             }
         }
         preScreenshot.recycle()
+
+        // Server inference fallback: when local confidence is low, ask server
+        if (gapX != null && PuzzleSolver.lastConfidence < 0.3) {
+            Log.d(TAG, "ScanGesture: local confidence low (${"%.3f".format(PuzzleSolver.lastConfidence)}), trying server inference...")
+            val debugDir = PuzzleSolver.debugDir
+            val beforeFile = debugDir?.let { java.io.File(it, "before_for_server.png") }
+            val afterFile = debugDir?.let { java.io.File(it, "after_for_server.png") }
+            // Use saved debug images if available, otherwise keep local result
+            if (beforeFile?.exists() == true && afterFile?.exists() == true) {
+                val serverGapX = withContext(Dispatchers.IO) {
+                    DiagnosticReporter.requestServerInference(
+                        beforeFile, afterFile,
+                        sliderX.toInt(), sliderY.toInt(),
+                        exploreDistance.toInt(), trackWidth.toInt()
+                    )
+                }
+                if (serverGapX != null) {
+                    gapX = serverGapX.toFloat()
+                    detectionMethod = "server"
+                    Log.d(TAG, "ScanGesture: using server inference gap=$serverGapX")
+                }
+            }
+        }
 
         // Fall back to static detection
         if (gapX == null && staticGapX != null) {
@@ -1644,6 +1715,10 @@ object PuzzleCaptchaAction {
             return "gap_too_close"
         }
 
+        // Update object-level tracking for auto-feedback
+        lastDetectedGapX = gapX.toInt()
+        lastDetectionMethod = detectionMethod
+
         Log.d(TAG, "ScanGesture: gap=${gapX.toInt()} method=$detectionMethod " +
             "slider=${sliderX.toInt()} dist=${totalDragDist.toInt()}")
         DiagnosticReporter.logCaptcha("GapDetected",
@@ -1651,8 +1726,8 @@ object PuzzleCaptchaAction {
             "dist=${totalDragDist.toInt()}, trackW=${trackWidth.toInt()}")
 
         // Upload debug images async (fire-and-forget, don't block the drag)
-        val debugDir = PuzzleSolver.debugDir
-        if (debugDir != null && debugDir.exists()) {
+        val uploadDir = PuzzleSolver.debugDir
+        if (uploadDir != null && uploadDir.exists()) {
             @Suppress("OPT_IN_USAGE")
             GlobalScope.launch(Dispatchers.IO) {
                 try {
@@ -1663,7 +1738,7 @@ object PuzzleCaptchaAction {
                         "drag_dist" to totalDragDist.toInt().toString(),
                         "track_width" to trackWidth.toInt().toString()
                     )
-                    DiagnosticReporter.uploadDebugImages(debugDir, metadata)
+                    DiagnosticReporter.uploadDebugImages(uploadDir, metadata)
                 } catch (e: Exception) {
                     Log.w(TAG, "Debug image upload failed: ${e.message}")
                 }

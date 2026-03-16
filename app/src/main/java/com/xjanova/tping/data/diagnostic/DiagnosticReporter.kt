@@ -270,6 +270,130 @@ object DiagnosticReporter {
         }
     }
 
+    // ====== Puzzle Feedback (Auto-Label) ======
+
+    /**
+     * Send puzzle solve result back to server for auto-labeling.
+     * This creates a self-learning feedback loop:
+     * - success=true + gap_x used → server knows the detection was accurate
+     * - success=false + actual_gap_x (from remaining gap) → server knows the error
+     *
+     * Call from background thread.
+     */
+    fun sendPuzzleFeedback(
+        success: Boolean,
+        detectedGapX: Int,
+        actualGapX: Int? = null,
+        attempt: Int = 0,
+        detectionMethod: String = "unknown"
+    ): SendResult {
+        val ctx = appContext ?: return SendResult(false, "App not initialized")
+        val hardwareHash = DeviceManager.getHardwareHash(ctx)
+
+        try {
+            val payload = mapOf(
+                "machine_id" to hardwareHash,
+                "app_version" to BuildConfig.VERSION_NAME,
+                "success" to success,
+                "detected_gap_x" to detectedGapX,
+                "actual_gap_x" to (actualGapX ?: if (success) detectedGapX else null),
+                "attempt" to attempt,
+                "detection_method" to detectionMethod,
+                "timestamp" to dateFormat.format(java.util.Date())
+            )
+
+            val json = gson.toJson(payload)
+            val requestBody = json.toRequestBody(JSON_TYPE)
+            val request = Request.Builder()
+                .url("$BASE_URL/debug-images/feedback")
+                .post(requestBody)
+                .addHeader("Accept", "application/json")
+                .build()
+
+            val response = client.newCall(request).execute()
+            return if (response.isSuccessful) {
+                Log.d(TAG, "Puzzle feedback sent: success=$success gap=$detectedGapX actual=$actualGapX")
+                SendResult(true, "Feedback sent")
+            } else {
+                SendResult(false, "Feedback failed (${response.code})")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Puzzle feedback error", e)
+            return SendResult(false, "Feedback error: ${e.localizedMessage?.take(100)}")
+        }
+    }
+
+    // ====== Server Inference ======
+
+    /**
+     * Request gap detection from server AI model.
+     * Sends the before/after screenshots, server returns predicted gap_x.
+     *
+     * Call from background thread.
+     *
+     * @return predicted gap X coordinate, or null if server can't detect
+     */
+    fun requestServerInference(
+        beforeImage: java.io.File,
+        afterImage: java.io.File,
+        sliderX: Int,
+        sliderY: Int,
+        moveDistance: Int,
+        trackWidth: Int
+    ): Int? {
+        val ctx = appContext ?: return null
+
+        try {
+            val hardwareHash = DeviceManager.getHardwareHash(ctx)
+
+            val builder = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("machine_id", hardwareHash)
+                .addFormDataPart("app_version", BuildConfig.VERSION_NAME)
+                .addFormDataPart("slider_x", sliderX.toString())
+                .addFormDataPart("slider_y", sliderY.toString())
+                .addFormDataPart("move_distance", moveDistance.toString())
+                .addFormDataPart("track_width", trackWidth.toString())
+                .addFormDataPart(
+                    "before", "before.png",
+                    beforeImage.asRequestBody(IMAGE_TYPE)
+                )
+                .addFormDataPart(
+                    "after", "after.png",
+                    afterImage.asRequestBody(IMAGE_TYPE)
+                )
+
+            val request = Request.Builder()
+                .url("$BASE_URL/debug-images/infer")
+                .post(builder.build())
+                .addHeader("Accept", "application/json")
+                .build()
+
+            val inferClient = OkHttpClient.Builder()
+                .connectTimeout(15, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .certificatePinner(CertPinning.pinner)
+                .build()
+
+            val response = inferClient.newCall(request).execute()
+            if (response.isSuccessful) {
+                val body = response.body?.string() ?: return null
+                val result = gson.fromJson(body, Map::class.java)
+                val gapX = (result["gap_x"] as? Number)?.toInt()
+                val confidence = (result["confidence"] as? Number)?.toDouble() ?: 0.0
+                Log.d(TAG, "Server inference: gap_x=$gapX confidence=$confidence")
+                return if (confidence >= 0.3) gapX else null
+            } else {
+                Log.w(TAG, "Server inference failed: ${response.code}")
+                return null
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Server inference error: ${e.message}")
+            return null
+        }
+    }
+
     /**
      * Clear all pending events without sending.
      */
