@@ -16,6 +16,7 @@ import com.xjanova.tping.overlay.FloatingOverlayService
 import com.xjanova.tping.service.TpingAccessibilityService
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -1648,6 +1649,26 @@ object PuzzleCaptchaAction {
         DiagnosticReporter.logCaptcha("GapDetected",
             "method=$detectionMethod, gap=${gapX.toInt()}, slider=${sliderX.toInt()}, " +
             "dist=${totalDragDist.toInt()}, trackW=${trackWidth.toInt()}")
+
+        // Upload debug images async (fire-and-forget, don't block the drag)
+        val debugDir = PuzzleSolver.debugDir
+        if (debugDir != null && debugDir.exists()) {
+            @Suppress("OPT_IN_USAGE")
+            GlobalScope.launch(Dispatchers.IO) {
+                try {
+                    val metadata = mapOf(
+                        "detection_method" to detectionMethod,
+                        "gap_x" to gapX.toInt().toString(),
+                        "slider_x" to sliderX.toInt().toString(),
+                        "drag_dist" to totalDragDist.toInt().toString(),
+                        "track_width" to trackWidth.toInt().toString()
+                    )
+                    DiagnosticReporter.uploadDebugImages(debugDir, metadata)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Debug image upload failed: ${e.message}")
+                }
+            }
+        }
 
         // --- Phase 5: Drag from current position to gap ---
         val dragDist = gapX - currentX

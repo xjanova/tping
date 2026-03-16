@@ -9,9 +9,12 @@ import com.xjanova.tping.BuildConfig
 import com.xjanova.tping.data.license.CertPinning
 import com.xjanova.tping.data.license.DeviceManager
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -188,6 +191,82 @@ object DiagnosticReporter {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to send diagnostics", e)
             SendResult(false, "เชื่อมต่อไม่ได้: ${e.localizedMessage?.take(100)}")
+        }
+    }
+
+    // ====== Debug Image Upload ======
+
+    private val IMAGE_TYPE = "image/png".toMediaType()
+
+    /**
+     * Upload puzzle debug images to server for learning/analysis.
+     * Sends all PNG files from the debug directory as multipart form data.
+     * Call from background thread.
+     *
+     * @param debugDir directory containing debug PNGs (e.g. puzzle_debug/)
+     * @param metadata extra info: gapX, confidence, detectionMethod, attempt, etc.
+     */
+    fun uploadDebugImages(debugDir: File, metadata: Map<String, String>): SendResult {
+        val ctx = appContext ?: return SendResult(false, "App not initialized")
+
+        val pngFiles = debugDir.listFiles { f -> f.extension == "png" }
+        if (pngFiles.isNullOrEmpty()) {
+            Log.d(TAG, "No debug images to upload")
+            return SendResult(true, "No images")
+        }
+
+        // Sort by name to get consistent order (debugCounter_name.png)
+        val sorted = pngFiles.sortedBy { it.name }
+
+        val hardwareHash = DeviceManager.getHardwareHash(ctx)
+
+        try {
+            val builder = MultipartBody.Builder()
+                .setType(MultipartBody.FORM)
+                .addFormDataPart("machine_id", hardwareHash)
+                .addFormDataPart("app_version", BuildConfig.VERSION_NAME)
+                .addFormDataPart("timestamp", dateFormat.format(Date()))
+
+            // Add all metadata fields
+            for ((key, value) in metadata) {
+                builder.addFormDataPart(key, value)
+            }
+
+            // Add image files (limit to 10 most recent to avoid huge uploads)
+            val filesToUpload = sorted.takeLast(10)
+            for (file in filesToUpload) {
+                builder.addFormDataPart(
+                    "images", file.name,
+                    file.asRequestBody(IMAGE_TYPE)
+                )
+            }
+
+            val requestBody = builder.build()
+            val request = Request.Builder()
+                .url("$BASE_URL/debug-images")
+                .post(requestBody)
+                .addHeader("Accept", "application/json")
+                .build()
+
+            val uploadClient = OkHttpClient.Builder()
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(60, TimeUnit.SECONDS)
+                .writeTimeout(60, TimeUnit.SECONDS)
+                .certificatePinner(CertPinning.pinner)
+                .build()
+
+            val response = uploadClient.newCall(request).execute()
+            return if (response.isSuccessful) {
+                Log.d(TAG, "Uploaded ${filesToUpload.size} debug images successfully")
+                SendResult(true, "Uploaded ${filesToUpload.size} images")
+            } else {
+                val msg = response.body?.string()?.take(200) ?: "HTTP ${response.code}"
+                Log.w(TAG, "Debug image upload failed: $msg")
+                SendResult(false, "Upload failed (${response.code})")
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Debug image upload error", e)
+            return SendResult(false, "Upload error: ${e.localizedMessage?.take(100)}")
         }
     }
 
