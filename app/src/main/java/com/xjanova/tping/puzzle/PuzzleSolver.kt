@@ -1020,16 +1020,21 @@ object PuzzleSolver {
     )
 
     /**
-     * v1.2.81: SIMPLE diff-based gap detection.
+     * v1.2.82: Diff + RAW grayscale template matching.
      *
-     * 1. Compute diff between BEFORE and AFTER screenshots
-     * 2. Find piece contour in diff (the thing that moved)
-     * 3. Crop piece from AFTER image → Canny edges → template
-     * 4. Canny edges on BEFORE image → ZERO OUT piece position
-     * 5. ONE template match → gap position
-     * 6. Return gap center X in SCREEN coordinates
+     * Key insight from user: the gap has the SAME image content as the piece
+     * but BRIGHTER. Using Canny edges destroys brightness info and loses the match.
      *
-     * This is the proven production approach: GaussianBlur + Canny + TM_CCOEFF_NORMED
+     * TM_CCOEFF_NORMED is brightness-invariant (normalized cross-correlation),
+     * so it naturally handles the brighter gap content.
+     *
+     * Steps:
+     * 1. Diff → find piece blob (merged old+new positions)
+     * 2. Estimate real piece width = blob width - moveDistance
+     * 3. Crop piece from RIGHT side of blob in AFTER image (where piece IS now)
+     * 4. Light blur on BEFORE image → zero out ENTIRE diff blob area
+     * 5. ONE template match (TM_CCOEFF_NORMED) on RAW grayscale
+     * 6. Return gap center X in screen coordinates
      */
     fun detectGapSimple(
         before: Bitmap, after: Bitmap,
@@ -1056,15 +1061,14 @@ object PuzzleSolver {
             val regionBefore = grayBefore.submat(top, bottom, 0, w)
             val regionAfter = grayAfter.submat(top, bottom, 0, w)
 
-            // === Step 1: Diff to find piece ===
+            // === Step 1: Diff to find piece blob ===
             val diff = Mat()
             Core.absdiff(regionBefore, regionAfter, diff)
             val blurDiff = Mat()
             Imgproc.GaussianBlur(diff, blurDiff, Size(7.0, 7.0), 0.0)
             val binary = Mat()
-            Imgproc.threshold(blurDiff, binary, 30.0, 255.0, Imgproc.THRESH_BINARY)
+            Imgproc.threshold(blurDiff, binary, 25.0, 255.0, Imgproc.THRESH_BINARY)
 
-            // Clean noise
             val morphK = Imgproc.getStructuringElement(Imgproc.MORPH_RECT, Size(5.0, 5.0))
             Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_OPEN, morphK)
             Imgproc.morphologyEx(binary, binary, Imgproc.MORPH_CLOSE, morphK)
@@ -1074,7 +1078,7 @@ object PuzzleSolver {
             saveMat(diff, "diff_raw")
             saveMat(binary, "diff_binary")
 
-            // === Step 2: Find piece contour (largest blob in diff) ===
+            // === Step 2: Find largest blob = merged old+new piece positions ===
             val contours = mutableListOf<MatOfPoint>()
             val hierarchy = Mat()
             val bClone = binary.clone()
@@ -1083,37 +1087,42 @@ object PuzzleSolver {
             bClone.release()
             hierarchy.release()
 
-            var bestRect: org.opencv.core.Rect? = null
-            var bestArea = 0.0
+            var blobRect: org.opencv.core.Rect? = null
+            var blobArea = 0.0
             for (c in contours) {
                 val area = Imgproc.contourArea(c)
                 val rect = Imgproc.boundingRect(c)
                 c.release()
-                if (area > bestArea && rect.width > 20 && rect.height > 20
-                    && rect.width < 200 && rect.height < 200) {
-                    bestArea = area
-                    bestRect = rect
+                if (area > blobArea && rect.width > 20 && rect.height > 20
+                    && rect.width < 300 && rect.height < 200) {
+                    blobArea = area
+                    blobRect = rect
                 }
             }
 
-            if (bestRect == null) {
-                Log.w(TAG, "detectGapSimple: no piece contour found in diff")
+            if (blobRect == null) {
+                Log.w(TAG, "detectGapSimple: no diff blob found")
                 diff.release(); blurDiff.release(); binary.release()
                 regionBefore.release(); regionAfter.release()
                 return null
             }
 
-            Log.d(TAG, "detectGapSimple: piece at (${bestRect.x},${bestRect.y}) " +
-                "${bestRect.width}x${bestRect.height} area=${"%.0f".format(bestArea)}")
+            // === Step 3: Estimate real piece width and crop from RIGHT side ===
+            // Diff blob = merged old+new positions. If piece moved moveDistance px,
+            // blob width ≈ pieceWidth + moveDistance. So pieceWidth ≈ blobWidth - moveDistance
+            val moveInt = moveDistance.toInt()
+            val estimatedPieceW = (blobRect.width - moveInt).coerceIn(30, 150)
+            val pieceH = blobRect.height
 
-            val pieceW = bestRect.width
-            val pieceH = bestRect.height
+            Log.d(TAG, "detectGapSimple: blob=(${blobRect.x},${blobRect.y}) " +
+                "${blobRect.width}x${blobRect.height} area=${"%.0f".format(blobArea)} " +
+                "estimatedPieceW=$estimatedPieceW moveDistance=$moveInt")
 
-            // === Step 3: Crop piece from AFTER image → Canny edges ===
-            val pT = bestRect.y.coerceAtLeast(0)
-            val pB = (bestRect.y + pieceH).coerceAtMost(regionAfter.rows())
-            val pL = bestRect.x.coerceAtLeast(0)
-            val pR = (bestRect.x + pieceW).coerceAtMost(regionAfter.cols())
+            // Piece is at the RIGHT side of the blob (where it moved TO in AFTER)
+            val pL = (blobRect.x + blobRect.width - estimatedPieceW).coerceAtLeast(0)
+            val pR = (blobRect.x + blobRect.width).coerceAtMost(w)
+            val pT = blobRect.y.coerceAtLeast(0)
+            val pB = (blobRect.y + pieceH).coerceAtMost(regionAfter.rows())
 
             if (pR - pL < 20 || pB - pT < 20) {
                 diff.release(); blurDiff.release(); binary.release()
@@ -1121,67 +1130,52 @@ object PuzzleSolver {
                 return null
             }
 
+            // Crop piece from AFTER image (RAW grayscale, NO Canny)
             val pieceCrop = regionAfter.submat(pT, pB, pL, pR)
-            val pieceBlur = Mat()
-            Imgproc.GaussianBlur(pieceCrop, pieceBlur, Size(5.0, 5.0), 0.0)
-            val pieceEdges = Mat()
-            Imgproc.Canny(pieceBlur, pieceEdges, 100.0, 200.0)
+            // Light blur to reduce noise but keep content
+            val pieceTemplate = Mat()
+            Imgproc.GaussianBlur(pieceCrop, pieceTemplate, Size(3.0, 3.0), 0.0)
             saveMat(pieceCrop, "piece_crop")
-            saveMat(pieceEdges, "piece_edges")
-            pieceCrop.release()
-            pieceBlur.release()
 
-            // === Step 4: Canny on BEFORE image → zero out piece position ===
-            val searchBlur = Mat()
-            Imgproc.GaussianBlur(regionBefore, searchBlur, Size(5.0, 5.0), 0.0)
-            val searchEdges = Mat()
-            Imgproc.Canny(searchBlur, searchEdges, 100.0, 200.0)
-            searchBlur.release()
+            // === Step 4: Prepare search image (BEFORE, blur, zero out piece area) ===
+            val searchImage = Mat()
+            Imgproc.GaussianBlur(regionBefore, searchImage, Size(3.0, 3.0), 0.0)
 
-            // Zero out the piece position in the search image (avoid self-match)
-            // Zero BOTH old position (piece in BEFORE) and new position (piece in AFTER)
-            // Old position: approximately at the diff blob location minus moveDistance
-            val oldPieceL = (bestRect.x - moveDistance.toInt() - 15).coerceAtLeast(0)
-            val oldPieceR = (bestRect.x - moveDistance.toInt() + pieceW + 15).coerceAtMost(w)
-            val newPieceL = (bestRect.x - 15).coerceAtLeast(0)
-            val newPieceR = (bestRect.x + pieceW + 15).coerceAtMost(w)
-
-            // Zero out old piece area
-            if (oldPieceR > oldPieceL) {
-                val zeroOld = searchEdges.submat(0, searchEdges.rows(), oldPieceL, oldPieceR)
-                zeroOld.setTo(Scalar(0.0))
-                zeroOld.release()
-            }
-            // Zero out new piece area
-            if (newPieceR > newPieceL) {
-                val zeroNew = searchEdges.submat(0, searchEdges.rows(), newPieceL, newPieceR)
-                zeroNew.setTo(Scalar(0.0))
-                zeroNew.release()
+            // Zero out the ENTIRE diff blob area (covers both old and new piece positions)
+            // Add generous padding to avoid partial matches near the piece
+            val zeroL = (blobRect.x - 20).coerceAtLeast(0)
+            val zeroR = (blobRect.x + blobRect.width + 20).coerceAtMost(w)
+            if (zeroR > zeroL) {
+                val zeroArea = searchImage.submat(0, searchImage.rows(), zeroL, zeroR)
+                zeroArea.setTo(Scalar(128.0)) // set to neutral gray (not 0 which creates edges)
+                zeroArea.release()
             }
 
-            saveMat(searchEdges, "search_edges_masked")
+            saveMat(searchImage, "search_masked")
 
-            // === Step 5: ONE template match ===
-            if (searchEdges.cols() < pieceEdges.cols() ||
-                searchEdges.rows() < pieceEdges.rows()) {
-                pieceEdges.release(); searchEdges.release()
+            // === Step 5: Template match (RAW grayscale, TM_CCOEFF_NORMED) ===
+            if (searchImage.cols() < pieceTemplate.cols() ||
+                searchImage.rows() < pieceTemplate.rows()) {
+                pieceTemplate.release(); searchImage.release()
+                pieceCrop.release()
                 diff.release(); blurDiff.release(); binary.release()
                 regionBefore.release(); regionAfter.release()
                 return null
             }
 
             val result = Mat()
-            Imgproc.matchTemplate(searchEdges, pieceEdges, result, Imgproc.TM_CCOEFF_NORMED)
+            Imgproc.matchTemplate(searchImage, pieceTemplate, result, Imgproc.TM_CCOEFF_NORMED)
             val loc = Core.minMaxLoc(result)
             result.release()
-            pieceEdges.release()
-            searchEdges.release()
+            pieceTemplate.release()
+            searchImage.release()
+            pieceCrop.release()
 
-            val gapCenterX = loc.maxLoc.x.toInt() + pieceW / 2
+            val gapCenterX = loc.maxLoc.x.toInt() + estimatedPieceW / 2
 
             Log.d(TAG, "detectGapSimple: match at x=$gapCenterX " +
                 "conf=${"%.3f".format(loc.maxVal)} " +
-                "oldPiece=($oldPieceL→$oldPieceR) newPiece=($newPieceL→$newPieceR)")
+                "zeroArea=($zeroL→$zeroR) pieceW=$estimatedPieceW")
 
             // Cleanup
             diff.release(); blurDiff.release(); binary.release()
@@ -1192,8 +1186,6 @@ object PuzzleSolver {
                 return null
             }
 
-            // gapCenterX is in image coordinates (0..w)
-            // This IS screen X because we used full width (0..w) for the region
             return gapCenterX
         } catch (e: Exception) {
             Log.e(TAG, "detectGapSimple failed: ${e.message}")
