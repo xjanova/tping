@@ -206,21 +206,35 @@ object DiagnosticReporter {
      * @param debugDir directory containing debug PNGs (e.g. puzzle_debug/)
      * @param metadata extra info: gapX, confidence, detectionMethod, attempt, etc.
      */
+    /** Last upload status for diagnostic feedback */
+    @Volatile var lastUploadStatus: String = "not_attempted"
+        private set
+
     /**
      * Upload debug images and return the server record ID.
      * Returns record_id > 0 on success, -1 on failure.
+     * After successful upload, deletes the uploaded files to save device storage.
      * Call from background thread (synchronous HTTP).
      */
     fun uploadDebugImages(debugDir: File, metadata: Map<String, String>): Long {
-        val ctx = appContext ?: return -1
+        val ctx = appContext ?: run {
+            lastUploadStatus = "err:app_not_init"
+            return -1
+        }
 
         val pngFiles = debugDir.listFiles { f -> f.extension == "png" }
         if (pngFiles.isNullOrEmpty()) {
-            Log.d(TAG, "No debug images to upload")
+            lastUploadStatus = "err:no_png_files(dir=${debugDir.absolutePath},exists=${debugDir.exists()})"
+            Log.d(TAG, "No debug images to upload: ${lastUploadStatus}")
             return -1
         }
 
         val sorted = pngFiles.sortedBy { it.name }
+        val filesToUpload = sorted.takeLast(10)
+        val totalSize = filesToUpload.sumOf { it.length() }
+        Log.d(TAG, "Uploading ${filesToUpload.size} debug images (${totalSize / 1024}KB): " +
+            filesToUpload.joinToString { it.name })
+
         val hardwareHash = DeviceManager.getHardwareHash(ctx)
 
         try {
@@ -234,8 +248,6 @@ object DiagnosticReporter {
                 builder.addFormDataPart(key, value)
             }
 
-            // Add image files (limit to 10 most recent to avoid huge uploads)
-            val filesToUpload = sorted.takeLast(10)
             for (file in filesToUpload) {
                 builder.addFormDataPart(
                     "images[]", file.name,
@@ -263,13 +275,23 @@ object DiagnosticReporter {
                 val json = gson.fromJson(body, com.google.gson.JsonObject::class.java)
                 val recordId = json?.get("id")?.asLong ?: -1
                 Log.d(TAG, "Uploaded ${filesToUpload.size} debug images → record #$recordId")
+                lastUploadStatus = "ok:${filesToUpload.size}imgs,record=$recordId"
+
+                // Delete uploaded files to save device storage
+                for (file in filesToUpload) {
+                    try { file.delete() } catch (_: Exception) {}
+                }
+                Log.d(TAG, "Cleaned up ${filesToUpload.size} uploaded debug images")
+
                 return recordId
             } else {
                 val msg = response.body?.string()?.take(200) ?: "HTTP ${response.code}"
+                lastUploadStatus = "err:http_${response.code}($msg)"
                 Log.w(TAG, "Debug image upload failed: $msg")
                 return -1
             }
         } catch (e: Exception) {
+            lastUploadStatus = "err:${e.javaClass.simpleName}(${e.localizedMessage?.take(80)})"
             Log.e(TAG, "Debug image upload error", e)
             return -1
         }
@@ -311,6 +333,8 @@ object DiagnosticReporter {
             if (recordId > 0) {
                 payload["record_id"] = recordId
             }
+            // Diagnostic: include upload status so server knows what happened
+            payload["upload_status"] = lastUploadStatus
 
             val json = gson.toJson(payload)
             val requestBody = json.toRequestBody(JSON_TYPE)
