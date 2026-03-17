@@ -1134,62 +1134,83 @@ object PuzzleSolver {
                 return null
             }
 
-            // Crop piece from AFTER image (RAW grayscale, NO Canny)
+            // Crop piece from AFTER image
             val pieceCrop = regionAfter.submat(pT, pB, pL, pR)
-            // Light blur to reduce noise but keep content
-            val pieceTemplate = Mat()
-            Imgproc.GaussianBlur(pieceCrop, pieceTemplate, Size(3.0, 3.0), 0.0)
             saveMat(pieceCrop, "piece_crop")
 
-            // === Step 4: Prepare search image (BEFORE, blur, zero out piece area) ===
-            val searchImage = Mat()
-            Imgproc.GaussianBlur(regionBefore, searchImage, Size(3.0, 3.0), 0.0)
+            // === Step 4: Prepare search image (BEFORE, zero out diff blob) ===
+            val searchImage = regionBefore.clone()
 
             // Zero out the ENTIRE diff blob area (covers both old and new piece positions)
-            // Add generous padding to avoid partial matches near the piece
             val zeroL = (blobRect.x - 20).coerceAtLeast(0)
             val zeroR = (blobRect.x + blobRect.width + 20).coerceAtMost(w)
             if (zeroR > zeroL) {
                 val zeroArea = searchImage.submat(0, searchImage.rows(), zeroL, zeroR)
-                zeroArea.setTo(Scalar(128.0)) // set to neutral gray (not 0 which creates edges)
+                zeroArea.setTo(Scalar(128.0))
                 zeroArea.release()
             }
 
             saveMat(searchImage, "search_masked")
 
-            // === Step 5: Template match (RAW grayscale, TM_CCOEFF_NORMED) ===
-            if (searchImage.cols() < pieceTemplate.cols() ||
-                searchImage.rows() < pieceTemplate.rows()) {
-                pieceTemplate.release(); searchImage.release()
-                pieceCrop.release()
+            // Size check
+            if (searchImage.cols() < pieceCrop.cols() ||
+                searchImage.rows() < pieceCrop.rows()) {
+                pieceCrop.release(); searchImage.release()
                 diff.release(); blurDiff.release(); binary.release()
                 regionBefore.release(); regionAfter.release()
                 return null
             }
 
-            val result = Mat()
-            Imgproc.matchTemplate(searchImage, pieceTemplate, result, Imgproc.TM_CCOEFF_NORMED)
-            val loc = Core.minMaxLoc(result)
-            result.release()
-            pieceTemplate.release()
-            searchImage.release()
-            pieceCrop.release()
+            // === Step 5: SHAPE MATCHING (primary) ===
+            // The piece shape from diff binary mask is the silhouette.
+            // The gap in BEFORE image has the same shape outline.
+            // Matching edges/silhouette is MORE ROBUST than matching pixel content.
+            val pieceMask = binary.submat(pT, pB, pL, pR)
+            val silEdges = Mat()
+            Imgproc.Canny(pieceMask, silEdges, 50.0, 150.0)
+            saveMat(silEdges, "piece_silhouette")
 
-            val gapCenterX = loc.maxLoc.x.toInt() + estimatedPieceW / 2
-            lastConfidence = loc.maxVal
+            val searchBlur = Mat()
+            Imgproc.GaussianBlur(searchImage, searchBlur, Size(3.0, 3.0), 0.0)
+            val searchEdges = Mat()
+            Imgproc.Canny(searchBlur, searchEdges, 50.0, 150.0)
+            saveMat(searchEdges, "search_edges")
 
-            Log.d(TAG, "detectGapSimple: match at x=$gapCenterX " +
-                "conf=${"%.3f".format(loc.maxVal)} " +
+            var silGapX: Int? = null
+            var silConf = 0.0
+            if (searchEdges.cols() >= silEdges.cols() && searchEdges.rows() >= silEdges.rows()) {
+                val silResult = Mat()
+                Imgproc.matchTemplate(searchEdges, silEdges, silResult, Imgproc.TM_CCOEFF_NORMED)
+                val silLoc = Core.minMaxLoc(silResult)
+                silResult.release()
+                silGapX = silLoc.maxLoc.x.toInt() + estimatedPieceW / 2
+                silConf = silLoc.maxVal
+                Log.d(TAG, "detectGapSimple: [SHAPE] x=$silGapX conf=${"%.3f".format(silConf)}")
+            }
+            searchEdges.release(); searchBlur.release()
+            silEdges.release(); pieceMask.release()
+
+            pieceCrop.release(); searchImage.release()
+
+            // === Step 6: Use shape matching result ONLY ===
+            if (silGapX == null || silConf < 0.08) {
+                Log.w(TAG, "detectGapSimple: shape match failed conf=${"%.3f".format(silConf)}")
+                diff.release(); blurDiff.release(); binary.release()
+                regionBefore.release(); regionAfter.release()
+                return null
+            }
+            val gapCenterX = silGapX
+            val finalConf = silConf
+            Log.d(TAG, "detectGapSimple: SHAPE match x=$gapCenterX conf=${"%.3f".format(finalConf)}")
+
+            lastConfidence = finalConf
+            Log.d(TAG, "detectGapSimple: FINAL x=$gapCenterX " +
+                "conf=${"%.3f".format(finalConf)} " +
                 "zeroArea=($zeroL→$zeroR) pieceW=$estimatedPieceW")
 
             // Cleanup
             diff.release(); blurDiff.release(); binary.release()
             regionBefore.release(); regionAfter.release()
-
-            if (loc.maxVal < 0.05) {
-                Log.w(TAG, "detectGapSimple: confidence too low (${"%.3f".format(loc.maxVal)})")
-                return null
-            }
 
             return gapCenterX
         } catch (e: Exception) {
