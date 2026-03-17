@@ -1494,6 +1494,30 @@ object PuzzleCaptchaAction {
             "method=$detectionMethod, gap=${gapX.toInt()}, slider=${sliderX.toInt()}, " +
             "dist=${totalDragDist.toInt()}, trackW=${trackWidth.toInt()}")
 
+        // Upload debug images async (fire-and-forget)
+        val uploadDir = PuzzleSolver.debugDir
+        if (uploadDir != null && uploadDir.exists()) {
+            @Suppress("OPT_IN_USAGE")
+            GlobalScope.launch(Dispatchers.IO) {
+                try {
+                    val metadata = mapOf(
+                        "detection_method" to detectionMethod,
+                        "gap_x" to gapX.toInt().toString(),
+                        "slider_x" to sliderX.toInt().toString(),
+                        "drag_dist" to totalDragDist.toInt().toString(),
+                        "track_width" to trackWidth.toInt().toString()
+                    )
+                    DiagnosticReporter.uploadDebugImages(uploadDir, metadata)
+                } catch (e: Exception) {
+                    Log.w(TAG, "Debug image upload failed: ${e.message}")
+                }
+            }
+        }
+
+        // Update object-level tracking for auto-feedback
+        lastDetectedGapX = gapX.toInt()
+        lastDetectionMethod = detectionMethod
+
         val (rawX, rawY) = dragState.logicalToRaw(sliderX, sliderY, screenW, screenH)
         dragState.lastRawX = rawX
         dragState.lastRawY = rawY

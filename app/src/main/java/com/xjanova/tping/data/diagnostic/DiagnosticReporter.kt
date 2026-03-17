@@ -236,7 +236,7 @@ object DiagnosticReporter {
             val filesToUpload = sorted.takeLast(10)
             for (file in filesToUpload) {
                 builder.addFormDataPart(
-                    "images", file.name,
+                    "images[]", file.name,
                     file.asRequestBody(IMAGE_TYPE)
                 )
             }
