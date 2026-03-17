@@ -122,7 +122,9 @@ object PuzzleCaptchaAction {
 
         // === Parse config ===
         val config: PuzzleConfig = try {
-            gson.fromJson(action.inputText, PuzzleConfig::class.java)
+            val parsed = gson.fromJson(action.inputText, PuzzleConfig::class.java)
+            // Force override maxRetries — old recordings have "maxRetries":10 baked in JSON
+            if (parsed.maxRetries < 99) parsed.copy(maxRetries = 99) else parsed
         } catch (e: Exception) {
             status("❌ Config ผิดพลาด: ${e.message?.take(50)}")
             DiagnosticReporter.logCaptcha("Config parse error", "error=${e.message}")
