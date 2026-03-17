@@ -168,6 +168,20 @@ object PuzzleCaptchaAction {
             Log.w(TAG, "Cannot set debug dir: ${e.message}")
         }
 
+        // Fetch correction model from human-labeled data (once per session)
+        try {
+            withContext(Dispatchers.IO) {
+                DiagnosticReporter.fetchCorrection()
+            }
+            val corr = DiagnosticReporter.correctionPx
+            val samples = DiagnosticReporter.correctionSamples
+            if (samples > 0) {
+                status("✓ AI correction: ${if (corr >= 0) "+" else ""}${"%.1f".format(corr)}px (จาก $samples ตัวอย่าง)")
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Correction fetch failed: ${e.message}")
+        }
+
         // === Get accurate screen dimensions ===
         // CRITICAL (v1.2.44): Use WindowManager.getRealSize() instead of
         // service.resources.displayMetrics. The AccessibilityService's displayMetrics
@@ -1520,6 +1534,15 @@ object PuzzleCaptchaAction {
             }
             preScreenshot.recycle()
 
+            // Apply AI correction from human-labeled data
+            if (gapX != null && DiagnosticReporter.correctionSamples >= 3) {
+                val corr = DiagnosticReporter.correctionPx
+                val before = gapX!!
+                gapX = gapX!! + corr
+                Log.d(TAG, "ScanDrag: AI correction applied: " +
+                    "${before.toInt()} + ${corr} = ${gapX!!.toInt()} (${DiagnosticReporter.correctionSamples} samples)")
+            }
+
             if (gapX == null) {
                 // Release and report failure
                 execShellAny("sh -c '${buildSendeventRelease(device.devicePath)}'")
@@ -1692,27 +1715,13 @@ object PuzzleCaptchaAction {
         }
         preScreenshot.recycle()
 
-        // Server inference fallback: when local confidence is low, ask server
-        if (gapX != null && PuzzleSolver.lastConfidence < 0.3) {
-            Log.d(TAG, "ScanGesture: local confidence low (${"%.3f".format(PuzzleSolver.lastConfidence)}), trying server inference...")
-            val debugDir = PuzzleSolver.debugDir
-            val beforeFile = debugDir?.let { java.io.File(it, "before_for_server.png") }
-            val afterFile = debugDir?.let { java.io.File(it, "after_for_server.png") }
-            // Use saved debug images if available, otherwise keep local result
-            if (beforeFile?.exists() == true && afterFile?.exists() == true) {
-                val serverGapX = withContext(Dispatchers.IO) {
-                    DiagnosticReporter.requestServerInference(
-                        beforeFile, afterFile,
-                        sliderX.toInt(), sliderY.toInt(),
-                        exploreDistance.toInt(), trackWidth.toInt()
-                    )
-                }
-                if (serverGapX != null) {
-                    gapX = serverGapX.toFloat()
-                    detectionMethod = "server"
-                    Log.d(TAG, "ScanGesture: using server inference gap=$serverGapX")
-                }
-            }
+        // Apply AI correction from human-labeled data
+        if (gapX != null && DiagnosticReporter.correctionSamples >= 3) {
+            val corr = DiagnosticReporter.correctionPx
+            val before = gapX!!
+            gapX = gapX!! + corr
+            Log.d(TAG, "ScanGesture: AI correction applied: " +
+                "${before.toInt()} + ${corr} = ${gapX!!.toInt()} (${DiagnosticReporter.correctionSamples} samples)")
         }
 
         if (gapX == null) {

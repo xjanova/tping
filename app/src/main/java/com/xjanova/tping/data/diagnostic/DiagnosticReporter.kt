@@ -44,10 +44,70 @@ object DiagnosticReporter {
         .certificatePinner(CertPinning.pinner)
         .build()
 
+    private val IMAGE_TYPE = "image/png".toMediaType()
+
     private var appContext: Context? = null
+
+    // ====== Correction Model (from human-labeled data) ======
+    // Fetched once per session, applied to every gap detection
+    @Volatile var correctionPx: Float = 0f
+        private set
+    @Volatile var correctionSamples: Int = 0
+        private set
+    @Volatile private var correctionFetched: Boolean = false
 
     fun initialize(context: Context) {
         appContext = context.applicationContext
+    }
+
+    /**
+     * Fetch correction model from server (lightweight GET, no images).
+     * Call once before puzzle solving starts. Caches in memory for session.
+     *
+     * The correction is the average (actual_gap_x - detected_gap_x) from
+     * human-labeled data. Add this to detected gap_x to improve accuracy.
+     */
+    fun fetchCorrection(): Boolean {
+        if (correctionFetched) return true  // Already fetched this session
+        val ctx = appContext ?: return false
+        val hardwareHash = DeviceManager.getHardwareHash(ctx)
+
+        try {
+            val request = Request.Builder()
+                .url("$BASE_URL/debug-images/correction?machine_id=$hardwareHash")
+                .get()
+                .addHeader("Accept", "application/json")
+                .build()
+
+            val response = client.newCall(request).execute()
+            if (response.isSuccessful) {
+                val body = response.body?.string() ?: return false
+                val result = gson.fromJson(body, Map::class.java)
+
+                // Prefer machine-specific correction if available
+                val machineCorr = (result["machine_correction"] as? Number)?.toFloat()
+                val globalCorr = (result["correction"] as? Number)?.toFloat() ?: 0f
+                val samples = (result["samples"] as? Number)?.toInt() ?: 0
+
+                correctionPx = machineCorr ?: globalCorr
+                correctionSamples = samples
+                correctionFetched = true
+
+                Log.d(TAG, "Correction fetched: ${correctionPx}px " +
+                    "(machine=${machineCorr}, global=${globalCorr}, samples=$samples)")
+                return true
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Correction fetch failed: ${e.message}")
+        }
+        return false
+    }
+
+    /** Reset correction cache (call when app restarts or new session) */
+    fun resetCorrection() {
+        correctionFetched = false
+        correctionPx = 0f
+        correctionSamples = 0
     }
 
     // ====== Event Recording ======
@@ -195,8 +255,6 @@ object DiagnosticReporter {
     }
 
     // ====== Debug Image Upload ======
-
-    private val IMAGE_TYPE = "image/png".toMediaType()
 
     /**
      * Upload puzzle debug images to server for learning/analysis.
