@@ -300,10 +300,10 @@ object DiagnosticReporter {
     // ====== Puzzle Feedback (Auto-Label) ======
 
     /**
-     * Send puzzle solve result back to server for auto-labeling.
-     * This creates a self-learning feedback loop:
-     * - success=true + gap_x used → server knows the detection was accurate
-     * - success=false + actual_gap_x (from remaining gap) → server knows the error
+     * Send puzzle solve result back to server for tracking.
+     * IMPORTANT: Never send actual_gap_x — only HUMAN labeling via admin
+     * page should set actual_gap_x. Otherwise records get auto-labeled
+     * and hidden from the admin review queue.
      *
      * Call from background thread.
      */
@@ -324,11 +324,16 @@ object DiagnosticReporter {
                 "app_version" to BuildConfig.VERSION_NAME,
                 "success" to success,
                 "detected_gap_x" to detectedGapX,
-                "actual_gap_x" to (actualGapX ?: if (success) detectedGapX else null),
+                // NEVER auto-set actual_gap_x — human must label via admin page
+                // Store app's guess in metadata only (for reference, not for training)
                 "attempt" to attempt,
                 "detection_method" to detectionMethod,
                 "timestamp" to dateFormat.format(java.util.Date())
             )
+            // Store app's gap guess in metadata (not as actual_gap_x label)
+            if (actualGapX != null) {
+                payload["app_estimated_gap_x"] = actualGapX
+            }
             // Link to specific upload record
             if (recordId > 0) {
                 payload["record_id"] = recordId
