@@ -206,18 +206,21 @@ object DiagnosticReporter {
      * @param debugDir directory containing debug PNGs (e.g. puzzle_debug/)
      * @param metadata extra info: gapX, confidence, detectionMethod, attempt, etc.
      */
-    fun uploadDebugImages(debugDir: File, metadata: Map<String, String>): SendResult {
-        val ctx = appContext ?: return SendResult(false, "App not initialized")
+    /**
+     * Upload debug images and return the server record ID.
+     * Returns record_id > 0 on success, -1 on failure.
+     * Call from background thread (synchronous HTTP).
+     */
+    fun uploadDebugImages(debugDir: File, metadata: Map<String, String>): Long {
+        val ctx = appContext ?: return -1
 
         val pngFiles = debugDir.listFiles { f -> f.extension == "png" }
         if (pngFiles.isNullOrEmpty()) {
             Log.d(TAG, "No debug images to upload")
-            return SendResult(true, "No images")
+            return -1
         }
 
-        // Sort by name to get consistent order (debugCounter_name.png)
         val sorted = pngFiles.sortedBy { it.name }
-
         val hardwareHash = DeviceManager.getHardwareHash(ctx)
 
         try {
@@ -227,7 +230,6 @@ object DiagnosticReporter {
                 .addFormDataPart("app_version", BuildConfig.VERSION_NAME)
                 .addFormDataPart("timestamp", dateFormat.format(Date()))
 
-            // Add all metadata fields
             for ((key, value) in metadata) {
                 builder.addFormDataPart(key, value)
             }
@@ -256,17 +258,20 @@ object DiagnosticReporter {
                 .build()
 
             val response = uploadClient.newCall(request).execute()
-            return if (response.isSuccessful) {
-                Log.d(TAG, "Uploaded ${filesToUpload.size} debug images successfully")
-                SendResult(true, "Uploaded ${filesToUpload.size} images")
+            if (response.isSuccessful) {
+                val body = response.body?.string()
+                val json = gson.fromJson(body, com.google.gson.JsonObject::class.java)
+                val recordId = json?.get("id")?.asLong ?: -1
+                Log.d(TAG, "Uploaded ${filesToUpload.size} debug images → record #$recordId")
+                return recordId
             } else {
                 val msg = response.body?.string()?.take(200) ?: "HTTP ${response.code}"
                 Log.w(TAG, "Debug image upload failed: $msg")
-                SendResult(false, "Upload failed (${response.code})")
+                return -1
             }
         } catch (e: Exception) {
             Log.e(TAG, "Debug image upload error", e)
-            return SendResult(false, "Upload error: ${e.localizedMessage?.take(100)}")
+            return -1
         }
     }
 
@@ -285,13 +290,14 @@ object DiagnosticReporter {
         detectedGapX: Int,
         actualGapX: Int? = null,
         attempt: Int = 0,
-        detectionMethod: String = "unknown"
+        detectionMethod: String = "unknown",
+        recordId: Long = -1
     ): SendResult {
         val ctx = appContext ?: return SendResult(false, "App not initialized")
         val hardwareHash = DeviceManager.getHardwareHash(ctx)
 
         try {
-            val payload = mapOf(
+            val payload = mutableMapOf<String, Any?>(
                 "machine_id" to hardwareHash,
                 "app_version" to BuildConfig.VERSION_NAME,
                 "success" to success,
@@ -301,6 +307,10 @@ object DiagnosticReporter {
                 "detection_method" to detectionMethod,
                 "timestamp" to dateFormat.format(java.util.Date())
             )
+            // Link to specific upload record
+            if (recordId > 0) {
+                payload["record_id"] = recordId
+            }
 
             val json = gson.toJson(payload)
             val requestBody = json.toRequestBody(JSON_TYPE)

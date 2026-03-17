@@ -107,6 +107,8 @@ object PuzzleCaptchaAction {
         private set
     @Volatile var lastDetectionMethod: String = "unknown"
         private set
+    @Volatile var lastUploadRecordId: Long = -1
+        private set
 
     suspend fun execute(
         service: TpingAccessibilityService,
@@ -404,6 +406,14 @@ object PuzzleCaptchaAction {
             // Check if flow was stopped — throws CancellationException immediately
             coroutineContext.ensureActive()
 
+            // Clear debug images before each attempt — each attempt gets its own clean set
+            try {
+                val debugDir = PuzzleSolver.debugDir
+                if (debugDir != null && debugDir.exists()) {
+                    debugDir.listFiles()?.forEach { it.delete() }
+                }
+            } catch (_: Exception) {}
+
             status("ครั้งที่ $attempt/${config.maxRetries}")
             // v1.2.62: Moderate delay — 1000ms first, retryDelay on subsequent
             delay(if (attempt == 1) 1000 else config.retryDelayMs)
@@ -556,7 +566,8 @@ object PuzzleCaptchaAction {
                 GlobalScope.launch(Dispatchers.IO) {
                     DiagnosticReporter.sendPuzzleFeedback(
                         success = true, detectedGapX = lastDetectedGapX,
-                        attempt = attempt, detectionMethod = lastDetectionMethod
+                        attempt = attempt, detectionMethod = lastDetectionMethod,
+                        recordId = lastUploadRecordId
                     )
                 }
                 try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
@@ -616,7 +627,8 @@ object PuzzleCaptchaAction {
                             DiagnosticReporter.sendPuzzleFeedback(
                                 success = false, detectedGapX = lastDetectedGapX,
                                 actualGapX = remainGapX,
-                                attempt = attempt, detectionMethod = lastDetectionMethod
+                                attempt = attempt, detectionMethod = lastDetectionMethod,
+                                recordId = lastUploadRecordId
                             )
                         }
                     }
@@ -1494,23 +1506,24 @@ object PuzzleCaptchaAction {
             "method=$detectionMethod, gap=${gapX.toInt()}, slider=${sliderX.toInt()}, " +
             "dist=${totalDragDist.toInt()}, trackW=${trackWidth.toInt()}")
 
-        // Upload debug images async (fire-and-forget)
+        // Upload debug images (synchronous on IO thread — need record_id for feedback)
+        lastUploadRecordId = -1
         val uploadDir = PuzzleSolver.debugDir
         if (uploadDir != null && uploadDir.exists()) {
-            @Suppress("OPT_IN_USAGE")
-            GlobalScope.launch(Dispatchers.IO) {
-                try {
-                    val metadata = mapOf(
-                        "detection_method" to detectionMethod,
-                        "gap_x" to gapX.toInt().toString(),
-                        "slider_x" to sliderX.toInt().toString(),
-                        "drag_dist" to totalDragDist.toInt().toString(),
-                        "track_width" to trackWidth.toInt().toString()
-                    )
+            try {
+                val metadata = mapOf(
+                    "detection_method" to detectionMethod,
+                    "gap_x" to gapX.toInt().toString(),
+                    "slider_x" to sliderX.toInt().toString(),
+                    "drag_dist" to totalDragDist.toInt().toString(),
+                    "track_width" to trackWidth.toInt().toString()
+                )
+                lastUploadRecordId = withContext(Dispatchers.IO) {
                     DiagnosticReporter.uploadDebugImages(uploadDir, metadata)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Debug image upload failed: ${e.message}")
                 }
+                Log.d(TAG, "ScanDrag: uploaded debug images → record #$lastUploadRecordId")
+            } catch (e: Exception) {
+                Log.w(TAG, "Debug image upload failed: ${e.message}")
             }
         }
 
@@ -1751,23 +1764,24 @@ object PuzzleCaptchaAction {
             "method=$detectionMethod, gap=${gapX.toInt()}, slider=${sliderX.toInt()}, " +
             "dist=${totalDragDist.toInt()}, trackW=${trackWidth.toInt()}")
 
-        // Upload debug images async (fire-and-forget, don't block the drag)
+        // Upload debug images (synchronous — need record_id for feedback)
+        lastUploadRecordId = -1
         val uploadDir = PuzzleSolver.debugDir
         if (uploadDir != null && uploadDir.exists()) {
-            @Suppress("OPT_IN_USAGE")
-            GlobalScope.launch(Dispatchers.IO) {
-                try {
-                    val metadata = mapOf(
-                        "detection_method" to detectionMethod,
-                        "gap_x" to gapX.toInt().toString(),
-                        "slider_x" to sliderX.toInt().toString(),
-                        "drag_dist" to totalDragDist.toInt().toString(),
-                        "track_width" to trackWidth.toInt().toString()
-                    )
+            try {
+                val metadata = mapOf(
+                    "detection_method" to detectionMethod,
+                    "gap_x" to gapX.toInt().toString(),
+                    "slider_x" to sliderX.toInt().toString(),
+                    "drag_dist" to totalDragDist.toInt().toString(),
+                    "track_width" to trackWidth.toInt().toString()
+                )
+                lastUploadRecordId = withContext(Dispatchers.IO) {
                     DiagnosticReporter.uploadDebugImages(uploadDir, metadata)
-                } catch (e: Exception) {
-                    Log.w(TAG, "Debug image upload failed: ${e.message}")
                 }
+                Log.d(TAG, "ScanGesture: uploaded debug images → record #$lastUploadRecordId")
+            } catch (e: Exception) {
+                Log.w(TAG, "Debug image upload failed: ${e.message}")
             }
         }
 
