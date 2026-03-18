@@ -168,11 +168,24 @@ object PuzzleCaptchaAction {
             Log.w(TAG, "Cannot set debug dir: ${e.message}")
         }
 
-        // Server correction DISABLED — shape matching works better without it.
-        // The correction model was trained from auto-labeled data (unreliable).
-        // Once enough HUMAN-labeled data exists, this can be re-enabled.
-        DiagnosticReporter.resetCorrection()
-        Log.d(TAG, "Server correction disabled — using pure shape matching")
+        // Fetch correction from human-labeled data (once per session)
+        // Safety: only apply if enough human samples AND correction isn't extreme
+        try {
+            withContext(Dispatchers.IO) { DiagnosticReporter.fetchCorrection() }
+            val corr = DiagnosticReporter.correctionPx
+            val samples = DiagnosticReporter.correctionSamples
+            if (samples >= 10 && kotlin.math.abs(corr) <= 50f) {
+                status("AI correction: ${if (corr >= 0) "+" else ""}${"%.1f".format(corr)}px ($samples samples)")
+            } else {
+                DiagnosticReporter.resetCorrection()
+                if (samples > 0) {
+                    Log.d(TAG, "Correction skipped: ${corr}px from $samples samples (need 10+ and <=50px)")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Correction fetch failed: ${e.message}")
+            DiagnosticReporter.resetCorrection()
+        }
 
         // === Get accurate screen dimensions ===
         // CRITICAL (v1.2.44): Use WindowManager.getRealSize() instead of

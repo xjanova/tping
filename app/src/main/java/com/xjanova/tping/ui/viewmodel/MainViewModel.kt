@@ -108,6 +108,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    /**
+     * Bulk generate profiles from a template.
+     * All `*` in name and field values are replaced with the number.
+     * Max 500 profiles per generation. Requires paid license.
+     */
+    fun generateProfiles(
+        nameTemplate: String,
+        category: String,
+        fieldTemplates: List<DataField>,
+        rangeStart: Int,
+        rangeEnd: Int
+    ) {
+        val count = (rangeEnd - rangeStart + 1).coerceIn(0, 500)
+        if (count <= 0) return
+        viewModelScope.launch {
+            for (i in rangeStart..(rangeStart + count - 1)) {
+                val num = i.toString()
+                val name = nameTemplate.replace("*", num)
+                val fields = fieldTemplates.map {
+                    DataField(it.key, it.value.replace("*", num))
+                }
+                val json = gson.toJson(fields)
+                profileDao.insert(DataProfile(name = name, category = category, fieldsJson = json))
+            }
+            triggerCloudSync()
+        }
+    }
+
     fun getFieldsFromProfile(profile: DataProfile): List<DataField> {
         return try {
             val type = object : TypeToken<List<DataField>>() {}.type

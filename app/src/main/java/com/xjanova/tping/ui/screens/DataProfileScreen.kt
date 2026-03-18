@@ -17,8 +17,11 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import com.xjanova.tping.data.entity.DataField
 import com.xjanova.tping.data.entity.DataProfile
+import com.xjanova.tping.data.license.LicenseManager
+import com.xjanova.tping.data.license.LicenseStatus
 import com.xjanova.tping.ui.viewmodel.MainViewModel
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -29,7 +32,10 @@ fun DataProfileScreen(
 ) {
     val profiles by viewModel.dataProfiles.collectAsState()
     var showAddDialog by remember { mutableStateOf(false) }
+    var showGenDialog by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf<DataProfile?>(null) }
+    val licenseState by LicenseManager.state.collectAsState()
+    val isPaidLicense = licenseState.status == LicenseStatus.ACTIVE
 
     // Group profiles by category
     val grouped = profiles.groupBy { it.category.ifEmpty { "" } }
@@ -42,6 +48,25 @@ fun DataProfileScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.Default.ArrowBack, "Back")
+                    }
+                },
+                actions = {
+                    // Gen button — always visible, grayed if not licensed
+                    TextButton(
+                        onClick = { if (isPaidLicense) showGenDialog = true },
+                        enabled = isPaidLicense
+                    ) {
+                        Icon(
+                            Icons.Default.AutoAwesome, "Gen",
+                            modifier = Modifier.size(18.dp),
+                            tint = if (isPaidLicense) Color(0xFF8B5CF6) else Color.Gray.copy(alpha = 0.4f)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            if (isPaidLicense) "Gen ชุดข้อมูล" else "Gen (ไลเซนส์)",
+                            fontSize = 13.sp,
+                            color = if (isPaidLicense) Color(0xFF8B5CF6) else Color.Gray.copy(alpha = 0.4f)
+                        )
                     }
                 },
                 colors = TopAppBarDefaults.topAppBarColors(
@@ -171,6 +196,18 @@ fun DataProfileScreen(
             }
         )
     }
+
+    // Generate Dialog
+    if (showGenDialog) {
+        GenerateProfilesDialog(
+            existingCategories = existingCategories,
+            onDismiss = { showGenDialog = false },
+            onGenerate = { name, category, fields, start, end ->
+                viewModel.generateProfiles(name, category, fields, start, end)
+                showGenDialog = false
+            }
+        )
+    }
 }
 
 @Composable
@@ -266,6 +303,207 @@ fun ProfileCard(
             }
         )
     }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun GenerateProfilesDialog(
+    existingCategories: List<String> = emptyList(),
+    onDismiss: () -> Unit,
+    onGenerate: (nameTemplate: String, category: String, fields: List<DataField>, rangeStart: Int, rangeEnd: Int) -> Unit
+) {
+    var name by remember { mutableStateOf("") }
+    var category by remember { mutableStateOf("") }
+    var showCategoryDropdown by remember { mutableStateOf(false) }
+    var fields by remember { mutableStateOf(listOf(DataField("", ""))) }
+    var rangeStartText by remember { mutableStateOf("1") }
+    var rangeEndText by remember { mutableStateOf("10") }
+
+    val rangeStart = rangeStartText.toIntOrNull() ?: 0
+    val rangeEnd = rangeEndText.toIntOrNull() ?: 0
+    val count = if (rangeEnd >= rangeStart) (rangeEnd - rangeStart + 1) else 0
+    val isValid = name.isNotBlank() && name.contains("*") && count in 1..500
+        && fields.any { it.key.isNotBlank() }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Default.AutoAwesome, null, tint = Color(0xFF8B5CF6), modifier = Modifier.size(24.dp))
+                Spacer(modifier = Modifier.width(8.dp))
+                Text("Gen ชุดข้อมูล")
+            }
+        },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                // Category
+                ExposedDropdownMenuBox(
+                    expanded = showCategoryDropdown && existingCategories.isNotEmpty(),
+                    onExpandedChange = { showCategoryDropdown = it }
+                ) {
+                    OutlinedTextField(
+                        value = category,
+                        onValueChange = { category = it; showCategoryDropdown = true },
+                        label = { Text("หมวดหมู่") },
+                        modifier = Modifier.fillMaxWidth().menuAnchor(),
+                        maxLines = 1
+                    )
+                    if (existingCategories.isNotEmpty()) {
+                        val filtered = existingCategories.filter { it.contains(category, ignoreCase = true) }
+                        if (filtered.isNotEmpty()) {
+                            ExposedDropdownMenu(
+                                expanded = showCategoryDropdown,
+                                onDismissRequest = { showCategoryDropdown = false }
+                            ) {
+                                filtered.forEach { cat ->
+                                    DropdownMenuItem(
+                                        text = { Text(cat) },
+                                        onClick = { category = cat; showCategoryDropdown = false }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Name template
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("ชื่อ (ใช้ * แทนตัวเลข)") },
+                    placeholder = { Text("เช่น Account *") },
+                    modifier = Modifier.fillMaxWidth(),
+                    maxLines = 1,
+                    isError = name.isNotBlank() && !name.contains("*"),
+                    supportingText = if (name.isNotBlank() && !name.contains("*")) {
+                        { Text("ต้องมี * อย่างน้อย 1 ตัว", color = Color(0xFFEF4444), fontSize = 11.sp) }
+                    } else null
+                )
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Text("Fields (ใช้ * แทนตัวเลข):", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                Spacer(modifier = Modifier.height(8.dp))
+
+                fields.forEachIndexed { index, field ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = field.key,
+                            onValueChange = { newKey ->
+                                fields = fields.toMutableList().apply { this[index] = field.copy(key = newKey) }
+                            },
+                            label = { Text("Key") },
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        OutlinedTextField(
+                            value = field.value,
+                            onValueChange = { newVal ->
+                                fields = fields.toMutableList().apply { this[index] = field.copy(value = newVal) }
+                            },
+                            label = { Text("Value") },
+                            placeholder = { Text("mail*@gmail.com") },
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1
+                        )
+                        IconButton(
+                            onClick = {
+                                if (fields.size > 1) fields = fields.toMutableList().apply { removeAt(index) }
+                            },
+                            modifier = Modifier.size(32.dp)
+                        ) {
+                            Icon(Icons.Default.Remove, "Remove", modifier = Modifier.size(16.dp))
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                }
+
+                TextButton(onClick = { fields = fields + DataField("", "") }) {
+                    Icon(Icons.Default.Add, "Add", modifier = Modifier.size(16.dp))
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text("เพิ่ม field")
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                Divider()
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Range
+                Text("ตัวแทน * :", fontWeight = FontWeight.Medium, fontSize = 14.sp)
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(
+                        value = rangeStartText,
+                        onValueChange = { rangeStartText = it.filter { c -> c.isDigit() }.take(5) },
+                        label = { Text("เริ่ม") },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1
+                    )
+                    Text("  ถึง  ", fontSize = 14.sp)
+                    OutlinedTextField(
+                        value = rangeEndText,
+                        onValueChange = { rangeEndText = it.filter { c -> c.isDigit() }.take(5) },
+                        label = { Text("สิ้นสุด") },
+                        modifier = Modifier.weight(1f),
+                        maxLines = 1
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Preview count
+                val countColor = when {
+                    count > 500 -> Color(0xFFEF4444)
+                    count > 0 -> Color(0xFF10B981)
+                    else -> Color.Gray
+                }
+                Text(
+                    when {
+                        count > 500 -> "เกินขีดจำกัด! สูงสุด 500 ชุด (ตอนนี้ $count)"
+                        count > 0 -> "จะสร้าง $count ชุดข้อมูล"
+                        else -> "กรุณากรอกช่วงตัวเลข"
+                    },
+                    color = countColor,
+                    fontWeight = FontWeight.Medium,
+                    fontSize = 13.sp
+                )
+
+                // Example preview
+                if (count > 0 && name.contains("*")) {
+                    Spacer(modifier = Modifier.height(4.dp))
+                    val example1 = name.replace("*", rangeStart.toString())
+                    val example2 = if (count > 1) name.replace("*", rangeEnd.coerceAtMost(rangeStart + 499).toString()) else null
+                    Text(
+                        "ตัวอย่าง: $example1${if (example2 != null) " ... $example2" else ""}",
+                        fontSize = 11.sp,
+                        color = Color.Gray
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    val validFields = fields.filter { it.key.isNotBlank() }
+                    if (isValid) {
+                        onGenerate(name, category.trim(), validFields, rangeStart, rangeEnd.coerceAtMost(rangeStart + 499))
+                    }
+                },
+                enabled = isValid,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF8B5CF6))
+            ) {
+                Text(if (isValid) "สร้าง $count ชุด" else "สร้าง")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("ยกเลิก") }
+        }
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
