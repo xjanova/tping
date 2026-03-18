@@ -168,24 +168,10 @@ object PuzzleCaptchaAction {
             Log.w(TAG, "Cannot set debug dir: ${e.message}")
         }
 
-        // Fetch correction from human-labeled data (once per session)
-        // Safety: only apply if enough human samples AND correction isn't extreme
-        try {
-            withContext(Dispatchers.IO) { DiagnosticReporter.fetchCorrection() }
-            val corr = DiagnosticReporter.correctionPx
-            val samples = DiagnosticReporter.correctionSamples
-            if (samples >= 10 && kotlin.math.abs(corr) <= 50f) {
-                status("AI correction: ${if (corr >= 0) "+" else ""}${"%.1f".format(corr)}px ($samples samples)")
-            } else {
-                DiagnosticReporter.resetCorrection()
-                if (samples > 0) {
-                    Log.d(TAG, "Correction skipped: ${corr}px from $samples samples (need 10+ and <=50px)")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Correction fetch failed: ${e.message}")
-            DiagnosticReporter.resetCorrection()
-        }
+        // AI correction DISABLED — use pure shape matching only
+        // Shape match finds gap center X directly, no offset needed
+        DiagnosticReporter.resetCorrection()
+        Log.d(TAG, "Pure shape matching mode — no AI correction")
 
         // === Get accurate screen dimensions ===
         // CRITICAL (v1.2.44): Use WindowManager.getRealSize() instead of
@@ -1498,17 +1484,8 @@ object PuzzleCaptchaAction {
             }
             preScreenshot.recycle()
 
-            // Apply AI correction from human-labeled data
-            if (gapX != null && DiagnosticReporter.correctionSamples >= 3) {
-                val corr = DiagnosticReporter.correctionPx
-                val before = gapX!!
-                gapX = gapX!! + corr
-                Log.d(TAG, "ScanDrag: AI correction applied: " +
-                    "${before.toInt()} + ${corr} = ${gapX!!.toInt()} (${DiagnosticReporter.correctionSamples} samples)")
-            }
-
+            // AI correction disabled — pure shape match, slide directly to gap center
             if (gapX == null) {
-                // Release and report failure
                 execShellAny("sh -c '${buildSendeventRelease(device.devicePath)}'")
                 Log.w(TAG, "ScanDrag: shape match failed")
                 return "gap_not_detected"
@@ -1679,14 +1656,7 @@ object PuzzleCaptchaAction {
         }
         preScreenshot.recycle()
 
-        // Apply AI correction from human-labeled data
-        if (gapX != null && DiagnosticReporter.correctionSamples >= 3) {
-            val corr = DiagnosticReporter.correctionPx
-            val before = gapX!!
-            gapX = gapX!! + corr
-            Log.d(TAG, "ScanGesture: AI correction applied: " +
-                "${before.toInt()} + ${corr} = ${gapX!!.toInt()} (${DiagnosticReporter.correctionSamples} samples)")
-        }
+        // AI correction disabled — pure shape match, slide directly to gap center
 
         if (gapX == null) {
             // Release gesture and return failure
