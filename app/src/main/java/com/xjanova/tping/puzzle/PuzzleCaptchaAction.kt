@@ -168,19 +168,11 @@ object PuzzleCaptchaAction {
             Log.w(TAG, "Cannot set debug dir: ${e.message}")
         }
 
-        // Fetch correction model from human-labeled data (once per session)
-        try {
-            withContext(Dispatchers.IO) {
-                DiagnosticReporter.fetchCorrection()
-            }
-            val corr = DiagnosticReporter.correctionPx
-            val samples = DiagnosticReporter.correctionSamples
-            if (samples > 0) {
-                status("✓ AI correction: ${if (corr >= 0) "+" else ""}${"%.1f".format(corr)}px (จาก $samples ตัวอย่าง)")
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Correction fetch failed: ${e.message}")
-        }
+        // Server correction DISABLED — shape matching works better without it.
+        // The correction model was trained from auto-labeled data (unreliable).
+        // Once enough HUMAN-labeled data exists, this can be re-enabled.
+        DiagnosticReporter.resetCorrection()
+        Log.d(TAG, "Server correction disabled — using pure shape matching")
 
         // === Get accurate screen dimensions ===
         // CRITICAL (v1.2.44): Use WindowManager.getRealSize() instead of
@@ -592,72 +584,22 @@ object PuzzleCaptchaAction {
                 return
             }
 
-            if (opencvOk) {
-                val verifyShot = PuzzleScreenCapture.captureScreen()
-                if (verifyShot != null) {
-                    val stillHasGap = PuzzleSolver.findGapRegion(verifyShot, sliderY.toInt())
-                    verifyShot.recycle()
-                    if (stillHasGap == null) {
-                        // Double-check: wait a bit more and verify again
-                        delay(1000)
-                        coroutineContext.ensureActive()
-                        val secondShot = PuzzleScreenCapture.captureScreen()
-                        val secondCheck = if (secondShot != null) {
-                            val gap2 = PuzzleSolver.findGapRegion(secondShot, sliderY.toInt())
-                            secondShot.recycle()
-                            gap2 == null
-                        } else true  // If screenshot fails, trust first result
-
-                        if (secondCheck) {
-                            status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt)")
-                            DiagnosticReporter.logCaptcha(
-                                "Solved",
-                                "attempt=$attempt, mode=$dragMode, shell=$useShellSwipe"
-                            )
-                            // Auto-feedback: puzzle solved successfully
-                            @Suppress("OPT_IN_USAGE")
-                            GlobalScope.launch(Dispatchers.IO) {
-                                DiagnosticReporter.sendPuzzleFeedback(
-                                    success = true, detectedGapX = lastDetectedGapX,
-                                    attempt = attempt, detectionMethod = lastDetectionMethod
-                                )
-                            }
-                            try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
-                            autoSendDiagnostics()
-                            return
-                        } else {
-                            DiagnosticReporter.logCaptcha(
-                                "False positive",
-                                "attempt=$attempt, first=no_gap, second=has_gap"
-                            )
-                        }
-                    } else {
-                        val remainGapX = (stillHasGap.left + stillHasGap.right) / 2
-                        val sliderDrift = remainGapX - targetX.toInt()
-                        DiagnosticReporter.logCaptcha(
-                            "Not solved",
-                            "attempt=$attempt, remainGapX=$remainGapX, target=${targetX.toInt()}, drift=$sliderDrift"
-                        )
-                        // Auto-feedback: puzzle NOT solved, send actual gap position
-                        @Suppress("OPT_IN_USAGE")
-                        GlobalScope.launch(Dispatchers.IO) {
-                            DiagnosticReporter.sendPuzzleFeedback(
-                                success = false, detectedGapX = lastDetectedGapX,
-                                actualGapX = remainGapX,
-                                attempt = attempt, detectionMethod = lastDetectionMethod,
-                                recordId = lastUploadRecordId
-                            )
-                        }
-                    }
-                }
-            } else {
-                // No OpenCV — check if CAPTCHA UI changed (slider no longer found)
-                if (captchaGone) {
-                    status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt)")
-                    try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
-                    autoSendDiagnostics()
-                    return
-                }
+            // Only trust isCaptchaGone (UI node check) for solve detection.
+            // DO NOT use findGapRegion() — it returns null too often (false positive),
+            // causing the loop to exit early thinking puzzle is solved when it's not.
+            // If CAPTCHA is still visible, just continue to refresh and retry.
+            DiagnosticReporter.logCaptcha(
+                "Not solved (UI still present)",
+                "attempt=$attempt, mode=$dragMode, gap=${lastDetectedGapX}"
+            )
+            // Send feedback: not solved yet
+            @Suppress("OPT_IN_USAGE")
+            GlobalScope.launch(Dispatchers.IO) {
+                DiagnosticReporter.sendPuzzleFeedback(
+                    success = false, detectedGapX = lastDetectedGapX,
+                    attempt = attempt, detectionMethod = lastDetectionMethod,
+                    recordId = lastUploadRecordId
+                )
             }
 
             // === Refresh ===
