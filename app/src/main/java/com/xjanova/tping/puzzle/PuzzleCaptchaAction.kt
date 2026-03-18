@@ -576,25 +576,34 @@ object PuzzleCaptchaAction {
 
             // === Verify ===
             // Check if CAPTCHA UI disappeared (page changed after solve)
-            val captchaGone = isCaptchaGone(service, sliderY.toInt(), screenH)
-            if (captchaGone) {
-                status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt) — หน้าเปลี่ยนแล้ว")
-                DiagnosticReporter.logCaptcha(
-                    "Solved (UI gone)",
-                    "attempt=$attempt, mode=$dragMode, shell=$useShellSwipe"
-                )
-                // Auto-feedback: puzzle solved successfully
-                @Suppress("OPT_IN_USAGE")
-                GlobalScope.launch(Dispatchers.IO) {
-                    DiagnosticReporter.sendPuzzleFeedback(
-                        success = true, detectedGapX = lastDetectedGapX,
-                        attempt = attempt, detectionMethod = lastDetectionMethod,
-                        recordId = lastUploadRecordId
+            // Must confirm TWICE with delay to avoid false positives
+            // (accessibility tree can be temporarily empty during animations)
+            val firstCheck = isCaptchaGone(service, sliderY.toInt(), screenH)
+            if (firstCheck) {
+                delay(800) // Wait for any animation to settle
+                coroutineContext.ensureActive()
+                val secondCheck = isCaptchaGone(service, sliderY.toInt(), screenH)
+                if (secondCheck) {
+                    status("✓ แก้ Captcha สำเร็จ! (ครั้งที่ $attempt) — หน้าเปลี่ยนแล้ว")
+                    DiagnosticReporter.logCaptcha(
+                        "Solved (UI gone, confirmed 2x)",
+                        "attempt=$attempt, mode=$dragMode, shell=$useShellSwipe"
                     )
+                    @Suppress("OPT_IN_USAGE")
+                    GlobalScope.launch(Dispatchers.IO) {
+                        DiagnosticReporter.sendPuzzleFeedback(
+                            success = true, detectedGapX = lastDetectedGapX,
+                            attempt = attempt, detectionMethod = lastDetectionMethod,
+                            recordId = lastUploadRecordId
+                        )
+                    }
+                    try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
+                    autoSendDiagnostics()
+                    return
+                } else {
+                    Log.d(TAG, "isCaptchaGone false positive — first=true, second=false, continuing")
+                    DiagnosticReporter.logCaptcha("CaptchaGone false positive", "attempt=$attempt")
                 }
-                try { FloatingOverlayService.instance?.setTouchPassthrough(false) } catch (_: Exception) {}
-                autoSendDiagnostics()
-                return
             }
 
             // Only trust isCaptchaGone (UI node check) for solve detection.
