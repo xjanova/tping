@@ -72,7 +72,7 @@ fun FloatingOverlayContent(
     onDismissTagDialog: () -> Unit,
     onShowPlayDialog: () -> Unit,
     onDismissPlayDialog: () -> Unit,
-    onStartPlayback: (Long, String, Int, Boolean) -> Unit,
+    onStartPlayback: (Long, String, Int, Boolean, Boolean) -> Unit,
     onDeleteWorkflow: (Long) -> Unit = {},
     onPause: () -> Unit,
     onResume: () -> Unit,
@@ -506,7 +506,7 @@ fun SaveWorkflowDialog(
 fun PlaySelectDialog(
     workflows: List<WorkflowItem>,
     categories: List<ProfileCategoryItem>,
-    onStart: (Long, String, Int, Boolean) -> Unit,
+    onStart: (Long, String, Int, Boolean, Boolean) -> Unit,
     onDelete: (Long) -> Unit = {},
     onDismiss: () -> Unit
 ) {
@@ -514,6 +514,7 @@ fun PlaySelectDialog(
     var selectedCategory by remember { mutableStateOf("") }
     var loops by remember { mutableIntStateOf(1) }
     var shuffleMode by remember { mutableStateOf(false) }
+    var turboMode by remember { mutableStateOf(false) }
 
     val selectedWorkflow = workflows.find { it.id == selectedWorkflowId }
     val requiredKeys = selectedWorkflow?.dataKeys ?: emptyList()
@@ -821,6 +822,45 @@ fun PlaySelectDialog(
                 }
             }
 
+            // Turbo mode toggle
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(if (turboMode) Color(0xFFFF6D00).copy(alpha = 0.15f) else Color(0xFF2A2A2A))
+                    .clickable { turboMode = !turboMode }
+                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(
+                    Icons.Default.Speed,
+                    null,
+                    tint = if (turboMode) Color(0xFFFF6D00) else Color(0xFF888888),
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        if (turboMode) "Turbo Mode" else "Normal Mode",
+                        color = Color.White, fontSize = 11.sp, fontWeight = FontWeight.Medium
+                    )
+                    Text(
+                        if (turboMode) "ไม่มีดีเลย์ระหว่างขั้นตอน" else "ดีเลย์ 3 วินาทีระหว่างขั้นตอน",
+                        color = Color(0xFF888888), fontSize = 9.sp
+                    )
+                }
+                Switch(
+                    checked = turboMode,
+                    onCheckedChange = { turboMode = it },
+                    modifier = Modifier.height(20.dp),
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = Color(0xFFFF6D00),
+                        checkedTrackColor = Color(0xFFFF6D00).copy(alpha = 0.3f)
+                    )
+                )
+            }
+
             } // ---- End scrollable content area ----
 
             Spacer(modifier = Modifier.height(4.dp))
@@ -834,7 +874,7 @@ fun PlaySelectDialog(
                 Button(
                     onClick = {
                         val wfId = selectedWorkflowId
-                        if (wfId != null) onStart(wfId, selectedCategory, loops, shuffleMode)
+                        if (wfId != null) onStart(wfId, selectedCategory, loops, shuffleMode, turboMode)
                     },
                     enabled = selectedWorkflowId != null,
                     colors = ButtonDefaults.buttonColors(
@@ -1251,6 +1291,7 @@ fun RapidClickConfigDialog(
     onDismiss: () -> Unit
 ) {
     var clickCount by remember { mutableIntStateOf(20) }
+    var isInfinite by remember { mutableStateOf(false) }
     var intervalMs by remember { mutableIntStateOf(100) }
 
     Card(
@@ -1286,7 +1327,10 @@ fun RapidClickConfigDialog(
             Spacer(modifier = Modifier.height(12.dp))
 
             // Click count
-            Text("จำนวนคลิก: $clickCount ครั้ง", color = Color(0xFFCCCCCC), fontSize = 13.sp)
+            Text(
+                if (isInfinite) "จำนวนคลิก: ∞ (ไม่จำกัด)" else "จำนวนคลิก: $clickCount ครั้ง",
+                color = Color(0xFFCCCCCC), fontSize = 13.sp
+            )
             Spacer(modifier = Modifier.height(4.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -1297,33 +1341,52 @@ fun RapidClickConfigDialog(
                         modifier = Modifier
                             .clip(RoundedCornerShape(16.dp))
                             .background(
-                                if (clickCount == count) Color(0xFFFF6D00).copy(alpha = 0.3f)
+                                if (!isInfinite && clickCount == count) Color(0xFFFF6D00).copy(alpha = 0.3f)
                                 else Color(0xFF333333)
                             )
-                            .clickable { clickCount = count }
+                            .clickable { clickCount = count; isInfinite = false }
                             .padding(horizontal = 10.dp, vertical = 6.dp)
                     ) {
                         Text(
                             "$count",
-                            color = if (clickCount == count) Color(0xFFFF6D00) else Color(0xFFBBBBBB),
+                            color = if (!isInfinite && clickCount == count) Color(0xFFFF6D00) else Color(0xFFBBBBBB),
                             fontSize = 11.sp
                         )
                     }
                 }
+                // Infinity button
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            if (isInfinite) Color(0xFFFF6D00).copy(alpha = 0.3f)
+                            else Color(0xFF333333)
+                        )
+                        .clickable { isInfinite = true }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                ) {
+                    Text(
+                        "∞",
+                        color = if (isInfinite) Color(0xFFFF6D00) else Color(0xFFBBBBBB),
+                        fontSize = 11.sp, fontWeight = FontWeight.Bold
+                    )
+                }
             }
 
-            Spacer(modifier = Modifier.height(4.dp))
-            Slider(
-                value = clickCount.toFloat(),
-                onValueChange = { clickCount = it.toInt() },
-                valueRange = 1f..500f,
-                steps = 0,
-                colors = SliderDefaults.colors(
-                    thumbColor = Color(0xFFFF6D00),
-                    activeTrackColor = Color(0xFFFF6D00)
-                ),
-                modifier = Modifier.fillMaxWidth()
-            )
+            if (!isInfinite) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Slider(
+                    value = clickCount.toFloat(),
+                    onValueChange = { clickCount = it.toInt() },
+                    valueRange = 1f..500f,
+                    steps = 0,
+                    colors = SliderDefaults.colors(
+                        thumbColor = Color(0xFFFF6D00),
+                        activeTrackColor = Color(0xFFFF6D00)
+                    ),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
 
             Spacer(modifier = Modifier.height(8.dp))
 
@@ -1370,11 +1433,18 @@ fun RapidClickConfigDialog(
             Spacer(modifier = Modifier.height(4.dp))
 
             // Summary
-            val totalTime = (clickCount.toLong() * intervalMs) / 1000.0
-            Text(
-                "⏱ ใช้เวลาประมาณ ${"%.1f".format(totalTime)} วินาที",
-                color = Color(0xFF888888), fontSize = 11.sp
-            )
+            if (isInfinite) {
+                Text(
+                    "⚡ กดรัวไม่หยุด จนกว่าจะกดหยุดเอง",
+                    color = Color(0xFFFF6D00).copy(alpha = 0.7f), fontSize = 11.sp
+                )
+            } else {
+                val totalTime = (clickCount.toLong() * intervalMs) / 1000.0
+                Text(
+                    "⏱ ใช้เวลาประมาณ ${"%.1f".format(totalTime)} วินาที",
+                    color = Color(0xFF888888), fontSize = 11.sp
+                )
+            }
 
             Spacer(modifier = Modifier.height(12.dp))
 
@@ -1384,7 +1454,7 @@ fun RapidClickConfigDialog(
                 }
                 Spacer(modifier = Modifier.width(8.dp))
                 Button(
-                    onClick = { onConfirm(clickCount, intervalMs) },
+                    onClick = { onConfirm(if (isInfinite) 0 else clickCount, intervalMs) },
                     colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFFF6D00)),
                     shape = RoundedCornerShape(8.dp)
                 ) {

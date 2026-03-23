@@ -253,8 +253,8 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                         _overlayState.value = _overlayState.value.copy(showPlayDialog = false)
                         setOverlayFocusable(false)
                     },
-                    onStartPlayback = { workflowId, category, loops, shuffle ->
-                        startPlaybackFromOverlay(workflowId, category, loops, shuffle)
+                    onStartPlayback = { workflowId, category, loops, shuffle, turbo ->
+                        startPlaybackFromOverlay(workflowId, category, loops, shuffle, turbo)
                     },
                     onDeleteWorkflow = { workflowId -> deleteWorkflow(workflowId) },
                     onPause = { pausePlayback() },
@@ -894,7 +894,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
 
     // ====== Playback from Overlay ======
 
-    private fun startPlaybackFromOverlay(workflowId: Long, category: String, loops: Int, shuffleData: Boolean) {
+    private fun startPlaybackFromOverlay(workflowId: Long, category: String, loops: Int, shuffleData: Boolean, turbo: Boolean = false) {
         if (!LicenseManager.isLicenseValid()) {
             _overlayState.value = _overlayState.value.copy(
                 showPlayDialog = false,
@@ -939,6 +939,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
                     dataFieldSets = dataFieldSets,
                     loopCount = loops,
                     shuffleData = shuffleData,
+                    turbo = turbo,
                     scope = serviceScope
                 )
                 observePlaybackState()

@@ -16,10 +16,13 @@ class PlaybackEngine {
         private const val TAG = "PlaybackEngine"
         /** Minimum delay between steps (ms). Users can add WAIT steps for more. */
         const val MIN_STEP_DELAY_MS = 3000L
+        /** Turbo mode: minimal delay just for UI to catch up */
+        const val TURBO_DELAY_MS = 300L
     }
 
     private var playbackJob: Job? = null
     private var isPaused = false
+    private var turboMode = false
 
     private val _state = MutableStateFlow(PlaybackState())
     val state: StateFlow<PlaybackState> = _state
@@ -40,6 +43,7 @@ class PlaybackEngine {
         dataFieldSets: List<List<DataField>>,
         loopCount: Int = 1,
         shuffleData: Boolean = false,
+        turbo: Boolean = false,
         scope: CoroutineScope
     ) {
         if (actions.isEmpty()) return
@@ -51,6 +55,7 @@ class PlaybackEngine {
 
         playbackJob?.cancel()
         isPaused = false
+        turboMode = turbo
         TpingAccessibilityService.setPlaying(true)
 
         // Prepare data order: shuffle or sequential (always rotate through all sets)
@@ -144,12 +149,14 @@ class PlaybackEngine {
                         // Execute action
                         executeAction(service, action, textToInput)
 
-                        // Delay: enforce minimum 3s between steps so the screen has time to respond
-                        // WAIT actions use their own delay which is already intentional
-                        val stepDelay = if (action.actionType == ActionType.WAIT) {
-                            action.delayAfterMs
-                        } else {
-                            action.delayAfterMs.coerceAtLeast(MIN_STEP_DELAY_MS)
+                        // Delay between steps
+                        val stepDelay = when {
+                            // WAIT actions always use their own delay
+                            action.actionType == ActionType.WAIT -> action.delayAfterMs
+                            // Turbo mode: minimal delay just for UI catch-up
+                            turboMode -> TURBO_DELAY_MS
+                            // Normal mode: enforce minimum 3s
+                            else -> action.delayAfterMs.coerceAtLeast(MIN_STEP_DELAY_MS)
                         }
                         delay(stepDelay)
                     }
@@ -172,6 +179,7 @@ class PlaybackEngine {
         textToInput: String
     ) {
         // RAPID_CLICK: burst click at coordinates with configurable interval
+        // clickCount <= 0 means infinity (runs until playback is stopped)
         if (action.actionType == ActionType.RAPID_CLICK) {
             val config = try {
                 com.google.gson.Gson().fromJson(action.inputText, RapidClickConfig::class.java)
@@ -179,22 +187,25 @@ class PlaybackEngine {
             val cx = (action.boundsLeft + action.boundsRight) / 2f
             val cy = (action.boundsTop + action.boundsBottom) / 2f
             val intervalMs = config.intervalMs.coerceIn(30, 2000).toLong()
-            val clickCount = config.clickCount.coerceIn(1, 500)
+            val isInfinite = config.clickCount <= 0
+            val clickCount = if (isInfinite) Int.MAX_VALUE else config.clickCount.coerceIn(1, 99999)
 
             _state.value = _state.value.copy(
-                currentActionDesc = "${_state.value.currentActionDesc} ⚡ $clickCount×"
+                currentActionDesc = "${_state.value.currentActionDesc} ⚡ ${if (isInfinite) "∞" else "$clickCount"}×"
             )
 
-            for (i in 1..clickCount) {
+            var i = 0
+            while (if (isInfinite) true else i < clickCount) {
                 currentCoroutineContext().ensureActive()
+                i++
                 service.tapAtCoordinates(cx, cy) {}
-                if (i < clickCount) delay(intervalMs)
+                delay(intervalMs)
                 // Update progress
-                if (i % 10 == 0 || i == clickCount) {
+                if (i % 10 == 0) {
                     val step = _state.value.currentStep
                     val total = _state.value.totalSteps
                     _state.value = _state.value.copy(
-                        currentActionDesc = "[$step/$total] กดรัว $i/$clickCount"
+                        currentActionDesc = "[$step/$total] กดรัว ${if (isInfinite) "$i/∞" else "$i/$clickCount"}"
                     )
                 }
             }
@@ -267,7 +278,7 @@ class PlaybackEngine {
             }
         }
 
-        withTimeoutOrNull(5_000L) { done.await() }
+        withTimeoutOrNull(30_000L) { done.await() }
 
         // Post-input verification for INPUT_TEXT
         if (action.actionType == ActionType.INPUT_TEXT && textToInput.isNotEmpty()) {
@@ -351,8 +362,9 @@ class PlaybackEngine {
 /**
  * Configuration for RAPID_CLICK action.
  * Stored as JSON in RecordedAction.inputText.
+ * clickCount <= 0 means infinite (runs until playback is stopped).
  */
 data class RapidClickConfig(
-    val clickCount: Int = 20,     // Number of rapid clicks
+    val clickCount: Int = 20,     // Number of rapid clicks (0 or -1 = infinite)
     val intervalMs: Int = 100     // Interval between clicks in milliseconds (30-2000)
 )
