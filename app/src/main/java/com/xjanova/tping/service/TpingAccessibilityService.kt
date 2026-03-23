@@ -348,11 +348,16 @@ class TpingAccessibilityService : AccessibilityService() {
         // Always dismiss keyboard first to prevent it from covering input fields
         dismissKeyboard {
             if (action.isGameMode) {
-                // Game mode: click at coordinates to focus field, then set text
+                // Game mode: click at coordinates to focus field
                 clickAtCoordinates(action) {
-                    setTextWithRetry(text, 0) {
-                        // Dismiss keyboard after input so it doesn't block next step
-                        dismissKeyboard(callback)
+                    // Keyboard pops up after clicking the field — dismiss it again
+                    // so it doesn't cover the screen for coordinate-based actions
+                    dismissKeyboard {
+                        // Now set text via ACTION_SET_TEXT (no keyboard needed)
+                        setTextWithRetry(text, 0) {
+                            // Final dismiss to keep screen clear for next step
+                            dismissKeyboard(callback)
+                        }
                     }
                 }
                 return@dismissKeyboard
@@ -372,13 +377,14 @@ class TpingAccessibilityService : AccessibilityService() {
             if (targetNode != null) {
                 setTextOnNode(targetNode, text)
                 safeRecycle(targetNode)
-                // Dismiss keyboard after setting text so it doesn't block next action
                 dismissKeyboard(callback)
             } else {
                 // Fallback: click coordinates then set text on focused node
                 clickAtCoordinates(action) {
-                    setTextWithRetry(text, 0) {
-                        dismissKeyboard(callback)
+                    dismissKeyboard {
+                        setTextWithRetry(text, 0) {
+                            dismissKeyboard(callback)
+                        }
                     }
                 }
             }
