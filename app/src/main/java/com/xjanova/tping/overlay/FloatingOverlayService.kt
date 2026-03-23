@@ -988,6 +988,18 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        // Log diagnostic: overlay service forcibly stopped
+        try {
+            val hasOverlay = android.provider.Settings.canDrawOverlays(this)
+            val hasA11y = TpingAccessibilityService.instance != null
+            com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                "permission",
+                "FloatingOverlayService destroyed",
+                "overlayPermission=$hasOverlay, a11yAlive=$hasA11y, " +
+                    "device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, " +
+                    "sdk=${android.os.Build.VERSION.SDK_INT}"
+            )
+        } catch (_: Exception) {}
         playbackObserverJob?.cancel()
         recordingObserverJob?.cancel()
         serviceScope.cancel()

@@ -195,10 +195,32 @@ class TpingAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
-        Log.d(TAG, "Accessibility Service interrupted")
+        Log.w(TAG, "Accessibility Service interrupted (permission may be revoked)")
+        try {
+            com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                "permission",
+                "Accessibility Service interrupted",
+                "source=onInterrupt, wasRecording=${_isRecording.value}, wasPlaying=${_isPlaying.value}"
+            )
+        } catch (_: Exception) {}
     }
 
     override fun onDestroy() {
+        Log.w(TAG, "Accessibility Service destroyed")
+        // Log diagnostic: who/what caused the service to stop
+        try {
+            val reason = when {
+                _isPlaying.value -> "destroyed while PLAYING"
+                _isRecording.value -> "destroyed while RECORDING"
+                else -> "destroyed while IDLE"
+            }
+            com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                "permission",
+                "Accessibility Service destroyed — permission revoked",
+                "reason=$reason, device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, " +
+                    "sdk=${android.os.Build.VERSION.SDK_INT}"
+            )
+        } catch (_: Exception) {}
         // Unregister accessibility button callback
         try {
             accessibilityButtonCallback?.let {

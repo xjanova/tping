@@ -89,13 +89,43 @@ fun HomeScreen(
     }
 
     // Re-check permissions every time screen becomes visible (ON_RESUME)
+    // Track previous permission state for revocation detection
+    var prevA11y by remember { mutableStateOf(isAccessibilityEnabled) }
+    var prevOverlay by remember { mutableStateOf(hasOverlayPermission) }
+    var prevNotification by remember { mutableStateOf(hasNotificationPermission) }
+
     LaunchedEffect(lifecycleOwner) {
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.RESUMED) {
-            isAccessibilityEnabled = TpingAccessibilityService.instance != null
-            hasOverlayPermission = Settings.canDrawOverlays(context)
-            hasNotificationPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
+            val newA11y = TpingAccessibilityService.instance != null
+            val newOverlay = Settings.canDrawOverlays(context)
+            val newNotification = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
                 ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
             else true
+
+            // Detect permission revocation and report to diagnostics
+            val revoked = mutableListOf<String>()
+            if (prevA11y && !newA11y) revoked.add("Accessibility")
+            if (prevOverlay && !newOverlay) revoked.add("Overlay")
+            if (prevNotification && !newNotification) revoked.add("Notification")
+
+            if (revoked.isNotEmpty()) {
+                try {
+                    DiagnosticReporter.logEvent(
+                        "permission",
+                        "Permission REVOKED mid-session: ${revoked.joinToString(", ")}",
+                        "a11y=$prevA11y->$newA11y, overlay=$prevOverlay->$newOverlay, " +
+                            "notification=$prevNotification->$newNotification, " +
+                            "device=${Build.MANUFACTURER} ${Build.MODEL}, sdk=${Build.VERSION.SDK_INT}"
+                    )
+                } catch (_: Exception) {}
+            }
+
+            isAccessibilityEnabled = newA11y
+            hasOverlayPermission = newOverlay
+            hasNotificationPermission = newNotification
+            prevA11y = newA11y
+            prevOverlay = newOverlay
+            prevNotification = newNotification
 
             // Auto-launch overlay after returning from settings
             if (waitingForPermission && isAccessibilityEnabled && hasOverlayPermission) {
@@ -393,54 +423,52 @@ fun HomeScreen(
                         }
                     }
 
-                    // License key input when expired/none
-                    if (licenseState.status == LicenseStatus.EXPIRED || licenseState.status == LicenseStatus.NONE) {
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            LicenseKeyField(
-                                value = licenseKeyInput,
-                                onValueChange = {
-                                    licenseKeyInput = it
-                                    activateError = ""
-                                    activateSuccess = ""
-                                },
-                                onScanQr = { showQrScanner = true },
-                                modifier = Modifier.weight(1f),
-                                compact = true
-                            )
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Button(
-                                onClick = {
-                                    if (licenseKeyInput.isBlank()) return@Button
-                                    isActivating = true
-                                    activateError = ""
-                                    activateScope.launch {
-                                        val result = LicenseManager.activateKey(context, licenseKeyInput.trim())
-                                        isActivating = false
-                                        result.onSuccess { activateSuccess = "สำเร็จ! ($it)" }
-                                            .onFailure { activateError = it.message ?: "ผิดพลาด" }
-                                    }
-                                },
-                                enabled = !isActivating && licenseKeyInput.isNotBlank(),
-                                shape = RoundedCornerShape(8.dp),
-                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-                            ) {
-                                if (isActivating) {
-                                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)
-                                } else {
-                                    Text("ใช้คีย์", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    // License key input — always visible for key entry/change
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        LicenseKeyField(
+                            value = licenseKeyInput,
+                            onValueChange = {
+                                licenseKeyInput = it
+                                activateError = ""
+                                activateSuccess = ""
+                            },
+                            onScanQr = { showQrScanner = true },
+                            modifier = Modifier.weight(1f),
+                            compact = true
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(
+                            onClick = {
+                                if (licenseKeyInput.isBlank()) return@Button
+                                isActivating = true
+                                activateError = ""
+                                activateScope.launch {
+                                    val result = LicenseManager.activateKey(context, licenseKeyInput.trim())
+                                    isActivating = false
+                                    result.onSuccess { activateSuccess = "สำเร็จ! ($it)" }
+                                        .onFailure { activateError = it.message ?: "ผิดพลาด" }
                                 }
+                            },
+                            enabled = !isActivating && licenseKeyInput.isNotBlank(),
+                            shape = RoundedCornerShape(8.dp),
+                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                        ) {
+                            if (isActivating) {
+                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = Color.White)
+                            } else {
+                                Text("ใช้คีย์", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                             }
                         }
-                        if (activateError.isNotEmpty()) {
-                            Text(activateError, color = Color(0xFFEF4444), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-                        }
-                        if (activateSuccess.isNotEmpty()) {
-                            Text(activateSuccess, color = Color(0xFF22C55E), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
-                        }
+                    }
+                    if (activateError.isNotEmpty()) {
+                        Text(activateError, color = Color(0xFFEF4444), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
+                    }
+                    if (activateSuccess.isNotEmpty()) {
+                        Text(activateSuccess, color = Color(0xFF22C55E), fontSize = 11.sp, modifier = Modifier.padding(top = 4.dp))
                     }
                 }
 
