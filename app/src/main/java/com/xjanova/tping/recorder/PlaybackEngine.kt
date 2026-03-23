@@ -89,6 +89,42 @@ class PlaybackEngine {
                         }
                         if (!isActive) return@launch
 
+                        // Check accessibility service is still alive — wait up to 3s for recovery
+                        if (TpingAccessibilityService.instance == null) {
+                            Log.w(TAG, "A11y service lost at step ${index + 1}, waiting for recovery...")
+                            var recovered = false
+                            for (wait in 1..6) {
+                                delay(500)
+                                if (TpingAccessibilityService.instance != null) { recovered = true; break }
+                            }
+                            if (!recovered) {
+                                Log.e(TAG, "A11y service not recovered — aborting playback")
+                                com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
+                                    "permission",
+                                    "Playback aborted: A11y service lost",
+                                    "step=${index + 1}/${actions.size}, loop=$loop/$loopCount"
+                                )
+                                return@launch
+                            }
+                            Log.d(TAG, "A11y service recovered, resuming playback")
+                        }
+
+                        // Ensure overlay service is alive — relaunch if killed by system
+                        if (com.xjanova.tping.overlay.FloatingOverlayService.instance == null) {
+                            Log.w(TAG, "Overlay service lost at step ${index + 1}, relaunching...")
+                            try {
+                                val a11y = TpingAccessibilityService.instance
+                                if (a11y != null && android.provider.Settings.canDrawOverlays(a11y)) {
+                                    val intent = android.content.Intent(a11y, com.xjanova.tping.overlay.FloatingOverlayService::class.java)
+                                    intent.putExtra("mode", "playing")
+                                    a11y.startForegroundService(intent)
+                                    delay(1000) // Wait for overlay to initialize
+                                }
+                            } catch (e: Exception) {
+                                Log.w(TAG, "Failed to relaunch overlay: ${e.message}")
+                            }
+                        }
+
                         val stepNum = index + 1
                         val stepDesc = "[${stepNum}/${actions.size}] ${describeAction(action)}"
                         _state.value = _state.value.copy(

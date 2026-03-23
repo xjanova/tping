@@ -988,6 +988,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onDestroy() {
+        val wasPlaying = _overlayState.value.mode == "playing" || _overlayState.value.mode == "paused"
         // Log diagnostic: overlay service forcibly stopped
         try {
             val hasOverlay = android.provider.Settings.canDrawOverlays(this)
@@ -995,7 +996,7 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
             com.xjanova.tping.data.diagnostic.DiagnosticReporter.logEvent(
                 "permission",
                 "FloatingOverlayService destroyed",
-                "overlayPermission=$hasOverlay, a11yAlive=$hasA11y, " +
+                "overlayPermission=$hasOverlay, a11yAlive=$hasA11y, wasPlaying=$wasPlaying, " +
                     "device=${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, " +
                     "sdk=${android.os.Build.VERSION.SDK_INT}"
             )
@@ -1009,6 +1010,26 @@ class FloatingOverlayService : Service(), LifecycleOwner, SavedStateRegistryOwne
         hideCrosshair()
         overlayView?.let { windowManager?.removeView(it) }
         overlayView = null; overlayParams = null; instance = null
+
+        // Auto-relaunch overlay if destroyed while playback was active
+        if (wasPlaying) {
+            try {
+                val a11y = TpingAccessibilityService.instance
+                if (a11y != null && android.provider.Settings.canDrawOverlays(this)) {
+                    android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                        try {
+                            val relaunch = Intent(a11y, FloatingOverlayService::class.java)
+                            relaunch.putExtra("mode", "playing")
+                            a11y.startForegroundService(relaunch)
+                            android.util.Log.d("FloatingOverlay", "Auto-relaunched overlay after system kill during playback")
+                        } catch (e: Exception) {
+                            android.util.Log.e("FloatingOverlay", "Failed to auto-relaunch: ${e.message}")
+                        }
+                    }, 500)
+                }
+            } catch (_: Exception) {}
+        }
+
         super.onDestroy()
     }
 }
