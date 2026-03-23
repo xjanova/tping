@@ -345,35 +345,42 @@ class TpingAccessibilityService : AccessibilityService() {
     }
 
     fun inputTextAtNode(action: RecordedAction, text: String, callback: () -> Unit) {
-        // Game mode: dismiss keyboard first, then click at coordinates to focus field, then set text
-        if (action.isGameMode) {
-            dismissKeyboard {
+        // Always dismiss keyboard first to prevent it from covering input fields
+        dismissKeyboard {
+            if (action.isGameMode) {
+                // Game mode: click at coordinates to focus field, then set text
                 clickAtCoordinates(action) {
-                    setTextWithRetry(text, 0, callback)
+                    setTextWithRetry(text, 0) {
+                        // Dismiss keyboard after input so it doesn't block next step
+                        dismissKeyboard(callback)
+                    }
                 }
+                return@dismissKeyboard
             }
-            return
-        }
 
-        val rootNode = rootInActiveWindow ?: run { callback(); return }
-        var targetNode: AccessibilityNodeInfo? = null
+            val rootNode = rootInActiveWindow ?: run { callback(); return@dismissKeyboard }
+            var targetNode: AccessibilityNodeInfo? = null
 
-        if (action.resourceId.isNotEmpty()) {
-            val nodes = rootNode.findAccessibilityNodeInfosByViewId(action.resourceId)
-            if (nodes.isNotEmpty()) targetNode = nodes[0]
-        }
-        if (targetNode == null) {
-            targetNode = findNodeByBounds(rootNode, action)
-        }
+            if (action.resourceId.isNotEmpty()) {
+                val nodes = rootNode.findAccessibilityNodeInfosByViewId(action.resourceId)
+                if (nodes.isNotEmpty()) targetNode = nodes[0]
+            }
+            if (targetNode == null) {
+                targetNode = findNodeByBounds(rootNode, action)
+            }
 
-        if (targetNode != null) {
-            setTextOnNode(targetNode, text)
-            safeRecycle(targetNode)
-            callback()
-        } else {
-            // Fallback: click coordinates then set text on focused node
-            clickAtCoordinates(action) {
-                setTextWithRetry(text, 0, callback)
+            if (targetNode != null) {
+                setTextOnNode(targetNode, text)
+                safeRecycle(targetNode)
+                // Dismiss keyboard after setting text so it doesn't block next action
+                dismissKeyboard(callback)
+            } else {
+                // Fallback: click coordinates then set text on focused node
+                clickAtCoordinates(action) {
+                    setTextWithRetry(text, 0) {
+                        dismissKeyboard(callback)
+                    }
+                }
             }
         }
     }
