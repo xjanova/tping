@@ -167,26 +167,29 @@ fun LicenseGateScreen(
                     }
                 }
 
-                // Retry button when connection error
-                if (hasConnectionError) {
-                    Spacer(modifier = Modifier.height(8.dp))
-                    OutlinedButton(
-                        onClick = {
-                            scope.launch {
-                                LicenseManager.initialize(context)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = Color(0xFFF59E0B)
-                        ),
-                        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFFF59E0B).copy(alpha = 0.5f)),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Icon(Icons.Default.Refresh, null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("ลองใหม่", fontWeight = FontWeight.Bold)
-                    }
+                // Re-check button — always show for expired/connection error
+                // Allows user to re-verify after admin reactivates or network recovers
+                Spacer(modifier = Modifier.height(8.dp))
+                val recheckColor = if (hasConnectionError) Color(0xFFF59E0B) else Color(0xFF8B5CF6)
+                OutlinedButton(
+                    onClick = {
+                        scope.launch {
+                            LicenseManager.initialize(context)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        contentColor = recheckColor
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, recheckColor.copy(alpha = 0.5f)),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Refresh, null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        if (hasConnectionError) "ลองใหม่" else "ตรวจสอบสิทธิ์ใหม่",
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
 
@@ -364,6 +367,8 @@ fun LicenseGateScreen(
                             isActivating = false
                             result.onSuccess { typeDisplay ->
                                 successMessage = "เปิดใช้งานสำเร็จ! ($typeDisplay)"
+                                // Explicit navigation as fallback in case LaunchedEffect doesn't fire
+                                onLicenseActivated()
                             }.onFailure { e ->
                                 errorMessage = e.message ?: "เกิดข้อผิดพลาด"
                             }
