@@ -1,5 +1,6 @@
 package com.xjanova.tping.ui.screens
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.background
@@ -56,10 +57,10 @@ fun LicenseGateScreen(
         )
     }
 
-    // Navigate when license becomes active
+    // Restart activity when license becomes active — ensures fresh service/permission state
     LaunchedEffect(licenseState.status) {
         if (licenseState.status == LicenseStatus.ACTIVE || licenseState.status == LicenseStatus.TRIAL) {
-            onLicenseActivated()
+            (context as? Activity)?.recreate() ?: onLicenseActivated()
         }
     }
 
@@ -367,8 +368,8 @@ fun LicenseGateScreen(
                             isActivating = false
                             result.onSuccess { typeDisplay ->
                                 successMessage = "เปิดใช้งานสำเร็จ! ($typeDisplay)"
-                                // Explicit navigation as fallback in case LaunchedEffect doesn't fire
-                                onLicenseActivated()
+                                // Recreate activity to ensure fresh service/permission state
+                                (context as? Activity)?.recreate() ?: onLicenseActivated()
                             }.onFailure { e ->
                                 errorMessage = e.message ?: "เกิดข้อผิดพลาด"
                             }
